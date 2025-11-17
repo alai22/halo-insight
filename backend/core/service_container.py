@@ -5,14 +5,18 @@ This container manages the lifecycle and dependencies of all services,
 enabling dependency injection and making services easily testable.
 """
 
-from typing import Optional
-from ..services.claude_service import ClaudeService
-from ..services.storage_service import StorageService
-from ..services.conversation_service import ConversationService
-from ..services.rag_service import RAGService
-from ..services.gladly_download_service import GladlyDownloadService
-from ..services.survey_service import SurveyService
-from ..services.survicate_rag_service import SurvicateRAGService
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type hints only - avoids circular imports
+    from ..services.claude_service import ClaudeService
+    from ..services.storage_service import StorageService
+    from ..services.conversation_service import ConversationService
+    from ..services.rag_service import RAGService
+    from ..services.gladly_download_service import GladlyDownloadService
+    from ..services.survey_service import SurveyService
+    from ..services.survicate_rag_service import SurvicateRAGService
+
 from ..utils.logging import get_logger
 
 logger = get_logger('service_container')
@@ -28,14 +32,14 @@ class ServiceContainer:
     
     def __init__(self):
         """Initialize the service container"""
-        # Core services
-        self._storage_service: Optional[StorageService] = None
-        self._claude_service: Optional[ClaudeService] = None
-        self._conversation_service: Optional[ConversationService] = None
-        self._rag_service: Optional[RAGService] = None
-        self._gladly_download_service: Optional[GladlyDownloadService] = None
-        self._survey_service: Optional[SurveyService] = None
-        self._survicate_rag_service: Optional[SurvicateRAGService] = None
+        # Core services - using 'Any' type to avoid circular imports
+        self._storage_service: Optional['StorageService'] = None
+        self._claude_service: Optional['ClaudeService'] = None
+        self._conversation_service: Optional['ConversationService'] = None
+        self._rag_service: Optional['RAGService'] = None
+        self._gladly_download_service: Optional['GladlyDownloadService'] = None
+        self._survey_service: Optional['SurveyService'] = None
+        self._survicate_rag_service: Optional['SurvicateRAGService'] = None
         
         # Track if services are overridden (for testing)
         self._overrides: dict = {}
@@ -43,7 +47,7 @@ class ServiceContainer:
         logger.info("Service container initialized")
     
     # Storage Service
-    def get_storage_service(self, override: Optional[StorageService] = None) -> StorageService:
+    def get_storage_service(self, override: Optional['StorageService'] = None) -> 'StorageService':
         """
         Get or create the StorageService instance.
         
@@ -62,13 +66,15 @@ class ServiceContainer:
             return self._overrides['storage_service']
         
         if self._storage_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.storage_service import StorageService
             logger.debug("Creating StorageService instance")
             self._storage_service = StorageService()
         
         return self._storage_service
     
     # Claude Service
-    def get_claude_service(self, override: Optional[ClaudeService] = None) -> Optional[ClaudeService]:
+    def get_claude_service(self, override: Optional['ClaudeService'] = None) -> Optional['ClaudeService']:
         """
         Get or create the ClaudeService instance.
         
@@ -88,6 +94,8 @@ class ServiceContainer:
         
         if self._claude_service is None:
             try:
+                # Lazy import to avoid circular dependencies
+                from ..services.claude_service import ClaudeService
                 # Check API key status before attempting initialization
                 from ..utils.config import Config
                 api_key_status = Config.get_api_key_status()
@@ -108,7 +116,7 @@ class ServiceContainer:
         return self._claude_service
     
     # Conversation Service
-    def get_conversation_service(self, override: Optional[ConversationService] = None) -> ConversationService:
+    def get_conversation_service(self, override: Optional['ConversationService'] = None) -> 'ConversationService':
         """
         Get or create the ConversationService instance.
         
@@ -127,6 +135,8 @@ class ServiceContainer:
             return self._overrides['conversation_service']
         
         if self._conversation_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.conversation_service import ConversationService
             logger.debug("Creating ConversationService instance")
             storage_service = self.get_storage_service()
             self._conversation_service = ConversationService(storage_service=storage_service)
@@ -134,7 +144,7 @@ class ServiceContainer:
         return self._conversation_service
     
     # RAG Service
-    def get_rag_service(self, override: Optional[RAGService] = None) -> Optional[RAGService]:
+    def get_rag_service(self, override: Optional['RAGService'] = None) -> Optional['RAGService']:
         """
         Get or create the RAGService instance.
         
@@ -155,6 +165,8 @@ class ServiceContainer:
             return self._overrides.get('rag_service')
         
         if self._rag_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.rag_service import RAGService
             claude_service = self.get_claude_service()
             if claude_service is None:
                 logger.warning("RAGService not initialized - ClaudeService unavailable")
@@ -167,7 +179,7 @@ class ServiceContainer:
         return self._rag_service
     
     # Gladly Download Service
-    def get_gladly_download_service(self, override: Optional[GladlyDownloadService] = None) -> Optional[GladlyDownloadService]:
+    def get_gladly_download_service(self, override: Optional['GladlyDownloadService'] = None) -> Optional['GladlyDownloadService']:
         """
         Get or create the GladlyDownloadService instance.
         
@@ -187,6 +199,8 @@ class ServiceContainer:
         
         if self._gladly_download_service is None:
             try:
+                # Lazy import to avoid circular dependencies
+                from ..services.gladly_download_service import GladlyDownloadService
                 logger.debug("Creating GladlyDownloadService instance")
                 self._gladly_download_service = GladlyDownloadService()
             except Exception as e:
@@ -196,7 +210,7 @@ class ServiceContainer:
         return self._gladly_download_service
     
     # Survey Service
-    def get_survey_service(self, override: Optional[SurveyService] = None) -> SurveyService:
+    def get_survey_service(self, override: Optional['SurveyService'] = None) -> 'SurveyService':
         """
         Get or create the SurveyService instance.
         
@@ -215,13 +229,15 @@ class ServiceContainer:
             return self._overrides['survey_service']
         
         if self._survey_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.survey_service import SurveyService
             logger.debug("Creating SurveyService instance")
             self._survey_service = SurveyService()
         
         return self._survey_service
     
     # Survicate RAG Service
-    def get_survicate_rag_service(self, override: Optional[SurvicateRAGService] = None) -> Optional[SurvicateRAGService]:
+    def get_survicate_rag_service(self, override: Optional['SurvicateRAGService'] = None) -> Optional['SurvicateRAGService']:
         """
         Get or create the SurvicateRAGService instance.
         
@@ -242,6 +258,8 @@ class ServiceContainer:
             return self._overrides.get('survicate_rag_service')
         
         if self._survicate_rag_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.survicate_rag_service import SurvicateRAGService
             claude_service = self.get_claude_service()
             if claude_service is None:
                 logger.warning("SurvicateRAGService not initialized - ClaudeService unavailable")
