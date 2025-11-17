@@ -6,15 +6,16 @@ from typing import List, Dict, Optional, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.conversation import ConversationItem, ConversationSummary
+from ..core.interfaces import IConversationService, IStorageService
 from .storage_service import StorageService
 
 logger = get_logger('conversation_service')
 
 
-class ConversationService:
+class ConversationService(IConversationService):
     """Service for managing conversation data"""
     
-    def __init__(self, storage_service: Optional[StorageService] = None):
+    def __init__(self, storage_service: Optional[IStorageService] = None):
         """Initialize conversation service"""
         self.storage_service = storage_service or StorageService()
         self.conversations: List[ConversationItem] = []

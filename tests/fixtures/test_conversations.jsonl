@@ -1,0 +1,3 @@
+{"conversationId": "test_conv_1", "customerId": "test_customer_1", "contentType": "CHAT_MESSAGE", "timestamp": "2024-01-01T00:00:00Z", "content": {"content": "Test message", "messageType": "CUSTOMER"}}
+{"conversationId": "test_conv_2", "customerId": "test_customer_2", "contentType": "EMAIL", "timestamp": "2024-01-02T00:00:00Z", "content": {"subject": "Test email", "body": "Test email body"}}
+

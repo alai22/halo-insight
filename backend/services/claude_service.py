@@ -8,11 +8,12 @@ from typing import Optional, Dict, Any, Generator
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.response import ClaudeResponse
+from ..core.interfaces import IClaudeService
 
 logger = get_logger('claude_service')
 
 
-class ClaudeService:
+class ClaudeService(IClaudeService):
     """Service for interacting with Claude API"""
     
     def __init__(self, api_key: Optional[str] = None):

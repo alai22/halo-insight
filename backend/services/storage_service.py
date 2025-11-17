@@ -9,11 +9,12 @@ from azure.storage.blob import BlobServiceClient
 from typing import List, Dict, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
+from ..core.interfaces import IStorageService
 
 logger = get_logger('storage_service')
 
 
-class StorageService:
+class StorageService(IStorageService):
     """Service for handling different storage backends"""
     
     def __init__(self, storage_type: str = None):
