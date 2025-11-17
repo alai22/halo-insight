@@ -176,6 +176,8 @@ RAG-powered analysis where Claude plans, retrieves, and analyzes conversation da
 ssh -i your-key.pem ec2-user@your-ec2-public-ip
 ```
 
+   **Note**: If you want to use `ssh gladly-ec2` as a shortcut, see [SSH Setup Guide](docs/SSH_SETUP.md) for configuring SSH aliases on your local machine.
+
 #### Step 2: Install Docker on EC2
 ```bash
 # Update system
@@ -413,6 +415,7 @@ Historical documentation files have been moved to the `docs/` folder for referen
 - `docs/QUICK_START.md` - Original quick setup guide
 - `docs/AWS_DEPLOYMENT.md` - AWS-specific deployment instructions
 - `docs/DEPLOYMENT.md` - Detailed deployment guide
+- `docs/SSH_SETUP.md` - SSH configuration guide for EC2 access
 
 ## 🆘 Support
 
