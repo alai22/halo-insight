@@ -19,12 +19,17 @@ class ConversationItem:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ConversationItem':
         """Create ConversationItem from dictionary"""
+        # Handle contentType at top level (Gladly API format)
+        content = data.get('content', {}).copy() if isinstance(data.get('content'), dict) else {}
+        if 'contentType' in data and 'type' not in content:
+            content['type'] = data['contentType']
+        
         return cls(
             id=data.get('id', ''),
             timestamp=data.get('timestamp', ''),
             customer_id=data.get('customerId', ''),
             conversation_id=data.get('conversationId', ''),
-            content=data.get('content', {})
+            content=content
         )
     
     def to_dict(self) -> Dict[str, Any]:

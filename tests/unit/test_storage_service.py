@@ -58,8 +58,10 @@ class TestStorageService:
         content = '[{"id": 1}, {"id": 2}]'
         result = service._parse_content(content)
         
+        # Should parse as a JSON array and return the items directly
         assert len(result) == 2
         assert result[0]['id'] == 1
+        assert result[1]['id'] == 2
     
     def test_parse_content_invalid_json(self):
         """Test parsing invalid JSON content"""

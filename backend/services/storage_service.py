@@ -127,22 +127,35 @@ class StorageService(IStorageService):
         conversations = []
         
         # Try JSONL format first (each line is a JSON object)
+        jsonl_success = False
         for line in content.split('\n'):
             if line.strip():
                 try:
-                    conversations.append(json.loads(line.strip()))
-                except json.JSONDecodeError:
-                    # If JSONL parsing fails, try as single JSON array
-                    try:
-                        data = json.loads(content)
-                        if isinstance(data, list):
-                            conversations = data
-                        else:
-                            conversations = [data]
+                    parsed = json.loads(line.strip())
+                    # Check if it's a single object (JSONL) or an array (JSON)
+                    if isinstance(parsed, list):
+                        # This is a JSON array, not JSONL - use it directly
+                        conversations = parsed
                         break
-                    except json.JSONDecodeError:
-                        logger.error("Failed to parse JSON content")
-                        return []
+                    else:
+                        # This is a JSONL line (single object)
+                        conversations.append(parsed)
+                        jsonl_success = True
+                except json.JSONDecodeError:
+                    # Line parsing failed, will try as single JSON below
+                    continue
+        
+        # If JSONL parsing didn't succeed, try as single JSON
+        if not jsonl_success and not conversations:
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    conversations = data
+                else:
+                    conversations = [data]
+            except json.JSONDecodeError:
+                logger.error("Failed to parse JSON content")
+                return []
         
         logger.info(f"Content parsed successfully: {len(conversations)} conversations")
         return conversations

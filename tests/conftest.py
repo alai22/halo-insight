@@ -40,6 +40,7 @@ def client(app: Flask):
 def mock_storage_service() -> IStorageService:
     """Create a mock storage service"""
     mock = Mock(spec=IStorageService)
+    # Note: ConversationItem.content_type looks for content.type, so include it
     mock.load_conversations.return_value = [
         {
             "conversationId": "test_conv_1",
@@ -47,6 +48,7 @@ def mock_storage_service() -> IStorageService:
             "contentType": "CHAT_MESSAGE",
             "timestamp": "2024-01-01T00:00:00Z",
             "content": {
+                "type": "CHAT_MESSAGE",  # Include type for content_type property
                 "content": "Test message",
                 "messageType": "CUSTOMER"
             }
@@ -57,6 +59,7 @@ def mock_storage_service() -> IStorageService:
             "contentType": "EMAIL",
             "timestamp": "2024-01-02T00:00:00Z",
             "content": {
+                "type": "EMAIL",  # Include type for content_type property
                 "subject": "Test email",
                 "body": "Test email body"
             }

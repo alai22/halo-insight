@@ -31,7 +31,7 @@ class TestConversationService:
                 "customerId": "customer_1",
                 "contentType": "CHAT_MESSAGE",
                 "timestamp": "2024-01-01T00:00:00Z",
-                "content": {"content": "Test", "messageType": "CUSTOMER"}
+                "content": {"type": "CHAT_MESSAGE", "content": "Test", "messageType": "CUSTOMER"}
             }
         ]
         
@@ -51,20 +51,22 @@ class TestConversationService:
     
     def test_get_summary_with_data(self, mock_storage_service):
         """Test getting summary with conversation data"""
+        # Note: ConversationItem.content_type looks for content.type, not contentType
+        # So we need to include 'type' in the content dict
         mock_storage_service.load_conversations.return_value = [
             {
                 "conversationId": "conv_1",
                 "customerId": "customer_1",
                 "contentType": "CHAT_MESSAGE",
                 "timestamp": "2024-01-01T00:00:00Z",
-                "content": {"content": "Test", "messageType": "CUSTOMER"}
+                "content": {"type": "CHAT_MESSAGE", "content": "Test", "messageType": "CUSTOMER"}
             },
             {
                 "conversationId": "conv_2",
                 "customerId": "customer_2",
                 "contentType": "EMAIL",
                 "timestamp": "2024-01-02T00:00:00Z",
-                "content": {"subject": "Test", "body": "Body"}
+                "content": {"type": "EMAIL", "subject": "Test", "body": "Body"}
             }
         ]
         
@@ -85,14 +87,14 @@ class TestConversationService:
                 "customerId": "customer_1",
                 "contentType": "CHAT_MESSAGE",
                 "timestamp": "2024-01-01T00:00:00Z",
-                "content": {"content": "Hello world", "messageType": "CUSTOMER"}
+                "content": {"type": "CHAT_MESSAGE", "content": "Hello world", "messageType": "CUSTOMER"}
             },
             {
                 "conversationId": "conv_2",
                 "customerId": "customer_2",
                 "contentType": "EMAIL",
                 "timestamp": "2024-01-02T00:00:00Z",
-                "content": {"subject": "Test", "body": "Goodbye"}
+                "content": {"type": "EMAIL", "subject": "Test", "body": "Goodbye"}
             }
         ]
         
@@ -110,7 +112,7 @@ class TestConversationService:
                 "customerId": "customer_1",
                 "contentType": "CHAT_MESSAGE",
                 "timestamp": "2024-01-01T00:00:00Z",
-                "content": {"content": "Hello", "messageType": "CUSTOMER"}
+                "content": {"type": "CHAT_MESSAGE", "content": "Hello", "messageType": "CUSTOMER"}
             }
         ]
         
@@ -129,7 +131,7 @@ class TestConversationService:
                 "customerId": f"customer_{i}",
                 "contentType": "CHAT_MESSAGE",
                 "timestamp": f"2024-01-{i+1:02d}T00:00:00Z",
-                "content": {"content": "Hello world", "messageType": "CUSTOMER"}
+                "content": {"type": "CHAT_MESSAGE", "content": "Hello world", "messageType": "CUSTOMER"}
             })
         
         mock_storage_service.load_conversations.return_value = conversations

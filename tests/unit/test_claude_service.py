@@ -24,11 +24,12 @@ class TestClaudeService:
         assert service.base_url == "https://api.anthropic.com/v1"
         assert 'x-api-key' in service.headers
     
-    @patch.dict('os.environ', {'ANTHROPIC_API_KEY': ''})
     def test_claude_service_initialization_without_api_key(self):
         """Test ClaudeService initialization fails without API key"""
-        with pytest.raises(ValueError, match="API key not provided"):
-            ClaudeService()
+        # Mock Config.ANTHROPIC_API_KEY to be None
+        with patch('backend.services.claude_service.Config.ANTHROPIC_API_KEY', None):
+            with pytest.raises(ValueError, match="API key not provided"):
+                ClaudeService(api_key=None)
     
     @patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-api-key'})
     @patch('backend.services.claude_service.requests.post')
