@@ -180,11 +180,31 @@ def get_topic_trends():
                 topic = value.get('topic', 'Other')
                 sentiment = value.get('sentiment', 'Neutral')
                 customer_sentiment = value.get('customer_sentiment', 'Neutral')
-            else:
+            elif isinstance(value, str):
                 # Old format: just topic string
                 topic = value
                 sentiment = 'Neutral'
                 customer_sentiment = 'Neutral'
+            else:
+                # Unexpected format (list, None, etc.) - skip or use default
+                logger.warning(f"Unexpected topic format for conversation {conversation_id}: {type(value)}, value: {value}")
+                topic = 'Other'
+                sentiment = 'Neutral'
+                customer_sentiment = 'Neutral'
+            
+            # Ensure topic is a string (hashable) - convert if necessary
+            if not isinstance(topic, str):
+                if isinstance(topic, list):
+                    # If topic is a list, join it or take first element
+                    topic = ', '.join(str(t) for t in topic) if topic else 'Other'
+                else:
+                    topic = str(topic) if topic is not None else 'Other'
+            
+            # Ensure sentiment values are strings
+            if not isinstance(sentiment, str):
+                sentiment = str(sentiment) if sentiment is not None else 'Neutral'
+            if not isinstance(customer_sentiment, str):
+                customer_sentiment = str(customer_sentiment) if customer_sentiment is not None else 'Neutral'
             
             topic_counts[topic] = topic_counts.get(topic, 0) + 1
             sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
@@ -683,8 +703,21 @@ def get_topic_trends_over_time():
                 # Handle both formats
                 if isinstance(value, dict):
                     topic = value.get('topic', 'Other')
-                else:
+                elif isinstance(value, str):
                     topic = value
+                else:
+                    # Unexpected format (list, None, etc.) - use default
+                    logger.warning(f"Unexpected topic format for conversation {conversation_id} in topic-trends-over-time: {type(value)}, value: {value}")
+                    topic = 'Other'
+                
+                # Ensure topic is a string (hashable) - convert if necessary
+                if not isinstance(topic, str):
+                    if isinstance(topic, list):
+                        # If topic is a list, join it or take first element
+                        topic = ', '.join(str(t) for t in topic) if topic else 'Other'
+                    else:
+                        topic = str(topic) if topic is not None else 'Other'
+                
                 topic_counts[topic] = topic_counts.get(topic, 0) + 1
                 all_topics_set.add(topic)
             
@@ -791,6 +824,12 @@ def get_sentiment_trends_over_time():
                 else:
                     sentiment = 'Neutral'
                     customer_sentiment = 'Neutral'
+                
+                # Ensure sentiment values are strings (hashable)
+                if not isinstance(sentiment, str):
+                    sentiment = str(sentiment) if sentiment is not None else 'Neutral'
+                if not isinstance(customer_sentiment, str):
+                    customer_sentiment = str(customer_sentiment) if customer_sentiment is not None else 'Neutral'
                 
                 sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
                 customer_sentiment_counts[customer_sentiment] = customer_sentiment_counts.get(customer_sentiment, 0) + 1

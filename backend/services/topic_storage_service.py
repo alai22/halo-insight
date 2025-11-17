@@ -257,9 +257,21 @@ class TopicStorageService:
         result = {}
         for conv_id, value in full_data.items():
             if isinstance(value, dict):
-                result[conv_id] = value.get('topic', 'Other')
+                topic = value.get('topic', 'Other')
+            elif isinstance(value, str):
+                topic = value
             else:
-                result[conv_id] = value
+                # Unexpected format - convert to string
+                if isinstance(value, list):
+                    topic = ', '.join(str(t) for t in value) if value else 'Other'
+                else:
+                    topic = str(value) if value is not None else 'Other'
+            
+            # Ensure topic is a string
+            if not isinstance(topic, str):
+                topic = str(topic) if topic is not None else 'Other'
+            
+            result[conv_id] = topic
         return result
     
     def get_extraction_status(self) -> Dict[str, Dict[str, int]]:
@@ -270,9 +282,21 @@ class TopicStorageService:
             topics = set()
             for value in topic_mapping.values():
                 if isinstance(value, dict):
-                    topics.add(value.get('topic', 'Other'))
+                    topic = value.get('topic', 'Other')
+                elif isinstance(value, str):
+                    topic = value
                 else:
-                    topics.add(value)
+                    # Unexpected format - convert to string
+                    if isinstance(value, list):
+                        topic = ', '.join(str(t) for t in value) if value else 'Other'
+                    else:
+                        topic = str(value) if value is not None else 'Other'
+                
+                # Ensure topic is a string (hashable)
+                if not isinstance(topic, str):
+                    topic = str(topic) if topic is not None else 'Other'
+                
+                topics.add(topic)
             
             status[date] = {
                 'conversation_count': len(topic_mapping),
