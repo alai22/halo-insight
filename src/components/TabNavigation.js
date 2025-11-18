@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Search, MessageSquare, BarChart3, FileText, TrendingUp } from 'lucide-react';
 
 const TabNavigation = ({ currentMode, setCurrentMode }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => {
     // Determine active tab based on current mode
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
@@ -75,6 +77,7 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
 
   const handleModeChange = (modeId) => {
     setCurrentMode(modeId);
+    setSearchParams({ mode: modeId });
   };
 
   const currentModeData = [...gladlyModes, ...churnModes].find(mode => mode.id === currentMode);
@@ -88,7 +91,9 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
             setActiveTab('gladly');
             // Switch to first mode of the tab if current mode is from other tab
             if (!['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
-              setCurrentMode('ask');
+              const defaultMode = 'ask';
+              setCurrentMode(defaultMode);
+              setSearchParams({ mode: defaultMode });
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
@@ -104,7 +109,9 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
             setActiveTab('churn');
             // Switch to first mode of the tab if current mode is from other tab
             if (!['churn-trends', 'survicate'].includes(currentMode)) {
-              setCurrentMode('churn-trends');
+              const defaultMode = 'churn-trends';
+              setCurrentMode(defaultMode);
+              setSearchParams({ mode: defaultMode });
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${

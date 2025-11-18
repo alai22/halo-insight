@@ -10,6 +10,7 @@ import DownloadManager from './components/DownloadManager';
 import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
@@ -29,6 +30,7 @@ axios.interceptors.request.use(
 );
 
 function App() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [conversations, setConversations] = useState({
     claude: [],
@@ -39,7 +41,18 @@ function App() {
     'churn-trends': [],
     'conversation-trends': []
   });
-  const [currentMode, setCurrentMode] = useState('churn-trends'); // 'conversations', 'ask', 'survicate', 'churn-trends' (admin: 'claude', 'download')
+  
+  // Initialize currentMode from URL or default
+  const [currentMode, setCurrentMode] = useState(() => {
+    // Check URL first, then localStorage, then default
+    const urlMode = searchParams.get('mode');
+    if (urlMode) {
+      return urlMode;
+    }
+    const savedMode = localStorage.getItem('gladly_current_mode');
+    return savedMode || 'churn-trends';
+  });
+  
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -51,6 +64,26 @@ function App() {
   });
   const [healthStatus, setHealthStatus] = useState(null);
   const [adminMode, setAdminMode] = useState(null); // 'claude' or 'download' for admin tools
+  
+  // Sync URL when currentMode changes (but not when URL changes)
+  useEffect(() => {
+    const currentUrlMode = searchParams.get('mode');
+    if (currentMode && currentMode !== currentUrlMode) {
+      setSearchParams({ mode: currentMode }, { replace: true });
+    }
+  }, [currentMode, searchParams, setSearchParams]);
+  
+  // Sync currentMode when URL changes (e.g., browser back/forward or direct link)
+  useEffect(() => {
+    const urlMode = searchParams.get('mode');
+    if (urlMode && urlMode !== currentMode) {
+      setCurrentMode(urlMode);
+    } else if (!urlMode && currentMode) {
+      // If URL has no mode but we have a currentMode, update URL
+      setSearchParams({ mode: currentMode }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Load conversations and settings from localStorage on mount
   useEffect(() => {
@@ -80,10 +113,8 @@ function App() {
       console.error('Error loading settings from localStorage:', error);
     }
 
-    const savedMode = localStorage.getItem('gladly_current_mode');
-    if (savedMode) {
-      setCurrentMode(savedMode);
-    }
+    // URL mode takes precedence, so we don't override it here
+    // The initial state already handles localStorage fallback
   }, []);
 
   // Save conversations to localStorage whenever they change
