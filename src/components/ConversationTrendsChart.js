@@ -314,8 +314,8 @@ const ConversationTrendsChart = () => {
       return timeSeriesData.map(day => {
         const newDay = { ...day };
         timeSeriesTopics.forEach(topic => {
-          // Use percentage instead of count
-          const percentage = day[`${topic}_percentage`] || 0;
+          // Use percentage instead of count, cap at 100% to prevent overflow
+          const percentage = Math.min(day[`${topic}_percentage`] || 0, 100);
           newDay[topic] = percentage;
         });
         // Keep total for reference but don't use it in the chart
@@ -593,6 +593,7 @@ const ConversationTrendsChart = () => {
                   tick={{ fontSize: 12 }}
                   domain={timeSeriesMode === 'percentage' ? [0, 100] : [0, 'auto']}
                   tickFormatter={timeSeriesMode === 'percentage' ? (value) => `${value}%` : undefined}
+                  allowDataOverflow={false}
                 />
                 <Tooltip 
                   contentStyle={{ 
@@ -600,27 +601,81 @@ const ConversationTrendsChart = () => {
                     border: '1px solid #e5e7eb',
                     borderRadius: '12px',
                     padding: '12px',
-                    boxShadow: '0 8px 16px rgba(0, 0, 0, 0.12)'
+                    boxShadow: '0 8px 16px rgba(0, 0, 0, 0.12)',
+                    zIndex: 1000
                   }}
-                  formatter={(value, name, props) => {
-                    if (name === 'total') {
-                      const dataPoint = props.payload;
-                      if (dataPoint.date === 'Total') {
-                        return [value, 'Grand Total'];
-                      }
-                      return [value, 'Total'];
+                  wrapperStyle={{ zIndex: 1000 }}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload || payload.length === 0) {
+                      return null;
                     }
-                    const dataPoint = props.payload;
-                    if (timeSeriesMode === 'percentage') {
-                      // In percentage mode, show percentage and count
-                      const originalData = timeSeriesData.find(d => d.date === dataPoint.date);
-                      const count = originalData?.[name] || 0;
-                      return [`${value.toFixed(1)}% (${count} conversations)`, name];
-                    } else {
-                      // In count mode, show count and percentage
-                      const percentage = dataPoint?.[`${name}_percentage`] || 0;
-                      return [`${value} conversations (${percentage.toFixed(1)}%)`, name];
-                    }
+                    
+                    const dataPoint = payload[0].payload;
+                    const originalData = timeSeriesData.find(d => d.date === dataPoint.date);
+                    
+                    // Filter out 'total' and prepare items with counts
+                    const items = payload
+                      .filter(item => item.dataKey !== 'total')
+                      .map(item => {
+                        const topic = item.dataKey;
+                        let value, count;
+                        if (timeSeriesMode === 'percentage') {
+                          value = item.value || 0;
+                          count = originalData?.[topic] || 0;
+                        } else {
+                          count = item.value || 0;
+                          value = dataPoint?.[`${topic}_percentage`] || 0;
+                        }
+                        return {
+                          name: topic,
+                          value: value,
+                          count: count,
+                          color: item.color
+                        };
+                      })
+                      .filter(item => item.count > 0) // Only show items with counts
+                      .sort((a, b) => b.count - a.count); // Sort by count descending
+                    
+                    return (
+                      <div style={{ 
+                        backgroundColor: '#ffffff',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '12px',
+                        padding: '12px',
+                        boxShadow: '0 8px 16px rgba(0, 0, 0, 0.12)',
+                        zIndex: 1000
+                      }}>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '14px' }}>
+                          {label}
+                        </div>
+                        <div style={{ fontSize: '12px' }}>
+                          {items.map((item, index) => (
+                            <div key={index} style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              marginBottom: '4px',
+                              gap: '8px'
+                            }}>
+                              <div style={{ 
+                                width: '12px', 
+                                height: '12px', 
+                                backgroundColor: item.color,
+                                borderRadius: '2px'
+                              }} />
+                              <span style={{ flex: 1 }}>
+                                {item.name}
+                              </span>
+                              <span style={{ fontWeight: '500' }}>
+                                {timeSeriesMode === 'percentage' 
+                                  ? `${item.value.toFixed(1)}% (${item.count} conversations)`
+                                  : `${item.count} conversations (${item.value.toFixed(1)}%)`
+                                }
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
                   }}
                 />
                 <Legend 
