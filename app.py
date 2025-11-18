@@ -13,6 +13,8 @@ print(f"[FLASK CONFIG] Max header size configured: {werkzeug.serving.WSGIRequest
 from flask import Flask, render_template_string
 from flask_cors import CORS
 import os
+import secrets
+from datetime import timedelta
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -25,6 +27,7 @@ from backend.api.routes.rag_routes import rag_bp
 from backend.api.routes.health_routes import health_bp
 from backend.api.routes.download_routes import download_bp
 from backend.api.routes.survicate_routes import survicate_bp
+from backend.api.routes.auth_routes import auth_bp
 
 # Import middleware
 from backend.api.middleware.error_handlers import register_error_handlers
@@ -60,8 +63,14 @@ def create_app():
     # Create Flask app
     app = Flask(__name__)
     
+    # Configure session secret key (required for session management)
+    app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessions last 24 hours
+    
     # Enable CORS
-    CORS(app)
+    CORS(app, supports_credentials=True)  # Enable credentials for session cookies
     
     # Register request logging FIRST (so it logs all requests)
     register_request_logging(app)
@@ -81,6 +90,7 @@ def create_app():
     
     # Register blueprints
     app.register_blueprint(health_bp)
+    app.register_blueprint(auth_bp)  # Auth routes (no auth required)
     app.register_blueprint(claude_bp)
     app.register_blueprint(conversation_bp)
     app.register_blueprint(rag_bp)
@@ -110,6 +120,7 @@ def create_app():
         </body>
         </html>
         """)
+    
     
     # Handle common static asset requests to prevent 404 noise in logs
     @app.route('/favicon.ico')

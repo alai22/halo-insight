@@ -11,6 +11,9 @@ import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import axios from 'axios';
 
+// Configure axios to send credentials (cookies) with all requests
+axios.defaults.withCredentials = true;
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [conversations, setConversations] = useState({
@@ -96,12 +99,21 @@ function App() {
     }
   }, [currentMode]);
 
-  // Check if user is already authenticated (from sessionStorage)
+  // Check if user is already authenticated (check backend session)
   useEffect(() => {
-    const authenticated = sessionStorage.getItem('authenticated');
-    if (authenticated === 'true') {
-      setIsAuthenticated(true);
-    }
+    const checkAuthStatus = async () => {
+      try {
+        const response = await axios.get('/api/auth/status');
+        if (response.data.authenticated) {
+          setIsAuthenticated(true);
+        }
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+        // If auth check fails, assume not authenticated
+        setIsAuthenticated(false);
+      }
+    };
+    checkAuthStatus();
   }, []);
 
   // Check backend health on component mount (only when authenticated)
@@ -111,9 +123,30 @@ function App() {
     }
   }, [isAuthenticated]);
 
-  const handleLogin = () => {
-    setIsAuthenticated(true);
-    sessionStorage.setItem('authenticated', 'true');
+  const handleLogin = async () => {
+    // Verify authentication with backend
+    try {
+      const response = await axios.get('/api/auth/status');
+      if (response.data.authenticated) {
+        setIsAuthenticated(true);
+      } else {
+        // If not authenticated, stay on login screen
+        setIsAuthenticated(false);
+      }
+    } catch (error) {
+      console.error('Error verifying login:', error);
+      setIsAuthenticated(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await axios.post('/api/auth/logout');
+    } catch (error) {
+      console.error('Error during logout:', error);
+    } finally {
+      setIsAuthenticated(false);
+    }
   };
 
   const checkHealth = async () => {
@@ -437,6 +470,13 @@ function App() {
               )}
             </div>
             <div className="flex items-center space-x-3">
+              <button
+                onClick={handleLogout}
+                className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Logout"
+              >
+                Logout
+              </button>
               <button
                 onClick={() => setShowSettings(!showSettings)}
                 className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
