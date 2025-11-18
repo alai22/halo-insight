@@ -28,10 +28,6 @@ class SurvicateAPIClient:
         self.workspace_key = workspace_key or Config.SURVICATE_WORKSPACE_KEY
         self.base_url = base_url or Config.SURVICATE_API_BASE_URL
         
-        logger.info(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
-        logger.info(f"SurvicateAPIClient init - Workspace key from env: {bool(workspace_key_env)}, from config: {bool(Config.SURVICATE_WORKSPACE_KEY)}, final: {bool(self.workspace_key)}")
-        logger.info(f"SurvicateAPIClient init - Auth method: {self._auth_method}, Base URL: {self.base_url}")
-        
         if not self.api_key:
             logger.error("SURVICATE_API_KEY not configured - checked env and Config")
             raise ValueError("SURVICATE_API_KEY not configured")
@@ -49,6 +45,11 @@ class SurvicateAPIClient:
         
         # Store original auth method for fallback
         self._auth_method = 'bearer'
+        
+        # Log initialization details (after _auth_method is set)
+        logger.info(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
+        logger.info(f"SurvicateAPIClient init - Workspace key from env: {bool(workspace_key_env)}, from config: {bool(Config.SURVICATE_WORKSPACE_KEY)}, final: {bool(self.workspace_key)}")
+        logger.info(f"SurvicateAPIClient init - Auth method: {self._auth_method}, Base URL: {self.base_url}")
     
     def list_surveys(self) -> List[Dict[str, Any]]:
         """List all surveys"""
