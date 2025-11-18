@@ -42,7 +42,23 @@ print_status "Docker is running"
 # Load .env file early if it exists (for production deployments)
 if [ "$ENVIRONMENT" = "production" ] && [ -f ".env" ]; then
     print_status "Loading environment variables from .env file..."
-    export $(grep -v '^#' .env | xargs)
+    # Load .env file safely, handling comments, empty lines, and quoted values
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        # Remove leading/trailing whitespace
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Export the variable (handles KEY=value and KEY="value with spaces")
+        if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            # Remove quotes if present
+            value=$(echo "$value" | sed 's/^["'\'']//;s/["'\'']$//')
+            export "$key=$value"
+        fi
+    done < .env
+    print_status "Environment variables loaded from .env"
 fi
 
 # Build the Docker image
@@ -78,6 +94,14 @@ else
     print_status "S3_BUCKET_NAME is set: $S3_BUCKET_NAME"
 fi
 
+# Check Survicate API configuration
+if [ -z "$SURVICATE_API_KEY" ]; then
+    print_warning "SURVICATE_API_KEY environment variable is not set"
+    print_warning "API mode will not be available"
+else
+    print_status "SURVICATE_API_KEY is set: ${SURVICATE_API_KEY:0:12}..."
+fi
+
 case $ENVIRONMENT in
     "development")
         print_status "Deploying for development..."
@@ -104,18 +128,39 @@ case $ENVIRONMENT in
             docker rm gladly-prod
         fi
         
-        docker run -d \
-            -p 127.0.0.1:5000:5000 \
-            --restart unless-stopped \
-            -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-            -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
-            -e GLADLY_API_KEY="${GLADLY_API_KEY}" \
-            -e GLADLY_AGENT_EMAIL="${GLADLY_AGENT_EMAIL}" \
-            -e S3_BUCKET_NAME="${S3_BUCKET_NAME}" \
-            -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
-            -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
-            --name gladly-prod \
-            $PROJECT_NAME:$ENVIRONMENT
+        # Use --env-file to load all variables from .env (handles spaces and special chars)
+        if [ -f ".env" ]; then
+            docker run -d \
+                -p 127.0.0.1:5000:5000 \
+                --restart unless-stopped \
+                --env-file .env \
+                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
+                -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+                -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+                -e SURVICATE_SURVEY_ID="${SURVICATE_SURVEY_ID:-e08c3365f14085e2}" \
+                -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
+                -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
+                --name gladly-prod \
+                $PROJECT_NAME:$ENVIRONMENT
+        else
+            # Fallback to explicit -e flags if .env doesn't exist
+            docker run -d \
+                -p 127.0.0.1:5000:5000 \
+                --restart unless-stopped \
+                -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
+                -e GLADLY_API_KEY="${GLADLY_API_KEY}" \
+                -e GLADLY_AGENT_EMAIL="${GLADLY_AGENT_EMAIL}" \
+                -e S3_BUCKET_NAME="${S3_BUCKET_NAME}" \
+                -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+                -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+                -e SURVICATE_API_KEY="${SURVICATE_API_KEY}" \
+                -e SURVICATE_SURVEY_ID="${SURVICATE_SURVEY_ID:-e08c3365f14085e2}" \
+                -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
+                -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
+                --name gladly-prod \
+                $PROJECT_NAME:$ENVIRONMENT
+        fi
         
         print_status "Application deployed on localhost:5000 (nginx proxies HTTPS to this)"
         print_status "Access via HTTPS: https://your-ip-or-domain"
