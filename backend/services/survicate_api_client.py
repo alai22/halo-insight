@@ -36,18 +36,10 @@ class SurvicateAPIClient:
             raise ValueError("SURVICATE_API_KEY not configured")
         
         # Build authorization header
-        # Survicate API may use Basic auth with API key, or Bearer token
-        # Try Basic auth first (API key as username, empty password or workspace key as password)
-        if self.workspace_key:
-            # If workspace key is provided, use it in Basic auth
-            import base64
-            credentials = f"{self.api_key}:{self.workspace_key}"
-            encoded_credentials = base64.b64encode(credentials.encode()).decode()
-            auth_header = f'Basic {encoded_credentials}'
-        else:
-            # Try Bearer token first (most common for API keys)
-            # If that fails, we'll try Basic auth
-            auth_header = f'Bearer {self.api_key}'
+        # Survicate API typically uses Bearer token authentication
+        # According to Survicate docs, use: Authorization: Bearer {API_KEY}
+        # Try Bearer token first (standard for Survicate API)
+        auth_header = f'Bearer {self.api_key}'
         
         self.headers = {
             'Authorization': auth_header,
@@ -55,29 +47,59 @@ class SurvicateAPIClient:
         }
         
         # Store original auth method for fallback
-        self._auth_method = 'bearer' if not self.workspace_key else 'basic'
+        self._auth_method = 'bearer'
     
     def list_surveys(self) -> List[Dict[str, Any]]:
         """List all surveys"""
         try:
             url = f"{self.base_url}/surveys"
+            logger.debug(f"Requesting {url} with auth method: {self._auth_method}")
             response = requests.get(url, headers=self.headers, timeout=30)
             
-            # If Bearer auth fails with 403, try Basic auth
-            if response.status_code == 403 and self._auth_method == 'bearer' and not self.workspace_key:
-                logger.info("Bearer auth failed, trying Basic auth with API key only")
+            # Log response details for debugging
+            logger.debug(f"Response status: {response.status_code}, headers: {dict(response.headers)}")
+            
+            # If Bearer auth fails with 403, try alternative auth methods
+            if response.status_code == 403 and self._auth_method == 'bearer':
+                # Try Basic auth with API key only (some Survicate setups use this)
+                logger.info("Bearer auth failed with 403, trying Basic auth with API key only")
                 import base64
                 credentials = f"{self.api_key}:"
                 encoded_credentials = base64.b64encode(credentials.encode()).decode()
                 self.headers['Authorization'] = f'Basic {encoded_credentials}'
                 self._auth_method = 'basic'
+                logger.debug(f"Retrying with Basic auth (API key only)")
                 response = requests.get(url, headers=self.headers, timeout=30)
+                logger.debug(f"Retry response status: {response.status_code}")
+                
+                # If that fails and we have workspace key, try Basic auth with workspace key
+                if response.status_code == 403 and self.workspace_key:
+                    logger.info("Basic auth with API key only failed, trying Basic auth with workspace key")
+                    credentials = f"{self.api_key}:{self.workspace_key}"
+                    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+                    self.headers['Authorization'] = f'Basic {encoded_credentials}'
+                    response = requests.get(url, headers=self.headers, timeout=30)
+                    logger.debug(f"Retry with workspace key - response status: {response.status_code}")
+            
+            # Log response body for 403 errors to see what Survicate says
+            if response.status_code == 403:
+                try:
+                    error_body = response.text[:500]  # First 500 chars
+                    logger.error(f"Survicate API 403 error response: {error_body}")
+                except:
+                    pass
             
             response.raise_for_status()
             data = response.json()
             return data.get('surveys', [])
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to list surveys: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.text[:500]
+                    logger.error(f"API error response body: {error_body}")
+                except:
+                    pass
             raise
     
     def get_responses(
@@ -120,15 +142,31 @@ class SurvicateAPIClient:
             
             response = requests.get(url, headers=self.headers, params=params, timeout=60)
             
-            # If Bearer auth fails with 403, try Basic auth
-            if response.status_code == 403 and self._auth_method == 'bearer' and not self.workspace_key:
-                logger.info("Bearer auth failed, trying Basic auth with API key only")
+            # If Bearer auth fails with 403, try alternative auth methods
+            if response.status_code == 403 and self._auth_method == 'bearer':
+                logger.info("Bearer auth failed with 403, trying Basic auth with API key only")
                 import base64
                 credentials = f"{self.api_key}:"
                 encoded_credentials = base64.b64encode(credentials.encode()).decode()
                 self.headers['Authorization'] = f'Basic {encoded_credentials}'
                 self._auth_method = 'basic'
                 response = requests.get(url, headers=self.headers, params=params, timeout=60)
+                
+                # If that fails and we have workspace key, try Basic auth with workspace key
+                if response.status_code == 403 and self.workspace_key:
+                    logger.info("Basic auth with API key only failed, trying Basic auth with workspace key")
+                    credentials = f"{self.api_key}:{self.workspace_key}"
+                    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+                    self.headers['Authorization'] = f'Basic {encoded_credentials}'
+                    response = requests.get(url, headers=self.headers, params=params, timeout=60)
+            
+            # Log response body for 403 errors
+            if response.status_code == 403:
+                try:
+                    error_body = response.text[:500]
+                    logger.error(f"Survicate API 403 error response: {error_body}")
+                except:
+                    pass
             
             response.raise_for_status()
             return response.json()
