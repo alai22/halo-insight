@@ -28,8 +28,9 @@ class SurvicateAPIClient:
         self.workspace_key = workspace_key or Config.SURVICATE_WORKSPACE_KEY
         self.base_url = base_url or Config.SURVICATE_API_BASE_URL
         
-        logger.debug(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
-        logger.debug(f"SurvicateAPIClient init - Workspace key from env: {bool(workspace_key_env)}, from config: {bool(Config.SURVICATE_WORKSPACE_KEY)}, final: {bool(self.workspace_key)}")
+        logger.info(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
+        logger.info(f"SurvicateAPIClient init - Workspace key from env: {bool(workspace_key_env)}, from config: {bool(Config.SURVICATE_WORKSPACE_KEY)}, final: {bool(self.workspace_key)}")
+        logger.info(f"SurvicateAPIClient init - Auth method: {self._auth_method}, Base URL: {self.base_url}")
         
         if not self.api_key:
             logger.error("SURVICATE_API_KEY not configured - checked env and Config")
@@ -53,11 +54,12 @@ class SurvicateAPIClient:
         """List all surveys"""
         try:
             url = f"{self.base_url}/surveys"
-            logger.debug(f"Requesting {url} with auth method: {self._auth_method}")
+            logger.info(f"Requesting {url} with auth method: {self._auth_method}")
+            logger.info(f"Authorization header: {self.headers.get('Authorization', 'NOT SET')[:20]}...")
             response = requests.get(url, headers=self.headers, timeout=30)
             
             # Log response details for debugging
-            logger.debug(f"Response status: {response.status_code}, headers: {dict(response.headers)}")
+            logger.info(f"Response status: {response.status_code}")
             
             # If Bearer auth fails with 403, try alternative auth methods
             if response.status_code == 403 and self._auth_method == 'bearer':
@@ -68,9 +70,9 @@ class SurvicateAPIClient:
                 encoded_credentials = base64.b64encode(credentials.encode()).decode()
                 self.headers['Authorization'] = f'Basic {encoded_credentials}'
                 self._auth_method = 'basic'
-                logger.debug(f"Retrying with Basic auth (API key only)")
+                logger.info(f"Retrying with Basic auth (API key only)")
                 response = requests.get(url, headers=self.headers, timeout=30)
-                logger.debug(f"Retry response status: {response.status_code}")
+                logger.info(f"Retry response status: {response.status_code}")
                 
                 # If that fails and we have workspace key, try Basic auth with workspace key
                 if response.status_code == 403 and self.workspace_key:
@@ -79,7 +81,7 @@ class SurvicateAPIClient:
                     encoded_credentials = base64.b64encode(credentials.encode()).decode()
                     self.headers['Authorization'] = f'Basic {encoded_credentials}'
                     response = requests.get(url, headers=self.headers, timeout=30)
-                    logger.debug(f"Retry with workspace key - response status: {response.status_code}")
+                    logger.info(f"Retry with workspace key - response status: {response.status_code}")
             
             # Log response body for 403 errors to see what Survicate says
             if response.status_code == 403:

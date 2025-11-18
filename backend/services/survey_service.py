@@ -142,8 +142,15 @@ class SurveyService:
                 api_refresh_state['error'] = error_msg
                 return
             
+            # Log configuration for debugging
+            import os
+            logger.info(f"API refresh - API key set: {bool(Config.SURVICATE_API_KEY)}, Workspace key set: {bool(Config.SURVICATE_WORKSPACE_KEY)}")
+            logger.info(f"API refresh - Survey ID: {Config.SURVICATE_SURVEY_ID}, Base URL: {Config.SURVICATE_API_BASE_URL}")
+            
             # Initialize services
+            logger.info("Initializing SurvicateAPIClient...")
             api_client = SurvicateAPIClient()
+            logger.info("SurvicateAPIClient initialized successfully")
             parser = SurvicateAPIParser()
             cache_service = SurvicateS3CacheService()
             
@@ -155,9 +162,11 @@ class SurveyService:
                 return
             
             # Fetch all responses from API
+            logger.info(f"Fetching responses from Survicate API for survey {Config.SURVICATE_SURVEY_ID}...")
             api_responses = api_client.get_all_responses(
                 survey_id=Config.SURVICATE_SURVEY_ID
             )
+            logger.info(f"Successfully fetched {len(api_responses)} responses from API")
             
             # Parse responses
             survey_responses = parser.parse_responses(api_responses)

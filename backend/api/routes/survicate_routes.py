@@ -733,9 +733,27 @@ def get_api_status():
         
         logger.info(f"API status check - Env vars: SURVICATE_API_KEY set={api_key_set}, SURVICATE_WORKSPACE_KEY set={workspace_key_set}")
         logger.info(f"Config values: SURVICATE_API_KEY set={bool(Config.SURVICATE_API_KEY)}, SURVICATE_WORKSPACE_KEY set={bool(Config.SURVICATE_WORKSPACE_KEY)}")
+        logger.info(f"Survey ID: {Config.SURVICATE_SURVEY_ID}, Base URL: {Config.SURVICATE_API_BASE_URL}")
         
-        api_client = SurvicateAPIClient()
+        try:
+            api_client = SurvicateAPIClient()
+            logger.info("SurvicateAPIClient created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create SurvicateAPIClient: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f'Failed to initialize API client: {str(e)}',
+                'env_check': {
+                    'api_key_in_env': api_key_set,
+                    'workspace_key_in_env': workspace_key_set,
+                    'api_key_in_config': bool(Config.SURVICATE_API_KEY),
+                    'workspace_key_in_config': bool(Config.SURVICATE_WORKSPACE_KEY)
+                }
+            }), 500
+        
+        logger.info("Testing API connection...")
         status = api_client.test_connection()
+        logger.info(f"API connection test result: connected={status.get('connected')}, error={status.get('error')}")
         
         # Add environment variable status to response for debugging
         status['env_check'] = {
