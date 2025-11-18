@@ -110,9 +110,11 @@ EXTRACTION REQUIREMENTS:
    - Maximum 5 phrases, keep them concise (3-8 words each)
 
 5. COLLAR FIRMWARE VERSION: Extract the collar firmware version if mentioned
-   - Look for: firmware version numbers (e.g., "v2.1", "firmware 3.0", "FW 2.5")
-   - Return the exact text mentioned, or null if not found
-   - Examples: "v2.1", "3.0", "FW 2.5", null
+   - Look for: firmware version numbers (e.g., "v2.1", "firmware 3.0", "FW 2.5", "version 2.1.0")
+   - Normalize to format: "X.Y" or "X.Y.Z" (e.g., "2.1", "3.0", "2.1.0")
+   - Remove prefixes like "v", "V", "FW", "firmware", "version"
+   - Return normalized version string, or null if not found
+   - Examples: "2.1" (from "v2.1" or "FW 2.1"), "3.0" (from "firmware 3.0"), "2.1.0" (from "version 2.1.0"), null
 
 6. COLLAR MODEL: Extract the collar model name/number if mentioned
    - Look for: model names (e.g., "Halo 3", "Halo 2+", "Model X")
@@ -174,10 +176,10 @@ RESPONSE FORMAT (JSON only, no other text):
                     'sentiment': self._validate_sentiment(metadata.get('sentiment', 'Neutral')),
                     'customer_sentiment': self._validate_customer_sentiment(metadata.get('customer_sentiment', 'Neutral')),
                     'key_phrases': self._validate_key_phrases(metadata.get('key_phrases', [])),
-                    'collar_firmware_version': metadata.get('collar_firmware_version') or None,
-                    'collar_model': metadata.get('collar_model') or None,
-                    'collar_serial_number': metadata.get('collar_serial_number') or None,
-                    'mobile_app_version': metadata.get('mobile_app_version') or None,
+                    'collar_firmware_version': self._normalize_firmware_version(metadata.get('collar_firmware_version')),
+                    'collar_model': self._normalize_collar_model(metadata.get('collar_model')),
+                    'collar_serial_number': self._normalize_serial_number(metadata.get('collar_serial_number')),
+                    'mobile_app_version': self._normalize_app_version(metadata.get('mobile_app_version')),
                     'extracted_at': extracted_at
                 }
                 
@@ -334,6 +336,123 @@ RESPONSE FORMAT (JSON only, no other text):
             if isinstance(phrase, str) and phrase.strip():
                 cleaned.append(phrase.strip()[:100])  # Max 100 chars per phrase
         return cleaned
+    
+    def _normalize_firmware_version(self, version: any) -> Optional[str]:
+        """Normalize firmware version to standard format (X.Y or X.Y.Z)"""
+        import re
+        if not version:
+            return None
+        
+        # Convert to string if not already
+        if not isinstance(version, str):
+            version = str(version).strip()
+        else:
+            version = version.strip()
+        
+        if not version or version.lower() in ('null', 'none', 'n/a', ''):
+            return None
+        
+        # Remove common prefixes (case-insensitive)
+        version = re.sub(r'^(v|V|fw|FW|firmware|Firmware|version|Version)\s*:?\s*', '', version, flags=re.IGNORECASE)
+        version = version.strip()
+        
+        # Extract version number pattern (X.Y or X.Y.Z)
+        # Match patterns like: "2.1", "2.1.0", "2.10", "3.0.1", etc.
+        match = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?', version)
+        if match:
+            major = match.group(1)
+            minor = match.group(2)
+            patch = match.group(3)
+            if patch:
+                return f"{major}.{minor}.{patch}"
+            else:
+                return f"{major}.{minor}"
+        
+        # If no match, try to find any version-like pattern
+        # Look for sequences of digits separated by dots
+        match = re.search(r'(\d+(?:\.\d+)+)', version)
+        if match:
+            return match.group(1)
+        
+        # If still no match, return cleaned version (might be invalid, but preserve it)
+        return version if len(version) <= 20 else None
+    
+    def _normalize_collar_model(self, model: any) -> Optional[str]:
+        """Normalize collar model name"""
+        if not model:
+            return None
+        
+        if not isinstance(model, str):
+            model = str(model).strip()
+        else:
+            model = model.strip()
+        
+        if not model or model.lower() in ('null', 'none', 'n/a', ''):
+            return None
+        
+        # Capitalize first letter of each word for consistency
+        # "halo 3" -> "Halo 3", "HALO 3" -> "Halo 3"
+        words = model.split()
+        normalized = ' '.join(word.capitalize() for word in words)
+        
+        return normalized if len(normalized) <= 50 else model[:50]
+    
+    def _normalize_serial_number(self, serial: any) -> Optional[str]:
+        """Normalize serial number (remove common prefixes, uppercase)"""
+        if not serial:
+            return None
+        
+        if not isinstance(serial, str):
+            serial = str(serial).strip()
+        else:
+            serial = serial.strip()
+        
+        if not serial or serial.lower() in ('null', 'none', 'n/a', ''):
+            return None
+        
+        # Remove common prefixes
+        import re
+        serial = re.sub(r'^(s/n|S/N|SN|sn|serial|Serial|Serial Number|Serial #)\s*:?\s*', '', serial, flags=re.IGNORECASE)
+        serial = serial.strip()
+        
+        # Uppercase for consistency
+        return serial.upper() if len(serial) <= 50 else serial[:50].upper()
+    
+    def _normalize_app_version(self, version: any) -> Optional[str]:
+        """Normalize mobile app version"""
+        if not version:
+            return None
+        
+        if not isinstance(version, str):
+            version = str(version).strip()
+        else:
+            version = version.strip()
+        
+        if not version or version.lower() in ('null', 'none', 'n/a', ''):
+            return None
+        
+        # Remove common prefixes
+        import re
+        version = re.sub(r'^(app|App|version|Version|iOS|Android|ios|android)\s*:?\s*', '', version, flags=re.IGNORECASE)
+        version = version.strip()
+        
+        # Extract version number pattern (similar to firmware)
+        match = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?', version)
+        if match:
+            major = match.group(1)
+            minor = match.group(2)
+            patch = match.group(3)
+            if patch:
+                return f"{major}.{minor}.{patch}"
+            else:
+                return f"{major}.{minor}"
+        
+        # Try to find version pattern anywhere in the string
+        match = re.search(r'(\d+(?:\.\d+)+)', version)
+        if match:
+            return match.group(1)
+        
+        return version if len(version) <= 20 else None
     
     def _extract_topic_fallback(self, conversation_items: List[Dict]) -> str:
         """Fallback topic extraction if JSON parsing fails"""

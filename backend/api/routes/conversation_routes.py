@@ -3,6 +3,7 @@ API routes for conversation data interactions
 """
 
 import threading
+import re
 from datetime import datetime
 from typing import Dict, Optional
 from flask import Blueprint, request, jsonify, g
@@ -10,6 +11,39 @@ from ...models.response import SearchResult
 from ...utils.logging import get_logger
 
 logger = get_logger('conversation_routes')
+
+
+def _normalize_firmware_version_for_display(version: str) -> Optional[str]:
+    """Normalize firmware version to standard format (X.Y or X.Y.Z) for display"""
+    if not version:
+        return None
+    
+    version = str(version).strip()
+    if not version or version.lower() in ('null', 'none', 'n/a', ''):
+        return None
+    
+    # Remove common prefixes (case-insensitive)
+    version = re.sub(r'^(v|V|fw|FW|firmware|Firmware|version|Version)\s*:?\s*', '', version, flags=re.IGNORECASE)
+    version = version.strip()
+    
+    # Extract version number pattern (X.Y or X.Y.Z)
+    match = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?', version)
+    if match:
+        major = match.group(1)
+        minor = match.group(2)
+        patch = match.group(3)
+        if patch:
+            return f"{major}.{minor}.{patch}"
+        else:
+            return f"{major}.{minor}"
+    
+    # If no match, try to find any version-like pattern
+    match = re.search(r'(\d+(?:\.\d+)+)', version)
+    if match:
+        return match.group(1)
+    
+    # Return cleaned version if reasonable length
+    return version if len(version) <= 20 else None
 
 # Create blueprint
 conversation_bp = Blueprint('conversations', __name__, url_prefix='/api/conversations')
@@ -277,7 +311,7 @@ def get_topic_trends():
                                 phrase_lower = phrase.strip().lower()
                                 key_phrases_count[phrase_lower] = key_phrases_count.get(phrase_lower, 0) + 1
                 
-                # Aggregate collar firmware versions (ensure string conversion)
+                # Aggregate collar firmware versions (normalize and ensure string conversion)
                 collar_firmware_version = value.get('collar_firmware_version')
                 if collar_firmware_version:
                     if isinstance(collar_firmware_version, list):
@@ -285,7 +319,10 @@ def get_topic_trends():
                     elif not isinstance(collar_firmware_version, str):
                         collar_firmware_version = str(collar_firmware_version) if collar_firmware_version is not None else None
                     if collar_firmware_version:
-                        collar_firmware_versions_count[collar_firmware_version] = collar_firmware_versions_count.get(collar_firmware_version, 0) + 1
+                        # Normalize firmware version for consistent display
+                        normalized_version = _normalize_firmware_version_for_display(collar_firmware_version)
+                        if normalized_version:
+                            collar_firmware_versions_count[normalized_version] = collar_firmware_versions_count.get(normalized_version, 0) + 1
                 
                 # Aggregate collar models (ensure string conversion)
                 collar_model = value.get('collar_model')
