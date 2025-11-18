@@ -30,11 +30,16 @@ def survicate_ask():
         # Default to configured model (falls back to working model via fallback system if needed)
         model = data.get('model', Config.CLAUDE_MODEL)
         max_tokens = data.get('max_tokens', 2000)
+        data_source = data.get('data_source', 'file')  # Get data source
         
         if not question:
             return jsonify({'error': 'Question is required'}), 400
         
-        logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}")
+        logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}, data_source={data_source}")
+        
+        # Reload surveys with specified data source before processing query
+        survey_service = service_container.get_survey_service()
+        survey_service.load_surveys(data_source=data_source)
         
         # Check if Claude service is initialized
         if claude_service is None or survicate_rag_service is None:
@@ -46,6 +51,7 @@ def survicate_ask():
             }), 503
         
         result = survicate_rag_service.process_query(question, model, max_tokens)
+        result['data_source'] = data_source  # Include data source in response
         
         return jsonify(result)
     
@@ -81,21 +87,25 @@ def survicate_ask():
 
 @survicate_bp.route('/refresh', methods=['POST'])
 def refresh_surveys():
-    """Refresh survey data from CSV file"""
+    """Refresh survey data from specified source (file or api)"""
     try:
         service_container = getattr(g, 'service_container', None)
         if not service_container:
             logger.error("Service container not available in request context")
             return jsonify({'error': 'Service container not initialized'}), 500
         
+        data = request.get_json() or {}
+        data_source = data.get('data_source', 'file')  # Default to 'file' for backward compatibility
+        
         survey_service = service_container.get_survey_service()
-        survey_service.refresh_surveys()
+        survey_service.refresh_surveys(data_source=data_source)
         
         summary = survey_service.get_summary()
         
         return jsonify({
             'success': True,
-            'message': f'Surveys refreshed: {len(survey_service.surveys)} responses loaded',
+            'message': f'Surveys refreshed from {data_source}: {len(survey_service.surveys)} responses loaded',
+            'data_source': data_source,
             'summary': {
                 'total_responses': summary.total_responses,
                 'date_range': summary.date_range
@@ -106,7 +116,7 @@ def refresh_surveys():
         logger.error(f"Failed to refresh surveys: {str(e)}")
         return jsonify({
             'error': str(e),
-            'details': 'Failed to refresh survey data from CSV file'
+            'details': 'Failed to refresh survey data'
         }), 500
 
 
@@ -119,11 +129,18 @@ def get_survey_summary():
             logger.error("Service container not available in request context")
             return jsonify({'error': 'Service container not initialized'}), 500
         
+        # Get data source from query parameter
+        data_source = request.args.get('data_source', 'file')
+        
+        # Reload surveys with specified data source
         survey_service = service_container.get_survey_service()
+        survey_service.load_surveys(data_source=data_source)
+        
         summary = survey_service.get_summary()
         
         return jsonify({
             'success': True,
+            'data_source': data_source,
             'summary': {
                 'total_responses': summary.total_responses,
                 'date_range': summary.date_range,
@@ -605,4 +622,92 @@ def get_question_trends():
         return jsonify({
             'error': str(e),
             'details': 'Failed to process question trends data'
+        }), 500
+
+
+@survicate_bp.route('/cache-status', methods=['GET'])
+def get_cache_status():
+    """Get S3 cache status for API mode"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        from ...services.survey_service import api_refresh_state
+        
+        cache_service = SurvicateS3CacheService()
+        cache_status = cache_service.get_cache_status()
+        
+        # Add refresh state
+        cache_status['refresh_in_progress'] = api_refresh_state.get('is_running', False)
+        cache_status['refresh_error'] = api_refresh_state.get('error')
+        cache_status['refresh_last_fetch'] = api_refresh_state.get('last_fetch')
+        
+        return jsonify({
+            'success': True,
+            'cache_status': cache_status
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to get cache status: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'details': 'Failed to get cache status'
+        }), 500
+
+
+@survicate_bp.route('/refresh-api', methods=['POST'])
+def refresh_api_cache():
+    """Manually trigger API cache refresh"""
+    try:
+        from ...services.survey_service import api_refresh_state, SurveyService
+        
+        # Check if already running
+        if api_refresh_state.get('is_running', False):
+            return jsonify({
+                'success': False,
+                'message': 'API refresh already in progress',
+                'refresh_in_progress': True
+            }), 409
+        
+        # Trigger refresh
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            logger.error("Service container not available in request context")
+            return jsonify({'error': 'Service container not initialized'}), 500
+        
+        survey_service = service_container.get_survey_service()
+        survey_service._trigger_background_refresh()
+        
+        return jsonify({
+            'success': True,
+            'message': 'API cache refresh started in background',
+            'refresh_in_progress': True
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to start API refresh: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'details': 'Failed to start API cache refresh'
+        }), 500
+
+
+@survicate_bp.route('/api-status', methods=['GET'])
+def get_api_status():
+    """Test Survicate API connection"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        
+        api_client = SurvicateAPIClient()
+        status = api_client.test_connection()
+        
+        return jsonify({
+            'success': True,
+            'api_status': status
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to test API connection: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to test API connection. Check SURVICATE_API_KEY configuration.'
         }), 500

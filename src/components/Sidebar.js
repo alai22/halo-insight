@@ -4,6 +4,10 @@ import { Database, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
 const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
   const [downloadStats, setDownloadStats] = useState(null);
   const [surveyStats, setSurveyStats] = useState(null);
+  const [dataSource, setDataSource] = useState(
+    localStorage.getItem('survicate_data_source') || 'file'
+  );
+  const [cacheStatus, setCacheStatus] = useState(null);
 
   // Fetch download stats
   useEffect(() => {
@@ -25,12 +29,12 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch survey stats when in survicate or churn-trends mode (no auto-refresh since file is static)
+  // Fetch survey stats when in survicate or churn-trends mode
   useEffect(() => {
     const fetchSurveyStats = async () => {
       if (currentMode === 'survicate' || currentMode === 'churn-trends') {
         try {
-          const response = await fetch('/api/survicate/summary');
+          const response = await fetch(`/api/survicate/summary?data_source=${dataSource}`);
           const data = await response.json();
           if (data.success) {
             setSurveyStats(data.summary);
@@ -45,7 +49,52 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
     };
 
     fetchSurveyStats();
-  }, [currentMode]);
+  }, [currentMode, dataSource]);
+
+  // Fetch cache status when in API mode
+  useEffect(() => {
+    const fetchCacheStatus = async () => {
+      if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+        try {
+          const response = await fetch('/api/survicate/cache-status');
+          const data = await response.json();
+          if (data.success) {
+            setCacheStatus(data.cache_status);
+          }
+        } catch (error) {
+          console.error('Error fetching cache status:', error);
+          setCacheStatus(null);
+        }
+      } else {
+        setCacheStatus(null);
+      }
+    };
+
+    fetchCacheStatus();
+    // Poll cache status every 10 seconds when in API mode
+    if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+      const interval = setInterval(fetchCacheStatus, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [currentMode, dataSource]);
+
+  const handleDataSourceChange = async (newSource) => {
+    setDataSource(newSource);
+    localStorage.setItem('survicate_data_source', newSource);
+    
+    // Refresh survey stats with new source
+    if (currentMode === 'survicate' || currentMode === 'churn-trends') {
+      try {
+        const response = await fetch(`/api/survicate/summary?data_source=${newSource}`);
+        const data = await response.json();
+        if (data.success) {
+          setSurveyStats(data.summary);
+        }
+      } catch (error) {
+        console.error('Error refreshing survey stats:', error);
+      }
+    }
+  };
 
   const getHealthStatusIcon = () => {
     if (!healthStatus) return <RefreshCw className="h-4 w-4 animate-spin" />;
@@ -175,6 +224,63 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
         </div>
       )}
 
+      {/* Data Source Toggle - Show for survicate and churn-trends modes */}
+      {(currentMode === 'survicate' || currentMode === 'churn-trends') && (
+        <div className="p-6 border-t border-gray-200">
+          <div className="text-xs text-gray-500">
+            <div className="mb-2">
+              <strong>Data Source:</strong>
+            </div>
+            <select
+              value={dataSource}
+              onChange={(e) => handleDataSourceChange(e.target.value)}
+              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="file">File (CSV)</option>
+              <option value="api">API (Live)</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Cache Status - Show when in API mode */}
+      {cacheStatus && dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
+        <div className="p-6 border-t border-gray-200">
+          <div className="text-xs text-gray-500">
+            <div className="mb-2">
+              <strong>Cache Status:</strong>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-600">Status</span>
+                <span className={`font-semibold ${cacheStatus.is_fresh ? 'text-green-600' : 'text-yellow-600'}`}>
+                  {cacheStatus.is_fresh ? 'Fresh' : 'Stale'}
+                </span>
+              </div>
+              {cacheStatus.cache_age_hours !== null && (
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Age</span>
+                  <span className="font-semibold text-gray-700">
+                    {Math.round(cacheStatus.cache_age_hours)}h ago
+                  </span>
+                </div>
+              )}
+              {cacheStatus.refresh_in_progress && (
+                <div className="flex items-center text-blue-600 mt-2">
+                  <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                  <span className="text-xs">Refreshing from API...</span>
+                </div>
+              )}
+              {cacheStatus.refresh_error && (
+                <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                  Error: {cacheStatus.refresh_error}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Survey Stats */}
       {surveyStats && currentMode === 'survicate' && (
         <div className="p-6 border-t border-gray-200">
@@ -200,7 +306,9 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
             </div>
             {surveyStats.total_responses === 0 && (
               <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-                No survey data loaded. Ensure the CSV file is in the data directory.
+                {dataSource === 'api' 
+                  ? 'No survey data loaded. Cache may be refreshing or API may be unavailable.'
+                  : 'No survey data loaded. Ensure the CSV file is in the data directory.'}
               </div>
             )}
           </div>

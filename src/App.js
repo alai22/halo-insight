@@ -286,10 +286,14 @@ function App() {
     setError(null);
 
     try {
+      // Get data source from localStorage (set by Sidebar)
+      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      
       const response = await axios.post('/api/survicate/ask', {
         question,
         model: settings.model,
-        max_tokens: settings.maxTokens
+        max_tokens: settings.maxTokens,
+        data_source: dataSource
       }, {
         timeout: 120000 // 2 minutes timeout for RAG requests
       });

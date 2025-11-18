@@ -108,6 +108,16 @@ class Config:
     # Use cleaned CSV with proper headers (single header row with Answer/Comment labels)
     SURVICATE_CSV_PATH: str = os.getenv('SURVICATE_CSV_PATH', 'data/survicate_cancelled_subscriptions_cleaned.csv')
     
+    # Survicate API Configuration
+    SURVICATE_API_KEY: Optional[str] = os.getenv('SURVICATE_API_KEY')
+    SURVICATE_SURVEY_ID: str = os.getenv('SURVICATE_SURVEY_ID', 'e08c3365f14085e2')
+    SURVICATE_API_BASE_URL: str = os.getenv('SURVICATE_API_BASE_URL', 'https://api.survicate.com/v1')
+    
+    # Survicate S3 Cache Configuration
+    SURVICATE_CACHE_MAX_AGE_HOURS: int = int(os.getenv('SURVICATE_CACHE_MAX_AGE_HOURS', '24'))
+    SURVICATE_S3_CACHE_KEY: str = os.getenv('SURVICATE_S3_CACHE_KEY', 'survicate-cache/api_responses.csv')
+    SURVICATE_S3_METADATA_KEY: str = os.getenv('SURVICATE_S3_METADATA_KEY', 'survicate-cache/api_cache_meta.json')
+    
     # PII Protection Configuration
     # Enable PII protection before sending data to Claude API
     # Options: 'hash' (deterministic hash), 'redact' ([REDACTED] placeholder), 'remove' (delete), 'none' (disabled)

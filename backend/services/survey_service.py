@@ -2,6 +2,8 @@
 Survey data service
 """
 
+import threading
+from datetime import datetime
 from typing import List, Dict, Optional, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
@@ -9,6 +11,13 @@ from ..models.survey import SurveyResponse, SurveySummary
 from .survey_parser_service import SurveyParserService
 
 logger = get_logger('survey_service')
+
+# Global API refresh state
+api_refresh_state = {
+    'is_running': False,
+    'last_fetch': None,
+    'error': None
+}
 
 
 class SurveyService:
@@ -20,15 +29,159 @@ class SurveyService:
         self.surveys: List[SurveyResponse] = []
         self.load_surveys()
     
-    def load_surveys(self):
+    def load_surveys(self, data_source: Optional[str] = None):
+        """
+        Load surveys from specified source
+        
+        Args:
+            data_source: 'file' (CSV file) or 'api' (S3 cached API data)
+        """
+        source = data_source or 'file'
+        
+        if source == 'api':
+            self.load_from_api()
+        else:
+            self.load_from_file()
+    
+    def load_from_file(self, csv_path: Optional[str] = None):
         """Load surveys from CSV file"""
+        path = csv_path or self.csv_path
         try:
-            parser = SurveyParserService(self.csv_path)
+            parser = SurveyParserService(path)
             self.surveys = parser.parse_csv()
-            logger.info(f"Surveys loaded: {len(self.surveys)}")
+            logger.info(f"Surveys loaded from file: {len(self.surveys)}")
         except Exception as e:
-            logger.error(f"Failed to load surveys: {str(e)}")
+            logger.error(f"Failed to load surveys from file: {str(e)}")
             self.surveys = []
+    
+    def load_from_api(self):
+        """Load surveys from S3 cache (API mode)"""
+        try:
+            from .survicate_s3_cache_service import SurvicateS3CacheService
+            
+            cache_service = SurvicateS3CacheService()
+            
+            # Check if S3 is available
+            if not cache_service.s3_client:
+                logger.warning("S3 client not available, falling back to file mode")
+                self.load_from_file()
+                return
+            
+            # Check if cache is fresh
+            if cache_service.is_cache_fresh():
+                logger.info("Cache is fresh, loading from S3")
+                try:
+                    self.surveys = cache_service.load_from_s3()
+                    logger.info(f"Surveys loaded from S3 cache: {len(self.surveys)}")
+                except ValueError as e:
+                    # S3 credential error - fallback to file
+                    logger.warning(f"S3 access error: {e}. Falling back to file mode.")
+                    self.load_from_file()
+            else:
+                # Cache is stale or missing
+                logger.info("Cache is stale or missing")
+                
+                # Try to load from cache anyway (might be stale but usable)
+                try:
+                    self.surveys = cache_service.load_from_s3()
+                    logger.info(f"Loaded stale cache: {len(self.surveys)} responses")
+                except ValueError as e:
+                    # S3 credential error - fallback to file
+                    logger.warning(f"Could not load stale cache (S3 access error): {e}. Falling back to file mode.")
+                    self.load_from_file()
+                except Exception as e:
+                    logger.warning(f"Could not load stale cache: {e}. Falling back to file mode.")
+                    self.load_from_file()
+                
+                # Trigger background refresh (non-blocking) if S3 is available
+                if cache_service.s3_client:
+                    self._trigger_background_refresh()
+        except Exception as e:
+            logger.error(f"Failed to load from API cache: {e}")
+            # Fallback to file
+            self.load_from_file()
+    
+    def _trigger_background_refresh(self):
+        """Trigger background refresh of API cache"""
+        global api_refresh_state
+        
+        # Don't start if already running
+        if api_refresh_state['is_running']:
+            logger.info("API refresh already in progress")
+            return
+        
+        try:
+            # Start background thread
+            refresh_thread = threading.Thread(
+                target=self._refresh_api_cache,
+                daemon=True
+            )
+            refresh_thread.start()
+            logger.info("Started background API cache refresh")
+        except Exception as e:
+            logger.error(f"Failed to start background refresh: {e}")
+    
+    def _refresh_api_cache(self):
+        """Background thread to fetch from API and save to S3"""
+        global api_refresh_state
+        
+        api_refresh_state['is_running'] = True
+        api_refresh_state['error'] = None
+        
+        try:
+            from .survicate_api_client import SurvicateAPIClient
+            from .survicate_api_parser import SurvicateAPIParser
+            from .survicate_s3_cache_service import SurvicateS3CacheService
+            
+            logger.info("Starting API cache refresh")
+            
+            # Check if API key is configured
+            if not Config.SURVICATE_API_KEY:
+                error_msg = "SURVICATE_API_KEY not configured"
+                logger.error(error_msg)
+                api_refresh_state['error'] = error_msg
+                return
+            
+            # Initialize services
+            api_client = SurvicateAPIClient()
+            parser = SurvicateAPIParser()
+            cache_service = SurvicateS3CacheService()
+            
+            # Check if S3 is available
+            if not cache_service.s3_client:
+                error_msg = "S3 client not available. Check AWS credentials and S3_BUCKET_NAME configuration."
+                logger.error(error_msg)
+                api_refresh_state['error'] = error_msg
+                return
+            
+            # Fetch all responses from API
+            api_responses = api_client.get_all_responses(
+                survey_id=Config.SURVICATE_SURVEY_ID
+            )
+            
+            # Parse responses
+            survey_responses = parser.parse_responses(api_responses)
+            
+            # Save to S3
+            try:
+                cache_service.save_to_s3(survey_responses)
+                api_refresh_state['last_fetch'] = datetime.now().isoformat()
+                logger.info(f"API cache refresh completed: {len(survey_responses)} responses")
+            except Exception as s3_error:
+                error_msg = f"Failed to save to S3: {s3_error}"
+                logger.error(error_msg)
+                api_refresh_state['error'] = error_msg
+            
+        except ValueError as e:
+            # API authentication/authorization error
+            error_msg = str(e)
+            logger.error(f"API cache refresh failed: {error_msg}")
+            api_refresh_state['error'] = error_msg
+        except Exception as e:
+            logger.error(f"API cache refresh failed: {e}")
+            api_refresh_state['error'] = str(e)
+        finally:
+            api_refresh_state['is_running'] = False
     
     def get_summary(self) -> SurveySummary:
         """Get survey data summary"""
@@ -215,10 +368,16 @@ class SurveyService:
         logger.info(f"Retrieved {len(results)} surveys for date range: {start_date} to {end_date}")
         return results
     
-    def refresh_surveys(self):
-        """Refresh surveys from CSV file"""
-        logger.info("Refreshing surveys from CSV")
-        self.load_surveys()
+    def refresh_surveys(self, data_source: Optional[str] = None):
+        """
+        Refresh surveys from specified source
+        
+        Args:
+            data_source: 'file' (CSV file) or 'api' (S3 cached API data)
+        """
+        source = data_source or 'file'
+        logger.info(f"Refreshing surveys from {source}")
+        self.load_surveys(data_source=source)
         logger.info(f"Surveys refreshed: {len(self.surveys)}")
     
     def is_available(self) -> bool:
