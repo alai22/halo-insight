@@ -113,35 +113,31 @@ function App() {
     }
   }, [currentMode]);
 
-  // Check if user is already authenticated (check backend session or localStorage token)
+  // Check if user is already authenticated (check localStorage token first, then backend session)
   useEffect(() => {
     const checkAuthStatus = async () => {
       // First check localStorage for auth token (temporary workaround)
       const authToken = localStorage.getItem('auth_token');
       
+      // If token exists, trust it immediately (temporary workaround)
+      if (authToken) {
+        console.log('Initial auth check - token found, setting authenticated to true');
+        setIsAuthenticated(true);
+        return;
+      }
+      
+      // If no token, check backend session
       try {
-        // Include auth token in headers if available
-        const headers = authToken ? { 'X-Auth-Token': authToken } : {};
-        const response = await axios.get('/api/auth/status', { headers });
+        const response = await axios.get('/api/auth/status');
         
         if (response.data.authenticated) {
           setIsAuthenticated(true);
-        } else if (authToken) {
-          // Token exists but backend says not authenticated - clear it
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('auth_method');
-          setIsAuthenticated(false);
         } else {
           setIsAuthenticated(false);
         }
       } catch (error) {
         console.error('Error checking auth status:', error);
-        // If auth check fails, check localStorage as fallback
-        if (authToken) {
-          setIsAuthenticated(true);
-        } else {
-          setIsAuthenticated(false);
-        }
+        setIsAuthenticated(false);
       }
     };
     checkAuthStatus();
@@ -155,25 +151,35 @@ function App() {
   }, [isAuthenticated]);
 
   const handleLogin = async () => {
-    // Verify authentication with backend session or localStorage token
+    // Check localStorage first - if token exists, we're authenticated
+    const authToken = localStorage.getItem('auth_token');
+    console.log('handleLogin - authToken from localStorage:', authToken ? 'found' : 'not found');
+    
+    // If we have a token, immediately set authenticated to true
+    // This is a temporary workaround - in production with FLASK_SECRET_KEY, sessions will work
+    if (authToken) {
+      console.log('handleLogin - token found, setting authenticated to true immediately');
+      setIsAuthenticated(true);
+      return;
+    }
+    
+    // If no token, verify authentication with backend session
     try {
-      const authToken = localStorage.getItem('auth_token');
-      const headers = authToken ? { 'X-Auth-Token': authToken } : {};
-      const response = await axios.get('/api/auth/status', { headers });
+      const response = await axios.get('/api/auth/status');
+      
+      console.log('handleLogin - auth status response:', response.data);
       
       if (response.data.authenticated) {
+        console.log('handleLogin - setting authenticated to true');
         setIsAuthenticated(true);
       } else {
-        // If not authenticated, clear token and stay on login screen
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('auth_method');
+        // If not authenticated, stay on login screen
+        console.log('handleLogin - not authenticated');
         setIsAuthenticated(false);
       }
     } catch (error) {
       console.error('Error checking auth status:', error);
-      // Fallback: check localStorage
-      const authToken = localStorage.getItem('auth_token');
-      setIsAuthenticated(!!authToken);
+      setIsAuthenticated(false);
     }
   };
 

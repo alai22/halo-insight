@@ -208,23 +208,32 @@ def auth_status():
             is_authenticated = session.get('authenticated', False)
             email = session.get('email', None)
             if is_authenticated:
+                logger.debug("Authenticated via session")
                 return jsonify({
                     'authenticated': True,
                     'email': email,
                     'session_available': True
                 }), 200
-        except RuntimeError:
+        except RuntimeError as session_error:
             # Session not available - check for token in request headers
-            auth_token = request.headers.get('X-Auth-Token')
-            if auth_token:
-                # Simple validation - in production, use proper token validation
-                # For now, just check if token exists (temporary workaround)
-                logger.debug("Checking auth token (session unavailable)")
-                return jsonify({
-                    'authenticated': True,
-                    'email': None,
-                    'session_available': False
-                }), 200
+            logger.debug(f"Session unavailable, checking token header: {session_error}")
+            pass
+        
+        # Check for auth token in headers (temporary workaround)
+        auth_token = request.headers.get('X-Auth-Token')
+        if auth_token:
+            # Simple validation - token exists means user logged in
+            # In production with proper FLASK_SECRET_KEY, this won't be needed
+            logger.info(f"Authenticated via token header (token length: {len(auth_token)})")
+            return jsonify({
+                'authenticated': True,
+                'email': None,
+                'session_available': False
+            }), 200
+        
+        # Log all headers for debugging
+        logger.debug(f"Auth status check - no token found. Headers: {list(request.headers.keys())}")
+        logger.debug(f"X-Auth-Token header value: {request.headers.get('X-Auth-Token', 'NOT FOUND')}")
         
         return jsonify({
             'authenticated': False,
@@ -232,7 +241,7 @@ def auth_status():
             'session_available': False
         }), 200
     except Exception as e:
-        logger.error(f"Error checking auth status: {str(e)}")
+        logger.error(f"Error checking auth status: {str(e)}", exc_info=True)
         return jsonify({
             'authenticated': False,
             'email': None,

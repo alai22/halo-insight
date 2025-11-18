@@ -65,6 +65,8 @@ function Login({ onLogin }) {
           localStorage.setItem('auth_token', response.data.auth_token);
           localStorage.setItem('auth_method', 'password');
           console.log('Stored auth token in localStorage (session unavailable)');
+          // Small delay to ensure localStorage is written before checking status
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         // Password validated on backend, session created or token stored
         onLogin();
