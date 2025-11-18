@@ -64,7 +64,12 @@ def create_app():
     app = Flask(__name__)
     
     # Configure session secret key (required for session management)
-    app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+    # Use Config.FLASK_SECRET_KEY if set, otherwise generate a random one
+    # IMPORTANT: In production, set FLASK_SECRET_KEY in .env for session persistence
+    secret_key = Config.FLASK_SECRET_KEY or os.getenv('FLASK_SECRET_KEY') or secrets.token_hex(32)
+    if not Config.FLASK_SECRET_KEY and not os.getenv('FLASK_SECRET_KEY'):
+        app_logger.warning("FLASK_SECRET_KEY not set - sessions will not persist across restarts. Set FLASK_SECRET_KEY in .env for production.")
+    app.secret_key = secret_key
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessions last 24 hours

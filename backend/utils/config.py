@@ -98,6 +98,7 @@ class Config:
     # Flask Configuration
     FLASK_ENV: str = os.getenv('FLASK_ENV', 'production')
     FLASK_DEBUG: bool = os.getenv('FLASK_DEBUG', '0').lower() in ('true', '1', 'yes')
+    FLASK_SECRET_KEY: Optional[str] = os.getenv('FLASK_SECRET_KEY')
     PORT: int = int(os.getenv('PORT', 5000))
     HOST: str = os.getenv('HOST', '0.0.0.0')
     
