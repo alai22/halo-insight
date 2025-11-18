@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Mail, Lock, CheckCircle, Loader } from 'lucide-react';
+import { Mail, CheckCircle, Loader } from 'lucide-react';
 import axios from 'axios';
 
 function Login({ onLogin }) {
@@ -10,6 +10,21 @@ function Login({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
   const [userEmail, setUserEmail] = useState('');
+  const [emailEnabled, setEmailEnabled] = useState(false);
+
+  // Check if email service is enabled
+  useEffect(() => {
+    const checkEmailEnabled = async () => {
+      try {
+        const response = await axios.get('/api/auth/email-enabled');
+        setEmailEnabled(response.data.enabled);
+      } catch (error) {
+        console.error('Error checking email service:', error);
+        setEmailEnabled(false);
+      }
+    };
+    checkEmailEnabled();
+  }, []);
 
   // Check if we're returning from a magic link
   useEffect(() => {
@@ -30,19 +45,32 @@ function Login({ onLogin }) {
     }
   }, [onLogin]);
 
-  const handlePasswordSubmit = (e) => {
+  const handlePasswordSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    
-    // Simple password check - you can change this password
-    const correctPassword = process.env.REACT_APP_PASSWORD || 'gladly2024';
-    
-    if (password === correctPassword) {
-      onLogin();
-      setError('');
-    } else {
-      setError('Incorrect password');
+    setLoading(true);
+
+    try {
+      const response = await axios.post('/api/auth/password-login', {
+        password: password
+      }, {
+        withCredentials: true  // Important for session cookies
+      });
+
+      if (response.data.success) {
+        // Password validated on backend, session created
+        onLogin();
+        setError('');
+      } else {
+        setError(response.data.error || 'Incorrect password');
+        setPassword('');
+      }
+    } catch (err) {
+      console.error('Login error:', err);
+      setError(err.response?.data?.error || 'Failed to login. Please try again.');
       setPassword('');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -140,55 +168,55 @@ function Login({ onLogin }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
-        <div className="flex items-center justify-center mb-6">
-          {authMethod === 'password' ? (
-            <Lock className="h-12 w-12 text-blue-600" />
-          ) : (
-            <Mail className="h-12 w-12 text-blue-600" />
-          )}
-        </div>
-        <h1 className="text-2xl font-bold text-center text-gray-900 mb-2">
+        <h1 className="text-2xl font-bold text-center text-gray-900 mb-4">
           Halo Insights
         </h1>
         
-        {/* Auth Method Toggle */}
-        <div className="flex mb-6 bg-gray-100 rounded-lg p-1">
-          <button
-            onClick={() => {
-              setAuthMethod('password');
-              setError('');
-              setPassword('');
-              setEmail('');
-            }}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
-              authMethod === 'password'
-                ? 'bg-white text-blue-600 shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Password
-          </button>
-          <button
-            onClick={() => {
-              setAuthMethod('magic-link');
-              setError('');
-              setPassword('');
-              setEmail('');
-            }}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors relative ${
-              authMethod === 'magic-link'
-                ? 'bg-white text-blue-600 shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Magic Link
-            <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300">
-              BETA
-            </span>
-          </button>
+        <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
+          <p>Customer support conversation analysis and churn insights.</p>
+          <p>Analyze Gladly conversations, survey responses, and identify trends.</p>
         </div>
+        
+        {/* Auth Method Toggle - only show if email is enabled */}
+        {emailEnabled && (
+          <div className="flex mb-6 bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => {
+                setAuthMethod('password');
+                setError('');
+                setPassword('');
+                setEmail('');
+              }}
+              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+                authMethod === 'password'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Password
+            </button>
+            <button
+              onClick={() => {
+                setAuthMethod('magic-link');
+                setError('');
+                setPassword('');
+                setEmail('');
+              }}
+              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors relative ${
+                authMethod === 'magic-link'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Magic Link
+              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300">
+                BETA
+              </span>
+            </button>
+          </div>
+        )}
 
-        {authMethod === 'password' ? (
+        {(!emailEnabled || authMethod === 'password') ? (
           <form onSubmit={handlePasswordSubmit}>
             <p className="text-center text-gray-600 mb-6">
               Enter password to access
@@ -201,6 +229,7 @@ function Login({ onLogin }) {
                 placeholder="Enter password"
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
+                disabled={loading}
               />
             </div>
             
@@ -212,9 +241,17 @@ function Login({ onLogin }) {
             
             <button
               type="submit"
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              disabled={loading}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
             >
-              Login
+              {loading ? (
+                <>
+                  <Loader className="animate-spin h-5 w-5 mr-2" />
+                  Logging in...
+                </>
+              ) : (
+                'Login'
+              )}
             </button>
           </form>
         ) : (

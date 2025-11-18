@@ -118,6 +118,10 @@ class Config:
     SURVICATE_S3_CACHE_KEY: str = os.getenv('SURVICATE_S3_CACHE_KEY', 'survicate-cache/api_responses.csv')
     SURVICATE_S3_METADATA_KEY: str = os.getenv('SURVICATE_S3_METADATA_KEY', 'survicate-cache/api_cache_meta.json')
     
+    # Authentication Configuration
+    # Password for password-based login (stored securely on backend)
+    AUTH_PASSWORD: str = os.getenv('AUTH_PASSWORD', 'gladly2024')
+    
     # PII Protection Configuration
     # Enable PII protection before sending data to Claude API
     # Options: 'hash' (deterministic hash), 'redact' ([REDACTED] placeholder), 'remove' (delete), 'none' (disabled)

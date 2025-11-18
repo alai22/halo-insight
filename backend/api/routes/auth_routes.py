@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, session
 from ...utils.logging import get_logger
 from ...services.auth_service import AuthService
 from ...utils.email_service import EmailService
+from ...utils.config import Config
 import os
 
 logger = get_logger('auth_routes')
@@ -215,4 +216,61 @@ def auth_status():
             'authenticated': False,
             'email': None
         }), 200
+
+
+@auth_bp.route('/email-enabled', methods=['GET'])
+def check_email_enabled():
+    """Check if email service is configured and enabled"""
+    try:
+        email_service = EmailService()
+        is_enabled = email_service.is_configured()
+        
+        return jsonify({
+            'enabled': is_enabled
+        }), 200
+    except Exception as e:
+        logger.error(f"Error checking email service status: {str(e)}")
+        return jsonify({
+            'enabled': False
+        }), 200
+
+
+@auth_bp.route('/password-login', methods=['POST'])
+def password_login():
+    """Authenticate using password (backend validation)"""
+    try:
+        data = request.get_json()
+        password = data.get('password', '')
+        
+        if not password:
+            return jsonify({
+                'success': False,
+                'error': 'Password is required'
+            }), 400
+        
+        # Validate password against backend config
+        if password == Config.AUTH_PASSWORD:
+            # Create session
+            session['authenticated'] = True
+            session['auth_method'] = 'password'
+            session.permanent = True  # Make session persistent
+            
+            logger.info("User authenticated successfully via password")
+            return jsonify({
+                'success': True,
+                'message': 'Login successful'
+            }), 200
+        else:
+            logger.warning("Failed password login attempt")
+            return jsonify({
+                'success': False,
+                'error': 'Incorrect password'
+            }), 401
+    
+    except Exception as e:
+        logger.error(f"Error during password login: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'An error occurred during login. Please try again.'
+        }), 500
 

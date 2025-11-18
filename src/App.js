@@ -124,7 +124,8 @@ function App() {
   }, [isAuthenticated]);
 
   const handleLogin = async () => {
-    // Verify authentication with backend
+    // Verify authentication with backend session
+    // Both password and magic link now use backend sessions
     try {
       const response = await axios.get('/api/auth/status');
       if (response.data.authenticated) {
@@ -134,7 +135,7 @@ function App() {
         setIsAuthenticated(false);
       }
     } catch (error) {
-      console.error('Error verifying login:', error);
+      console.error('Error checking auth status:', error);
       setIsAuthenticated(false);
     }
   };
