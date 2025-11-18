@@ -262,33 +262,60 @@ def get_topic_trends():
         
         for conversation_id, value in topic_mapping.items():
             if isinstance(value, dict):
-                # Aggregate key phrases
+                # Aggregate key phrases (ensure each phrase is a string)
                 key_phrases = value.get('key_phrases', [])
                 if isinstance(key_phrases, list):
                     for phrase in key_phrases:
-                        if phrase and phrase.strip():
-                            phrase_lower = phrase.strip().lower()
-                            key_phrases_count[phrase_lower] = key_phrases_count.get(phrase_lower, 0) + 1
+                        if phrase:
+                            # Convert phrase to string if it's not already
+                            if isinstance(phrase, list):
+                                phrase = ', '.join(str(p) for p in phrase) if phrase else None
+                            elif not isinstance(phrase, str):
+                                phrase = str(phrase) if phrase is not None else None
+                            
+                            if phrase and phrase.strip():
+                                phrase_lower = phrase.strip().lower()
+                                key_phrases_count[phrase_lower] = key_phrases_count.get(phrase_lower, 0) + 1
                 
-                # Aggregate collar firmware versions
+                # Aggregate collar firmware versions (ensure string conversion)
                 collar_firmware_version = value.get('collar_firmware_version')
                 if collar_firmware_version:
-                    collar_firmware_versions_count[collar_firmware_version] = collar_firmware_versions_count.get(collar_firmware_version, 0) + 1
+                    if isinstance(collar_firmware_version, list):
+                        collar_firmware_version = ', '.join(str(v) for v in collar_firmware_version) if collar_firmware_version else None
+                    elif not isinstance(collar_firmware_version, str):
+                        collar_firmware_version = str(collar_firmware_version) if collar_firmware_version is not None else None
+                    if collar_firmware_version:
+                        collar_firmware_versions_count[collar_firmware_version] = collar_firmware_versions_count.get(collar_firmware_version, 0) + 1
                 
-                # Aggregate collar models
+                # Aggregate collar models (ensure string conversion)
                 collar_model = value.get('collar_model')
                 if collar_model:
-                    collar_models_count[collar_model] = collar_models_count.get(collar_model, 0) + 1
+                    if isinstance(collar_model, list):
+                        collar_model = ', '.join(str(v) for v in collar_model) if collar_model else None
+                    elif not isinstance(collar_model, str):
+                        collar_model = str(collar_model) if collar_model is not None else None
+                    if collar_model:
+                        collar_models_count[collar_model] = collar_models_count.get(collar_model, 0) + 1
                 
-                # Aggregate collar serial numbers (for tracking, but might want to limit display)
+                # Aggregate collar serial numbers (ensure string conversion)
                 collar_serial_number = value.get('collar_serial_number')
                 if collar_serial_number:
-                    collar_serial_numbers_count[collar_serial_number] = collar_serial_numbers_count.get(collar_serial_number, 0) + 1
+                    if isinstance(collar_serial_number, list):
+                        collar_serial_number = ', '.join(str(v) for v in collar_serial_number) if collar_serial_number else None
+                    elif not isinstance(collar_serial_number, str):
+                        collar_serial_number = str(collar_serial_number) if collar_serial_number is not None else None
+                    if collar_serial_number:
+                        collar_serial_numbers_count[collar_serial_number] = collar_serial_numbers_count.get(collar_serial_number, 0) + 1
                 
-                # Aggregate mobile app versions
+                # Aggregate mobile app versions (ensure string conversion)
                 mobile_app_version = value.get('mobile_app_version')
                 if mobile_app_version:
-                    mobile_app_versions_count[mobile_app_version] = mobile_app_versions_count.get(mobile_app_version, 0) + 1
+                    if isinstance(mobile_app_version, list):
+                        mobile_app_version = ', '.join(str(v) for v in mobile_app_version) if mobile_app_version else None
+                    elif not isinstance(mobile_app_version, str):
+                        mobile_app_version = str(mobile_app_version) if mobile_app_version is not None else None
+                    if mobile_app_version:
+                        mobile_app_versions_count[mobile_app_version] = mobile_app_versions_count.get(mobile_app_version, 0) + 1
         
         # Get top key phrases (limit to top 20)
         top_key_phrases = sorted(
@@ -838,18 +865,33 @@ def get_sentiment_trends_over_time():
             customer_sentiment_counts = {}
             
             for conversation_id, value in topic_mapping.items():
+                # Extract sentiment values and ensure they're strings (hashable)
                 if isinstance(value, dict):
-                    sentiment = value.get('sentiment', 'Neutral')
-                    customer_sentiment = value.get('customer_sentiment', 'Neutral')
+                    sentiment_raw = value.get('sentiment', 'Neutral')
+                    customer_sentiment_raw = value.get('customer_sentiment', 'Neutral')
                 else:
-                    sentiment = 'Neutral'
-                    customer_sentiment = 'Neutral'
+                    sentiment_raw = 'Neutral'
+                    customer_sentiment_raw = 'Neutral'
                 
-                # Ensure sentiment values are strings (hashable)
-                if not isinstance(sentiment, str):
-                    sentiment = str(sentiment) if sentiment is not None else 'Neutral'
-                if not isinstance(customer_sentiment, str):
-                    customer_sentiment = str(customer_sentiment) if customer_sentiment is not None else 'Neutral'
+                # Convert sentiment to string IMMEDIATELY (before using as dict key or set element)
+                if isinstance(sentiment_raw, list):
+                    sentiment = ', '.join(str(s) for s in sentiment_raw) if sentiment_raw else 'Neutral'
+                elif isinstance(sentiment_raw, str):
+                    sentiment = sentiment_raw
+                elif sentiment_raw is None:
+                    sentiment = 'Neutral'
+                else:
+                    sentiment = str(sentiment_raw) if sentiment_raw is not None else 'Neutral'
+                
+                # Convert customer_sentiment to string IMMEDIATELY
+                if isinstance(customer_sentiment_raw, list):
+                    customer_sentiment = ', '.join(str(s) for s in customer_sentiment_raw) if customer_sentiment_raw else 'Neutral'
+                elif isinstance(customer_sentiment_raw, str):
+                    customer_sentiment = customer_sentiment_raw
+                elif customer_sentiment_raw is None:
+                    customer_sentiment = 'Neutral'
+                else:
+                    customer_sentiment = str(customer_sentiment_raw) if customer_sentiment_raw is not None else 'Neutral'
                 
                 sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
                 customer_sentiment_counts[customer_sentiment] = customer_sentiment_counts.get(customer_sentiment, 0) + 1
