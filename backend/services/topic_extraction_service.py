@@ -390,12 +390,40 @@ RESPONSE FORMAT (JSON only, no other text):
         if not model or model.lower() in ('null', 'none', 'n/a', ''):
             return None
         
-        # Capitalize first letter of each word for consistency
-        # "halo 3" -> "Halo 3", "HALO 3" -> "Halo 3"
-        words = model.split()
-        normalized = ' '.join(word.capitalize() for word in words)
+        # Check if this looks like a serial number (e.g., "23-H3400303-RT", "24h3450852rt", "25h4143167rt")
+        # Serial numbers typically have patterns like: 2 digits, optional dash, 'h'/'H', then more digits, optional letters/dashes
+        # Examples: "23-H3400303-RT", "24h3450852rt", "25h4143167rt", "25h4244378rt"
+        # Pattern: 2 digits, optional dash/space, h/H, digits, optional dash and letters
+        serial_pattern = re.match(r'^\d{2}[-\s]?[hH]\d+([-\s][a-zA-Z]{1,4})?$|^\d{2}[hH]\d+[a-zA-Z]{0,4}$', model.strip())
+        if serial_pattern:
+            # This looks like a serial number, not a model
+            return None
         
-        return normalized if len(normalized) <= 50 else model[:50]
+        # Map written numbers to digits
+        written_numbers = {
+            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+            'eleven': '11', 'twelve': '12', 'thirteen': '13', 'fourteen': '14', 'fifteen': '15',
+            'sixteen': '16', 'seventeen': '17', 'eighteen': '18', 'nineteen': '19', 'twenty': '20'
+        }
+        
+        # Split into words and normalize
+        words = model.split()
+        normalized_words = []
+        
+        for word in words:
+            word_lower = word.lower()
+            # Check if word is a written number
+            if word_lower in written_numbers:
+                normalized_words.append(written_numbers[word_lower])
+            else:
+                # Capitalize first letter of each word for consistency
+                # "halo" -> "Halo", "HALO" -> "Halo"
+                normalized_words.append(word.capitalize())
+        
+        normalized = ' '.join(normalized_words)
+        
+        return normalized if len(normalized) <= 50 else normalized[:50]
     
     def _normalize_serial_number(self, serial: any) -> Optional[str]:
         """Normalize serial number (remove common prefixes, uppercase)"""
