@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Send, Bot, User, Settings, Database, MessageSquare, Search, Download, BarChart3 } from 'lucide-react';
 import PromptInput from './components/PromptInput';
 import ConversationDisplay from './components/ConversationDisplay';
@@ -65,25 +65,35 @@ function App() {
   const [healthStatus, setHealthStatus] = useState(null);
   const [adminMode, setAdminMode] = useState(null); // 'claude' or 'download' for admin tools
   
+  // Ref to prevent infinite loops when syncing URL and currentMode
+  const isSyncingRef = useRef(false);
+  
   // Sync URL when currentMode changes (but not when URL changes)
   useEffect(() => {
+    if (isSyncingRef.current) return;
     const currentUrlMode = searchParams.get('mode');
     if (currentMode && currentMode !== currentUrlMode) {
+      isSyncingRef.current = true;
       setSearchParams({ mode: currentMode }, { replace: true });
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
     }
   }, [currentMode, searchParams, setSearchParams]);
   
   // Sync currentMode when URL changes (e.g., browser back/forward or direct link)
   useEffect(() => {
+    if (isSyncingRef.current) return;
     const urlMode = searchParams.get('mode');
     if (urlMode && urlMode !== currentMode) {
+      isSyncingRef.current = true;
       setCurrentMode(urlMode);
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
     } else if (!urlMode && currentMode) {
       // If URL has no mode but we have a currentMode, update URL
+      isSyncingRef.current = true;
       setSearchParams({ mode: currentMode }, { replace: true });
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams, currentMode, setSearchParams]);
 
   // Load conversations and settings from localStorage on mount
   useEffect(() => {
