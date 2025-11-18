@@ -58,7 +58,15 @@ function Login({ onLogin }) {
       });
 
       if (response.data.success) {
-        // Password validated on backend, session created
+        // Password validated on backend
+        // If session is available, it's already created
+        // If not, store auth token in localStorage (temporary workaround)
+        if (!response.data.session_available && response.data.auth_token) {
+          localStorage.setItem('auth_token', response.data.auth_token);
+          localStorage.setItem('auth_method', 'password');
+          console.log('Stored auth token in localStorage (session unavailable)');
+        }
+        // Password validated on backend, session created or token stored
         onLogin();
         setError('');
       } else {

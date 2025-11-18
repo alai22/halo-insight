@@ -14,6 +14,20 @@ import axios from 'axios';
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
 
+// Add interceptor to include auth token in headers (temporary workaround for session issues)
+axios.interceptors.request.use(
+  (config) => {
+    const authToken = localStorage.getItem('auth_token');
+    if (authToken) {
+      config.headers['X-Auth-Token'] = authToken;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [conversations, setConversations] = useState({
@@ -99,18 +113,35 @@ function App() {
     }
   }, [currentMode]);
 
-  // Check if user is already authenticated (check backend session)
+  // Check if user is already authenticated (check backend session or localStorage token)
   useEffect(() => {
     const checkAuthStatus = async () => {
+      // First check localStorage for auth token (temporary workaround)
+      const authToken = localStorage.getItem('auth_token');
+      
       try {
-        const response = await axios.get('/api/auth/status');
+        // Include auth token in headers if available
+        const headers = authToken ? { 'X-Auth-Token': authToken } : {};
+        const response = await axios.get('/api/auth/status', { headers });
+        
         if (response.data.authenticated) {
           setIsAuthenticated(true);
+        } else if (authToken) {
+          // Token exists but backend says not authenticated - clear it
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('auth_method');
+          setIsAuthenticated(false);
+        } else {
+          setIsAuthenticated(false);
         }
       } catch (error) {
         console.error('Error checking auth status:', error);
-        // If auth check fails, assume not authenticated
-        setIsAuthenticated(false);
+        // If auth check fails, check localStorage as fallback
+        if (authToken) {
+          setIsAuthenticated(true);
+        } else {
+          setIsAuthenticated(false);
+        }
       }
     };
     checkAuthStatus();
@@ -124,19 +155,25 @@ function App() {
   }, [isAuthenticated]);
 
   const handleLogin = async () => {
-    // Verify authentication with backend session
-    // Both password and magic link now use backend sessions
+    // Verify authentication with backend session or localStorage token
     try {
-      const response = await axios.get('/api/auth/status');
+      const authToken = localStorage.getItem('auth_token');
+      const headers = authToken ? { 'X-Auth-Token': authToken } : {};
+      const response = await axios.get('/api/auth/status', { headers });
+      
       if (response.data.authenticated) {
         setIsAuthenticated(true);
       } else {
-        // If not authenticated, stay on login screen
+        // If not authenticated, clear token and stay on login screen
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_method');
         setIsAuthenticated(false);
       }
     } catch (error) {
       console.error('Error checking auth status:', error);
-      setIsAuthenticated(false);
+      // Fallback: check localStorage
+      const authToken = localStorage.getItem('auth_token');
+      setIsAuthenticated(!!authToken);
     }
   };
 
@@ -146,6 +183,9 @@ function App() {
     } catch (error) {
       console.error('Error during logout:', error);
     } finally {
+      // Clear localStorage auth token
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_method');
       setIsAuthenticated(false);
     }
   };
