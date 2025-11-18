@@ -176,29 +176,39 @@ def get_topic_trends():
         customer_sentiment_counts = {}
         
         for conversation_id, value in topic_mapping.items():
+            # Extract topic and ensure it's always a string (hashable)
             if isinstance(value, dict):
-                topic = value.get('topic', 'Other')
+                topic_raw = value.get('topic', 'Other')
                 sentiment = value.get('sentiment', 'Neutral')
                 customer_sentiment = value.get('customer_sentiment', 'Neutral')
             elif isinstance(value, str):
                 # Old format: just topic string
-                topic = value
+                topic_raw = value
                 sentiment = 'Neutral'
                 customer_sentiment = 'Neutral'
             else:
                 # Unexpected format (list, None, etc.) - skip or use default
                 logger.warning(f"Unexpected topic format for conversation {conversation_id}: {type(value)}, value: {value}")
-                topic = 'Other'
+                topic_raw = 'Other'
                 sentiment = 'Neutral'
                 customer_sentiment = 'Neutral'
             
-            # Ensure topic is a string (hashable) - convert if necessary
-            if not isinstance(topic, str):
-                if isinstance(topic, list):
-                    # If topic is a list, join it or take first element
-                    topic = ', '.join(str(t) for t in topic) if topic else 'Other'
-                else:
-                    topic = str(topic) if topic is not None else 'Other'
+            # Convert topic to string IMMEDIATELY (before using as dict key)
+            # This prevents "unhashable type: 'list'" errors
+            if isinstance(topic_raw, list):
+                # If topic is a list, join it or take first element
+                topic = ', '.join(str(t) for t in topic_raw) if topic_raw else 'Other'
+            elif isinstance(topic_raw, str):
+                topic = topic_raw
+            elif topic_raw is None:
+                topic = 'Other'
+            else:
+                # Convert any other type to string
+                try:
+                    topic = str(topic_raw)
+                except Exception as e:
+                    logger.warning(f"Failed to convert topic to string for conversation {conversation_id}: {e}")
+                    topic = 'Other'
             
             # Ensure sentiment values are strings
             if not isinstance(sentiment, str):
@@ -206,6 +216,7 @@ def get_topic_trends():
             if not isinstance(customer_sentiment, str):
                 customer_sentiment = str(customer_sentiment) if customer_sentiment is not None else 'Neutral'
             
+            # Now safe to use topic as dictionary key
             topic_counts[topic] = topic_counts.get(topic, 0) + 1
             sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
             customer_sentiment_counts[customer_sentiment] = customer_sentiment_counts.get(customer_sentiment, 0) + 1
@@ -700,23 +711,32 @@ def get_topic_trends_over_time():
             topic_mapping = all_topics.get(date_str, {})
             topic_counts = {}
             for conversation_id, value in topic_mapping.items():
-                # Handle both formats
+                # Extract topic and ensure it's always a string (hashable)
                 if isinstance(value, dict):
-                    topic = value.get('topic', 'Other')
+                    topic_raw = value.get('topic', 'Other')
                 elif isinstance(value, str):
-                    topic = value
+                    topic_raw = value
                 else:
                     # Unexpected format (list, None, etc.) - use default
                     logger.warning(f"Unexpected topic format for conversation {conversation_id} in topic-trends-over-time: {type(value)}, value: {value}")
-                    topic = 'Other'
+                    topic_raw = 'Other'
                 
-                # Ensure topic is a string (hashable) - convert if necessary
-                if not isinstance(topic, str):
-                    if isinstance(topic, list):
-                        # If topic is a list, join it or take first element
-                        topic = ', '.join(str(t) for t in topic) if topic else 'Other'
-                    else:
-                        topic = str(topic) if topic is not None else 'Other'
+                # Convert topic to string IMMEDIATELY (before using as dict key or set element)
+                # This prevents "unhashable type: 'list'" errors
+                if isinstance(topic_raw, list):
+                    # If topic is a list, join it or take first element
+                    topic = ', '.join(str(t) for t in topic_raw) if topic_raw else 'Other'
+                elif isinstance(topic_raw, str):
+                    topic = topic_raw
+                elif topic_raw is None:
+                    topic = 'Other'
+                else:
+                    # Convert any other type to string
+                    try:
+                        topic = str(topic_raw)
+                    except Exception as e:
+                        logger.warning(f"Failed to convert topic to string for conversation {conversation_id} in topic-trends-over-time: {e}")
+                        topic = 'Other'
                 
                 topic_counts[topic] = topic_counts.get(topic, 0) + 1
                 all_topics_set.add(topic)
