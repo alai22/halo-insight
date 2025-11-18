@@ -639,6 +639,7 @@ def get_cache_status():
         cache_status['refresh_in_progress'] = api_refresh_state.get('is_running', False)
         cache_status['refresh_error'] = api_refresh_state.get('error')
         cache_status['refresh_last_fetch'] = api_refresh_state.get('last_fetch')
+        cache_status['refresh_diagnostics'] = api_refresh_state.get('diagnostics')
         
         return jsonify({
             'success': True,
@@ -688,6 +689,33 @@ def refresh_api_cache():
             'error': str(e),
             'details': 'Failed to start API cache refresh'
         }), 500
+
+
+@survicate_bp.route('/env-check', methods=['GET'])
+def check_env_vars():
+    """Check if Survicate environment variables are available in the container"""
+    import os
+    return jsonify({
+        'success': True,
+        'env_vars': {
+            'SURVICATE_API_KEY': {
+                'in_env': bool(os.getenv('SURVICATE_API_KEY')),
+                'in_config': bool(Config.SURVICATE_API_KEY),
+                'env_length': len(os.getenv('SURVICATE_API_KEY', '')) if os.getenv('SURVICATE_API_KEY') else 0,
+                'config_length': len(Config.SURVICATE_API_KEY) if Config.SURVICATE_API_KEY else 0,
+                'env_prefix': os.getenv('SURVICATE_API_KEY', '')[:10] + '...' if os.getenv('SURVICATE_API_KEY') else None,
+                'config_prefix': Config.SURVICATE_API_KEY[:10] + '...' if Config.SURVICATE_API_KEY else None
+            },
+            'SURVICATE_WORKSPACE_KEY': {
+                'in_env': bool(os.getenv('SURVICATE_WORKSPACE_KEY')),
+                'in_config': bool(Config.SURVICATE_WORKSPACE_KEY),
+                'env_length': len(os.getenv('SURVICATE_WORKSPACE_KEY', '')) if os.getenv('SURVICATE_WORKSPACE_KEY') else 0,
+                'config_length': len(Config.SURVICATE_WORKSPACE_KEY) if Config.SURVICATE_WORKSPACE_KEY else 0
+            },
+            'SURVICATE_SURVEY_ID': os.getenv('SURVICATE_SURVEY_ID', Config.SURVICATE_SURVEY_ID),
+            'SURVICATE_API_BASE_URL': os.getenv('SURVICATE_API_BASE_URL', Config.SURVICATE_API_BASE_URL)
+        }
+    })
 
 
 @survicate_bp.route('/api-status', methods=['GET'])

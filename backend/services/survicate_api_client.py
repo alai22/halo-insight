@@ -18,11 +18,21 @@ class SurvicateAPIClient:
     
     def __init__(self, api_key: Optional[str] = None, workspace_key: Optional[str] = None, base_url: Optional[str] = None):
         """Initialize Survicate API client"""
+        import os
+        
+        # Log what we're getting from environment vs config
+        api_key_env = os.getenv('SURVICATE_API_KEY')
+        workspace_key_env = os.getenv('SURVICATE_WORKSPACE_KEY')
+        
         self.api_key = api_key or Config.SURVICATE_API_KEY
         self.workspace_key = workspace_key or Config.SURVICATE_WORKSPACE_KEY
         self.base_url = base_url or Config.SURVICATE_API_BASE_URL
         
+        logger.debug(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
+        logger.debug(f"SurvicateAPIClient init - Workspace key from env: {bool(workspace_key_env)}, from config: {bool(Config.SURVICATE_WORKSPACE_KEY)}, final: {bool(self.workspace_key)}")
+        
         if not self.api_key:
+            logger.error("SURVICATE_API_KEY not configured - checked env and Config")
             raise ValueError("SURVICATE_API_KEY not configured")
         
         # Build authorization header

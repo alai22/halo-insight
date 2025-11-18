@@ -175,11 +175,45 @@ class SurveyService:
         except ValueError as e:
             # API authentication/authorization error
             error_msg = str(e)
-            logger.error(f"API cache refresh failed: {error_msg}")
-            api_refresh_state['error'] = error_msg
+            
+            # Add diagnostic info
+            import os
+            api_key_env = bool(os.getenv('SURVICATE_API_KEY'))
+            workspace_key_env = bool(os.getenv('SURVICATE_WORKSPACE_KEY'))
+            api_key_config = bool(Config.SURVICATE_API_KEY)
+            workspace_key_config = bool(Config.SURVICATE_WORKSPACE_KEY)
+            
+            diagnostic_info = f" (API key in env: {api_key_env}, in config: {api_key_config}, Workspace key in env: {workspace_key_env}, in config: {workspace_key_config})"
+            error_msg_with_diagnostics = error_msg + diagnostic_info
+            
+            logger.error(f"API cache refresh failed: {error_msg_with_diagnostics}")
+            api_refresh_state['error'] = error_msg_with_diagnostics
+            api_refresh_state['diagnostics'] = {
+                'api_key_in_env': api_key_env,
+                'workspace_key_in_env': workspace_key_env,
+                'api_key_in_config': api_key_config,
+                'workspace_key_in_config': workspace_key_config
+            }
         except Exception as e:
-            logger.error(f"API cache refresh failed: {e}")
-            api_refresh_state['error'] = str(e)
+            logger.error(f"API cache refresh failed: {e}", exc_info=True)
+            
+            # Add diagnostic info for any error
+            import os
+            api_key_env = bool(os.getenv('SURVICATE_API_KEY'))
+            workspace_key_env = bool(os.getenv('SURVICATE_WORKSPACE_KEY'))
+            api_key_config = bool(Config.SURVICATE_API_KEY)
+            workspace_key_config = bool(Config.SURVICATE_WORKSPACE_KEY)
+            
+            error_msg = str(e)
+            diagnostic_info = f" (API key in env: {api_key_env}, in config: {api_key_config}, Workspace key in env: {workspace_key_env}, in config: {workspace_key_config})"
+            
+            api_refresh_state['error'] = error_msg + diagnostic_info
+            api_refresh_state['diagnostics'] = {
+                'api_key_in_env': api_key_env,
+                'workspace_key_in_env': workspace_key_env,
+                'api_key_in_config': api_key_config,
+                'workspace_key_in_config': workspace_key_config
+            }
         finally:
             api_refresh_state['is_running'] = False
     
