@@ -156,6 +156,8 @@ case $ENVIRONMENT in
                 -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
                 -e SURVICATE_API_KEY="${SURVICATE_API_KEY}" \
                 -e SURVICATE_SURVEY_ID="${SURVICATE_SURVEY_ID:-e08c3365f14085e2}" \
+                -e SURVICATE_WORKSPACE_KEY="${SURVICATE_WORKSPACE_KEY}" \
+                -e SURVICATE_WORKSPACE_ID="${SURVICATE_WORKSPACE_ID}" \
                 -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
                 -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
                 --name gladly-prod \

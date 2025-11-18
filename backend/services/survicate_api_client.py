@@ -16,24 +16,53 @@ logger = get_logger('survicate_api_client')
 class SurvicateAPIClient:
     """Client for Survicate Data Export API"""
     
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, workspace_key: Optional[str] = None, base_url: Optional[str] = None):
         """Initialize Survicate API client"""
         self.api_key = api_key or Config.SURVICATE_API_KEY
+        self.workspace_key = workspace_key or Config.SURVICATE_WORKSPACE_KEY
         self.base_url = base_url or Config.SURVICATE_API_BASE_URL
         
         if not self.api_key:
             raise ValueError("SURVICATE_API_KEY not configured")
         
+        # Build authorization header
+        # Survicate API may use Basic auth with API key, or Bearer token
+        # Try Basic auth first (API key as username, empty password or workspace key as password)
+        if self.workspace_key:
+            # If workspace key is provided, use it in Basic auth
+            import base64
+            credentials = f"{self.api_key}:{self.workspace_key}"
+            encoded_credentials = base64.b64encode(credentials.encode()).decode()
+            auth_header = f'Basic {encoded_credentials}'
+        else:
+            # Try Bearer token first (most common for API keys)
+            # If that fails, we'll try Basic auth
+            auth_header = f'Bearer {self.api_key}'
+        
         self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
+            'Authorization': auth_header,
             'Content-Type': 'application/json'
         }
+        
+        # Store original auth method for fallback
+        self._auth_method = 'bearer' if not self.workspace_key else 'basic'
     
     def list_surveys(self) -> List[Dict[str, Any]]:
         """List all surveys"""
         try:
             url = f"{self.base_url}/surveys"
             response = requests.get(url, headers=self.headers, timeout=30)
+            
+            # If Bearer auth fails with 403, try Basic auth
+            if response.status_code == 403 and self._auth_method == 'bearer' and not self.workspace_key:
+                logger.info("Bearer auth failed, trying Basic auth with API key only")
+                import base64
+                credentials = f"{self.api_key}:"
+                encoded_credentials = base64.b64encode(credentials.encode()).decode()
+                self.headers['Authorization'] = f'Basic {encoded_credentials}'
+                self._auth_method = 'basic'
+                response = requests.get(url, headers=self.headers, timeout=30)
+            
             response.raise_for_status()
             data = response.json()
             return data.get('surveys', [])
@@ -80,11 +109,22 @@ class SurvicateAPIClient:
                     params[f'attributes[]'] = attr
             
             response = requests.get(url, headers=self.headers, params=params, timeout=60)
+            
+            # If Bearer auth fails with 403, try Basic auth
+            if response.status_code == 403 and self._auth_method == 'bearer' and not self.workspace_key:
+                logger.info("Bearer auth failed, trying Basic auth with API key only")
+                import base64
+                credentials = f"{self.api_key}:"
+                encoded_credentials = base64.b64encode(credentials.encode()).decode()
+                self.headers['Authorization'] = f'Basic {encoded_credentials}'
+                self._auth_method = 'basic'
+                response = requests.get(url, headers=self.headers, params=params, timeout=60)
+            
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 403:
-                error_msg = "Survicate API access denied. Check SURVICATE_API_KEY and ensure it has Data Export API access."
+                error_msg = "Survicate API access denied. Check SURVICATE_API_KEY and ensure it has Data Export API access. If you have a workspace key, set SURVICATE_WORKSPACE_KEY."
                 logger.error(f"{error_msg} - {e}")
                 raise ValueError(error_msg) from e
             elif e.response.status_code == 401:
