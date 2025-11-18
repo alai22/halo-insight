@@ -214,6 +214,11 @@ class SurvicateAPIClient:
     
     def test_connection(self) -> Dict[str, Any]:
         """Test API connection and return status"""
+        # Log configuration status for debugging
+        api_key_set = bool(self.api_key)
+        workspace_key_set = bool(self.workspace_key)
+        logger.info(f"Testing Survicate API connection - API key set: {api_key_set}, Workspace key set: {workspace_key_set}, Auth method: {self._auth_method}")
+        
         try:
             surveys = self.list_surveys()
             return {
@@ -222,27 +227,64 @@ class SurvicateAPIClient:
                 'surveys': surveys[:5]  # Return first 5 for preview
             }
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 403:
+            status_code = e.response.status_code if hasattr(e, 'response') else None
+            error_detail = str(e)
+            
+            if status_code == 403:
+                error_msg = 'API access denied. Check SURVICATE_API_KEY and ensure it has Data Export API access.'
+                if workspace_key_set:
+                    error_msg += ' SURVICATE_WORKSPACE_KEY is set - ensure it matches your workspace.'
+                else:
+                    error_msg += ' If you have a workspace key, set SURVICATE_WORKSPACE_KEY.'
+                
+                logger.error(f"Survicate API 403 error - API key set: {api_key_set}, Workspace key set: {workspace_key_set}, Error: {error_detail}")
                 return {
                     'connected': False,
-                    'error': 'API access denied. Check SURVICATE_API_KEY and ensure it has Data Export API access.',
-                    'status_code': 403
+                    'error': error_msg,
+                    'status_code': 403,
+                    'api_key_set': api_key_set,
+                    'workspace_key_set': workspace_key_set,
+                    'auth_method': self._auth_method
                 }
-            elif e.response.status_code == 401:
+            elif status_code == 401:
+                error_msg = 'API authentication failed. Check SURVICATE_API_KEY.'
+                if workspace_key_set:
+                    error_msg += ' Also verify SURVICATE_WORKSPACE_KEY is correct.'
+                
+                logger.error(f"Survicate API 401 error - API key set: {api_key_set}, Workspace key set: {workspace_key_set}, Error: {error_detail}")
                 return {
                     'connected': False,
-                    'error': 'API authentication failed. Check SURVICATE_API_KEY.',
-                    'status_code': 401
+                    'error': error_msg,
+                    'status_code': 401,
+                    'api_key_set': api_key_set,
+                    'workspace_key_set': workspace_key_set,
+                    'auth_method': self._auth_method
                 }
             else:
+                logger.error(f"Survicate API error {status_code}: {error_detail}")
                 return {
                     'connected': False,
-                    'error': f'API error: {e.response.status_code} - {str(e)}',
-                    'status_code': e.response.status_code
+                    'error': f'API error: {status_code} - {error_detail}',
+                    'status_code': status_code,
+                    'api_key_set': api_key_set,
+                    'workspace_key_set': workspace_key_set
                 }
-        except Exception as e:
+        except ValueError as e:
+            # This catches the ValueError raised when API key is not configured
+            logger.error(f"Survicate API configuration error: {e}")
             return {
                 'connected': False,
-                'error': str(e)
+                'error': str(e),
+                'api_key_set': api_key_set,
+                'workspace_key_set': workspace_key_set
+            }
+        except Exception as e:
+            logger.error(f"Survicate API connection test failed: {e}", exc_info=True)
+            return {
+                'connected': False,
+                'error': str(e),
+                'api_key_set': api_key_set,
+                'workspace_key_set': workspace_key_set,
+                'auth_method': self._auth_method
             }
 

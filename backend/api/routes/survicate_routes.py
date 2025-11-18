@@ -696,8 +696,26 @@ def get_api_status():
     try:
         from ...services.survicate_api_client import SurvicateAPIClient
         
+        # Log environment variable status for debugging
+        import os
+        api_key_env = os.getenv('SURVICATE_API_KEY')
+        workspace_key_env = os.getenv('SURVICATE_WORKSPACE_KEY')
+        api_key_set = bool(api_key_env)
+        workspace_key_set = bool(workspace_key_env)
+        
+        logger.info(f"API status check - Env vars: SURVICATE_API_KEY set={api_key_set}, SURVICATE_WORKSPACE_KEY set={workspace_key_set}")
+        logger.info(f"Config values: SURVICATE_API_KEY set={bool(Config.SURVICATE_API_KEY)}, SURVICATE_WORKSPACE_KEY set={bool(Config.SURVICATE_WORKSPACE_KEY)}")
+        
         api_client = SurvicateAPIClient()
         status = api_client.test_connection()
+        
+        # Add environment variable status to response for debugging
+        status['env_check'] = {
+            'api_key_in_env': api_key_set,
+            'workspace_key_in_env': workspace_key_set,
+            'api_key_in_config': bool(Config.SURVICATE_API_KEY),
+            'workspace_key_in_config': bool(Config.SURVICATE_WORKSPACE_KEY)
+        }
         
         return jsonify({
             'success': True,

@@ -129,6 +129,7 @@ case $ENVIRONMENT in
         fi
         
         # Use --env-file to load all variables from .env (handles spaces and special chars)
+        # Also explicitly pass critical variables as -e flags to ensure they're set
         if [ -f ".env" ]; then
             docker run -d \
                 -p 127.0.0.1:5000:5000 \
@@ -137,6 +138,9 @@ case $ENVIRONMENT in
                 -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
                 -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
                 -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+                -e SURVICATE_API_KEY="${SURVICATE_API_KEY}" \
+                -e SURVICATE_WORKSPACE_KEY="${SURVICATE_WORKSPACE_KEY}" \
+                -e SURVICATE_WORKSPACE_ID="${SURVICATE_WORKSPACE_ID}" \
                 -e SURVICATE_SURVEY_ID="${SURVICATE_SURVEY_ID:-e08c3365f14085e2}" \
                 -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
                 -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
