@@ -9,6 +9,7 @@ import os
 import json
 import threading
 import time
+import traceback
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from typing import Dict, Optional
@@ -75,7 +76,7 @@ def get_download_status():
             }
         })
     except Exception as e:
-        logger.error(f"Error getting download status: {e}")
+        logger.error(f"Error getting download status: {e}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/start', methods=['POST'])
@@ -86,6 +87,7 @@ def start_download():
     try:
         # Check if download is already running
         if download_state['is_running']:
+            logger.warning("Attempted to start download while one is already running")
             return jsonify({'status': 'error', 'message': 'Download is already running'}), 400
         
         # Get request data
@@ -95,29 +97,58 @@ def start_download():
         start_date = data.get('start_date')
         end_date = data.get('end_date')
         
+        logger.info(f"Starting download request: batch_size={batch_size}, max_duration={max_duration_minutes}, "
+                   f"start_date={start_date}, end_date={end_date}")
+        
         # Validate batch size
         if not isinstance(batch_size, int) or batch_size <= 0:
+            logger.error(f"Invalid batch size: {batch_size}")
             return jsonify({'status': 'error', 'message': 'Invalid batch size'}), 400
         
         # Validate date parameters
         if start_date and not isinstance(start_date, str):
+            logger.error(f"Invalid start_date format: {type(start_date)}")
             return jsonify({'status': 'error', 'message': 'Invalid start_date format'}), 400
         
         if end_date and not isinstance(end_date, str):
+            logger.error(f"Invalid end_date format: {type(end_date)}")
             return jsonify({'status': 'error', 'message': 'Invalid end_date format'}), 400
         
         # Validate date range
         if start_date and end_date and start_date > end_date:
+            logger.error(f"Invalid date range: {start_date} > {end_date}")
             return jsonify({'status': 'error', 'message': 'Start date must be before end date'}), 400
         
-        # Initialize download service
-        download_service = GladlyDownloadService()
+        # Validate CSV file exists before starting
+        csv_file = "data/conversation_metrics.csv"
+        if not os.path.exists(csv_file):
+            error_msg = f"CSV file not found: {csv_file}"
+            logger.error(error_msg)
+            return jsonify({'status': 'error', 'message': error_msg}), 404
+        
+        # Initialize download service with error handling
+        try:
+            download_service = GladlyDownloadService()
+            logger.info("Download service initialized successfully")
+        except Exception as e:
+            error_msg = f"Failed to initialize download service: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            return jsonify({'status': 'error', 'message': error_msg}), 500
+        
+        # Pre-calculate the actual number of conversations to process
+        # This fixes the progress tracking mismatch
+        try:
+            actual_total = _calculate_actual_total(csv_file, start_date, end_date, batch_size)
+            logger.info(f"Calculated actual total conversations to process: {actual_total}")
+        except Exception as e:
+            logger.warning(f"Could not pre-calculate total, will use batch_size: {e}")
+            actual_total = batch_size  # Fallback to batch_size
         
         # Reset download state
         download_state.update({
             'is_running': True,
             'current_batch': 0,
-            'total_batches': batch_size,
+            'total_batches': actual_total,  # Use actual total instead of batch_size
             'downloaded_count': 0,
             'failed_count': 0,
             'start_time': datetime.now(),
@@ -130,26 +161,29 @@ def start_download():
         download_thread = threading.Thread(
             target=_run_download,
             args=(batch_size, max_duration_minutes, start_date, end_date),
-            daemon=True
+            daemon=True,
+            name="DownloadThread"
         )
         download_thread.start()
         
-        logger.info(f"Started download batch: {batch_size} conversations")
+        logger.info(f"Download thread started: batch_size={batch_size}, actual_total={actual_total}")
         
         return jsonify({
             'status': 'success',
             'message': f'Download started with batch size {batch_size}',
             'data': {
                 'batch_size': batch_size,
-                'max_duration_minutes': max_duration_minutes
+                'max_duration_minutes': max_duration_minutes,
+                'estimated_total': actual_total
             }
         })
         
     except Exception as e:
-        logger.error(f"Error starting download: {e}")
-        download_state['error'] = str(e)
+        error_msg = f"Error starting download: {str(e)}"
+        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        download_state['error'] = error_msg
         download_state['is_running'] = False
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({'status': 'error', 'message': error_msg}), 500
 
 @download_bp.route('/stop', methods=['POST'])
 def stop_download():
@@ -255,42 +289,136 @@ def _update_progress(current: int, total: int, downloaded: int, failed: int):
     """Update download progress state"""
     global download_state
     
-    download_state['current_batch'] = current
-    download_state['total_batches'] = total
-    download_state['downloaded_count'] = downloaded
-    download_state['failed_count'] = failed
-    
-    # Calculate progress percentage
-    if total > 0:
-        download_state['progress_percentage'] = (current / total) * 100
-    
-    # Log progress to console for debugging with timestamp
-    timestamp = datetime.now().strftime("%H:%M:%S")  # HH:MM:SS format
-    logger.info(f"[{timestamp}] [PROGRESS UPDATE] {current}/{total} ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
-    print(f"[{timestamp}] [PROGRESS] {current}/{total} conversations processed ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
+    try:
+        download_state['current_batch'] = current
+        download_state['total_batches'] = total  # Update total_batches with actual total from callback
+        download_state['downloaded_count'] = downloaded
+        download_state['failed_count'] = failed
+        
+        # Calculate progress percentage
+        if total > 0:
+            download_state['progress_percentage'] = (current / total) * 100
+        else:
+            download_state['progress_percentage'] = 0
+        
+        # Log progress to console for debugging with timestamp
+        timestamp = datetime.now().strftime("%H:%M:%S")  # HH:MM:SS format
+        logger.info(f"[{timestamp}] [PROGRESS UPDATE] {current}/{total} ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
+        print(f"[{timestamp}] [PROGRESS] {current}/{total} conversations processed ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
+    except Exception as e:
+        logger.error(f"Error updating progress: {e}\n{traceback.format_exc()}")
+
+def _calculate_actual_total(csv_file: str, start_date: str, end_date: str, batch_size: int) -> int:
+    """Calculate the actual number of conversations that will be processed"""
+    try:
+        import csv
+        from backend.services.gladly_download_service import GladlyDownloadService
+        from backend.services.conversation_tracker import ConversationTracker
+        
+        # Read conversation IDs from CSV
+        service = GladlyDownloadService()
+        conversation_ids = service.read_conversation_ids_from_csv(csv_file)
+        
+        if not conversation_ids:
+            logger.warning("No conversation IDs found in CSV")
+            return 0
+        
+        # Filter by date range if specified
+        if start_date or end_date:
+            conversation_ids = service.filter_conversations_by_date(
+                csv_file, conversation_ids, start_date, end_date
+            )
+        
+        if not conversation_ids:
+            logger.warning("No conversations found after date filtering")
+            return 0
+        
+        # Get already processed IDs
+        tracker = ConversationTracker()
+        processed_ids = tracker.get_downloaded_conversation_ids()
+        
+        # Filter out already processed IDs
+        remaining_ids = [cid for cid in conversation_ids if cid not in processed_ids]
+        
+        # Limit to batch_size if specified
+        actual_total = min(len(remaining_ids), batch_size) if batch_size > 0 else len(remaining_ids)
+        
+        return actual_total
+    except Exception as e:
+        logger.warning(f"Error calculating actual total: {e}")
+        return batch_size  # Fallback to batch_size
 
 def _run_download(batch_size: int, max_duration_minutes: int, start_date: str = None, end_date: str = None):
     """Run the download in background thread"""
     global download_state, download_service
     
     start_time = datetime.now()
+    thread_name = threading.current_thread().name
+    logger.info(f"[{thread_name}] Download thread started: batch_size={batch_size}, max_duration={max_duration_minutes}")
     
     try:
         if not download_service:
-            download_state['error'] = 'Download service not initialized'
+            error_msg = 'Download service not initialized'
+            logger.error(f"[{thread_name}] {error_msg}")
+            download_state['error'] = error_msg
             download_state['is_running'] = False
             return
         
-        # Run the download
-        download_service.download_batch(
-            csv_file="data/conversation_metrics.csv",
-            output_file="gladly_conversations_batch.jsonl",
-            max_duration_minutes=max_duration_minutes,
-            batch_size=batch_size,
-            start_date=start_date,
-            end_date=end_date,
-            progress_callback=_update_progress
-        )
+        csv_file = "data/conversation_metrics.csv"
+        
+        # Validate CSV file exists
+        if not os.path.exists(csv_file):
+            error_msg = f"CSV file not found: {csv_file}"
+            logger.error(f"[{thread_name}] {error_msg}")
+            download_state['error'] = error_msg
+            download_state['is_running'] = False
+            return
+        
+        logger.info(f"[{thread_name}] Starting download_batch with csv_file={csv_file}")
+        
+        # Run the download with comprehensive error handling
+        try:
+            download_service.download_batch(
+                csv_file=csv_file,
+                output_file="gladly_conversations_batch.jsonl",
+                max_duration_minutes=max_duration_minutes,
+                batch_size=batch_size,
+                start_date=start_date,
+                end_date=end_date,
+                progress_callback=_update_progress
+            )
+            
+            logger.info(f"[{thread_name}] download_batch() completed successfully")
+            
+        except KeyboardInterrupt:
+            logger.warning(f"[{thread_name}] Download interrupted by user")
+            download_state['error'] = 'Download interrupted by user'
+            download_state['is_running'] = False
+            return
+        except Exception as download_error:
+            error_msg = f"Error in download_batch(): {str(download_error)}"
+            logger.error(f"[{thread_name}] {error_msg}\n{traceback.format_exc()}")
+            download_state['error'] = error_msg
+            download_state['is_running'] = False
+            download_state['end_time'] = datetime.now()
+            
+            # Send error notification
+            try:
+                email_service = EmailService()
+                date_range = (start_date, end_date) if start_date or end_date else None
+                elapsed_time = (datetime.now() - start_time).total_seconds()
+                email_service.send_download_completion_notification(
+                    to_email="alai@halocollar.com",
+                    batch_size=batch_size,
+                    downloaded_count=download_state.get('downloaded_count', 0),
+                    failed_count=download_state.get('failed_count', 0),
+                    elapsed_time_seconds=elapsed_time,
+                    date_range=date_range,
+                    error=error_msg
+                )
+            except Exception as email_error:
+                logger.warning(f"Failed to send error email notification: {email_error}")
+            return
         
         # Mark as completed
         download_state['is_running'] = False
@@ -299,7 +427,9 @@ def _run_download(batch_size: int, max_duration_minutes: int, start_date: str = 
         # Calculate elapsed time
         elapsed_time = (download_state['end_time'] - start_time).total_seconds()
         
-        logger.info("Download completed successfully")
+        logger.info(f"[{thread_name}] Download completed successfully in {elapsed_time:.2f} seconds")
+        logger.info(f"[{thread_name}] Final stats: downloaded={download_state['downloaded_count']}, "
+                   f"failed={download_state['failed_count']}")
         
         # Send email notification
         try:
@@ -314,12 +444,14 @@ def _run_download(batch_size: int, max_duration_minutes: int, start_date: str = 
                 date_range=date_range,
                 error=None
             )
+            logger.info(f"[{thread_name}] Success notification email sent")
         except Exception as email_error:
-            logger.warning(f"Failed to send email notification: {email_error}")
+            logger.warning(f"[{thread_name}] Failed to send email notification: {email_error}\n{traceback.format_exc()}")
         
     except Exception as e:
-        logger.error(f"Error in download thread: {e}")
-        download_state['error'] = str(e)
+        error_msg = f"Unexpected error in download thread: {str(e)}"
+        logger.error(f"[{thread_name}] {error_msg}\n{traceback.format_exc()}")
+        download_state['error'] = error_msg
         download_state['is_running'] = False
         download_state['end_time'] = datetime.now()
         
@@ -337,10 +469,16 @@ def _run_download(batch_size: int, max_duration_minutes: int, start_date: str = 
                 failed_count=download_state.get('failed_count', 0),
                 elapsed_time_seconds=elapsed_time,
                 date_range=date_range,
-                error=str(e)
+                error=error_msg
             )
         except Exception as email_error:
-            logger.warning(f"Failed to send email notification: {email_error}")
+            logger.warning(f"[{thread_name}] Failed to send error email notification: {email_error}\n{traceback.format_exc()}")
+    finally:
+        # Ensure is_running is always set to False when thread exits
+        if download_state['is_running']:
+            logger.warning(f"[{thread_name}] Thread exiting but is_running was still True, fixing state")
+            download_state['is_running'] = False
+        logger.info(f"[{thread_name}] Download thread finished")
 
 @download_bp.route('/aggregate', methods=['POST'])
 def aggregate_conversations():

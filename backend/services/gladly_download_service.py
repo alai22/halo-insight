@@ -160,124 +160,196 @@ class GladlyDownloadService:
                       progress_callback: Optional[Callable] = None):
         """Download conversations in batches with time limit"""
         
-        conversation_ids = self.read_conversation_ids_from_csv(csv_file)
-        
-        if not conversation_ids:
-            logger.error("No conversation IDs found in CSV file")
-            return
-        
-        # Filter by date range if specified
-        if start_date or end_date:
-            conversation_ids = self.filter_conversations_by_date(
-                csv_file, conversation_ids, start_date, end_date
-            )
-            logger.info(f"After date filtering: {len(conversation_ids)} conversations")
-        
-        if not conversation_ids:
-            logger.info("No conversations found in the specified date range")
-            return
-        
-        if output_file is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"gladly_conversations_batch_{timestamp}.jsonl"
-        
-        # Get already processed IDs from conversation tracker
-        processed_ids = self.conversation_tracker.get_downloaded_conversation_ids()
-        
-        # Filter out already processed IDs
-        remaining_ids = [cid for cid in conversation_ids if cid not in processed_ids]
-        
-        if not remaining_ids:
-            logger.info("All conversations have already been processed!")
-            return
-        
-        logger.info(f"Starting batch download of {len(remaining_ids)} remaining conversations")
-        logger.info(f"Time limit: {max_duration_minutes} minutes")
-        logger.info(f"Output file: {output_file}")
-        
-        start_time = datetime.now()
-        end_time = start_time + timedelta(minutes=max_duration_minutes)
-        
-        downloaded_count = 0
-        failed_count = 0
-        
-        with open(output_file, 'a', encoding='utf-8') as outfile:
-            for i, conversation_id in enumerate(remaining_ids, 1):
-                # Check if we've exceeded the time limit
-                if datetime.now() >= end_time:
-                    logger.info(f"Time limit reached ({max_duration_minutes} minutes). Stopping download.")
-                    break
-                
-                # Update progress to show we're starting this conversation (even before API call completes)
-                # This helps show progress immediately instead of waiting for first API call to complete
-                if progress_callback and i == 1:
-                    # For the first conversation, update immediately to show we've started
-                    progress_callback(0, len(remaining_ids), downloaded_count, failed_count)
-                
-                timestamp = datetime.now().strftime("%H:%M:%S")  # HH:MM:SS format
-                logger.info(f"[{timestamp}] [PROGRESS] Processing conversation {i}/{len(remaining_ids)}: {conversation_id}")
-                print(f"[{timestamp}] [PROGRESS] Starting conversation {i}/{len(remaining_ids)}: {conversation_id}")
-                
-                # Get conversation metadata from CSV
-                conversation_metadata = self.get_conversation_metadata_from_csv(csv_file, conversation_id)
-                
-                conversation_data = self.download_conversation_items(conversation_id)
-                
-                if conversation_data:
-                    # Add metadata
-                    conversation_data['_metadata'] = {
-                        'conversation_id': conversation_id,
-                        'downloaded_at': datetime.now().isoformat(),
-                        'batch_number': i
-                    }
-                    
-                    # Write to JSONL file
-                    outfile.write(json.dumps(conversation_data) + '\n')
-                    downloaded_count += 1
-                    
-                    # Track the conversation
-                    if conversation_metadata:
-                        self.conversation_tracker.track_conversation(
-                            conversation_id=conversation_id,
-                            conversation_date=conversation_metadata.get('conversation_date', ''),
-                            download_timestamp=datetime.now().isoformat(),
-                            file_name=output_file,
-                            topics=conversation_metadata.get('topics', ''),
-                            channel=conversation_metadata.get('channel', ''),
-                            agent=conversation_metadata.get('agent', '')
-                        )
-                else:
-                    failed_count += 1
-                
-                # Update progress callback
+        try:
+            logger.info(f"Starting download_batch: csv_file={csv_file}, batch_size={batch_size}, "
+                       f"max_duration={max_duration_minutes}, start_date={start_date}, end_date={end_date}")
+            
+            conversation_ids = self.read_conversation_ids_from_csv(csv_file)
+            
+            if not conversation_ids:
+                error_msg = "No conversation IDs found in CSV file"
+                logger.error(error_msg)
                 if progress_callback:
-                    progress_callback(i, len(remaining_ids), downloaded_count, failed_count)
-                
-                # Add small delay to avoid rate limiting
-                time.sleep(0.1)
-                
-                # Log progress every 50 conversations
-                if i % 50 == 0:
-                    elapsed = datetime.now() - start_time
-                    logger.info(f"Progress: {i}/{len(remaining_ids)} conversations processed in {elapsed}")
-        
-        elapsed_time = datetime.now() - start_time
-        logger.info(f"Batch download completed!")
-        logger.info(f"Time elapsed: {elapsed_time}")
-        logger.info(f"Successfully downloaded: {downloaded_count}")
-        logger.info(f"Failed downloads: {failed_count}")
-        logger.info(f"Output saved to: {output_file}")
-        
-        # Upload to S3 if configured
-        if Config.STORAGE_TYPE == 's3' and Config.S3_BUCKET_NAME:
+                    progress_callback(0, 0, 0, 0)
+                raise ValueError(error_msg)
+            
+            logger.info(f"Found {len(conversation_ids)} conversation IDs in CSV")
+            
+            # Filter by date range if specified
+            if start_date or end_date:
+                try:
+                    conversation_ids = self.filter_conversations_by_date(
+                        csv_file, conversation_ids, start_date, end_date
+                    )
+                    logger.info(f"After date filtering: {len(conversation_ids)} conversations")
+                except Exception as e:
+                    logger.error(f"Error filtering by date: {e}")
+                    raise
+            
+            if not conversation_ids:
+                error_msg = "No conversations found in the specified date range"
+                logger.warning(error_msg)
+                if progress_callback:
+                    progress_callback(0, 0, 0, 0)
+                raise ValueError(error_msg)
+            
+            if output_file is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_file = f"gladly_conversations_batch_{timestamp}.jsonl"
+            
+            # Get already processed IDs from conversation tracker
             try:
-                self._upload_to_s3(output_file)
+                processed_ids = self.conversation_tracker.get_downloaded_conversation_ids()
+                logger.info(f"Found {len(processed_ids)} already processed conversations")
             except Exception as e:
-                logger.error(f"Failed to upload to S3: {e}")
-        
-        # Show remaining count
-        remaining_after_batch = len(remaining_ids) - downloaded_count - failed_count
-        logger.info(f"Remaining conversations to process: {remaining_after_batch}")
+                logger.error(f"Error getting processed IDs: {e}")
+                processed_ids = set()  # Continue with empty set if tracking fails
+            
+            # Filter out already processed IDs
+            remaining_ids = [cid for cid in conversation_ids if cid not in processed_ids]
+            
+            if not remaining_ids:
+                error_msg = "All conversations have already been processed!"
+                logger.info(error_msg)
+                if progress_callback:
+                    progress_callback(0, 0, 0, 0)
+                raise ValueError(error_msg)
+            
+            # Limit to batch_size if specified (but don't fail if more are available)
+            if batch_size > 0 and len(remaining_ids) > batch_size:
+                logger.info(f"Limiting to batch_size={batch_size} (found {len(remaining_ids)} remaining)")
+                remaining_ids = remaining_ids[:batch_size]
+            
+            logger.info(f"Starting batch download of {len(remaining_ids)} remaining conversations")
+            logger.info(f"Time limit: {max_duration_minutes} minutes")
+            logger.info(f"Output file: {output_file}")
+            
+            # Update progress callback with total count immediately
+            if progress_callback:
+                progress_callback(0, len(remaining_ids), 0, 0)
+            
+            start_time = datetime.now()
+            end_time = start_time + timedelta(minutes=max_duration_minutes)
+            
+            downloaded_count = 0
+            failed_count = 0
+            
+            try:
+                with open(output_file, 'a', encoding='utf-8') as outfile:
+                    for i, conversation_id in enumerate(remaining_ids, 1):
+                        # Check if we've exceeded the time limit
+                        if datetime.now() >= end_time:
+                            logger.info(f"Time limit reached ({max_duration_minutes} minutes). Stopping download.")
+                            break
+                        
+                        timestamp = datetime.now().strftime("%H:%M:%S")  # HH:MM:SS format
+                        logger.info(f"[{timestamp}] [PROGRESS] Processing conversation {i}/{len(remaining_ids)}: {conversation_id}")
+                        print(f"[{timestamp}] [PROGRESS] Starting conversation {i}/{len(remaining_ids)}: {conversation_id}")
+                        
+                        try:
+                            # Get conversation metadata from CSV
+                            conversation_metadata = None
+                            try:
+                                conversation_metadata = self.get_conversation_metadata_from_csv(csv_file, conversation_id)
+                            except Exception as meta_error:
+                                logger.warning(f"Error getting metadata for {conversation_id}: {meta_error}")
+                            
+                            # Download conversation data
+                            conversation_data = None
+                            try:
+                                conversation_data = self.download_conversation_items(conversation_id)
+                            except Exception as download_error:
+                                logger.error(f"Error downloading conversation {conversation_id}: {download_error}")
+                                failed_count += 1
+                                if progress_callback:
+                                    progress_callback(i, len(remaining_ids), downloaded_count, failed_count)
+                                continue
+                            
+                            if conversation_data:
+                                try:
+                                    # Add metadata
+                                    conversation_data['_metadata'] = {
+                                        'conversation_id': conversation_id,
+                                        'downloaded_at': datetime.now().isoformat(),
+                                        'batch_number': i
+                                    }
+                                    
+                                    # Write to JSONL file
+                                    outfile.write(json.dumps(conversation_data) + '\n')
+                                    downloaded_count += 1
+                                    
+                                    # Track the conversation
+                                    if conversation_metadata:
+                                        try:
+                                            self.conversation_tracker.track_conversation(
+                                                conversation_id=conversation_id,
+                                                conversation_date=conversation_metadata.get('conversation_date', ''),
+                                                download_timestamp=datetime.now().isoformat(),
+                                                file_name=output_file,
+                                                topics=conversation_metadata.get('topics', ''),
+                                                channel=conversation_metadata.get('channel', ''),
+                                                agent=conversation_metadata.get('agent', '')
+                                            )
+                                        except Exception as track_error:
+                                            logger.warning(f"Error tracking conversation {conversation_id}: {track_error}")
+                                except Exception as write_error:
+                                    logger.error(f"Error writing conversation {conversation_id}: {write_error}")
+                                    failed_count += 1
+                            else:
+                                failed_count += 1
+                            
+                            # Update progress callback
+                            if progress_callback:
+                                try:
+                                    progress_callback(i, len(remaining_ids), downloaded_count, failed_count)
+                                except Exception as callback_error:
+                                    logger.warning(f"Error in progress callback: {callback_error}")
+                            
+                            # Add small delay to avoid rate limiting
+                            time.sleep(0.1)
+                            
+                            # Log progress every 50 conversations
+                            if i % 50 == 0:
+                                elapsed = datetime.now() - start_time
+                                logger.info(f"Progress: {i}/{len(remaining_ids)} conversations processed in {elapsed}")
+                        
+                        except Exception as item_error:
+                            logger.error(f"Unexpected error processing conversation {conversation_id}: {item_error}")
+                            failed_count += 1
+                            if progress_callback:
+                                try:
+                                    progress_callback(i, len(remaining_ids), downloaded_count, failed_count)
+                                except:
+                                    pass
+                            continue
+                
+            except Exception as file_error:
+                logger.error(f"Error opening/writing to output file {output_file}: {file_error}")
+                raise
+            
+            elapsed_time = datetime.now() - start_time
+            logger.info(f"Batch download completed!")
+            logger.info(f"Time elapsed: {elapsed_time}")
+            logger.info(f"Successfully downloaded: {downloaded_count}")
+            logger.info(f"Failed downloads: {failed_count}")
+            logger.info(f"Output saved to: {output_file}")
+            
+            # Upload to S3 if configured
+            if Config.STORAGE_TYPE == 's3' and Config.S3_BUCKET_NAME:
+                try:
+                    self._upload_to_s3(output_file)
+                except Exception as s3_error:
+                    logger.error(f"Failed to upload to S3: {s3_error}")
+            
+            # Show remaining count
+            remaining_after_batch = len(remaining_ids) - downloaded_count - failed_count
+            logger.info(f"Remaining conversations to process: {remaining_after_batch}")
+            
+        except Exception as e:
+            logger.error(f"Error in download_batch: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
     
     def _upload_to_s3(self, local_file: str):
         """Upload downloaded file to S3"""
