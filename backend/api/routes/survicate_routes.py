@@ -736,64 +736,72 @@ def test_api_raw():
                 'error': 'SURVICATE_API_KEY not configured'
             }), 500
         
-        # Test different authentication methods
+        # Test different authentication methods and endpoints
         results = {}
         
-        # Method 1: Bearer token
-        headers1 = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
-        try:
-            response1 = requests.get(f"{base_url}/surveys", headers=headers1, timeout=10)
-            results['bearer'] = {
-                'status_code': response1.status_code,
-                'response_preview': response1.text[:500],
-                'headers': dict(response1.headers)
-            }
-        except Exception as e:
-            results['bearer'] = {'error': str(e)}
+        # Test endpoints to try
+        test_endpoints = [
+            '/surveys',
+            '/surveys/',
+            f'/surveys/{Config.SURVICATE_SURVEY_ID}/responses',
+        ]
         
-        # Method 2: Basic auth with API key only
-        credentials2 = f"{api_key}:"
-        encoded2 = base64.b64encode(credentials2.encode()).decode()
-        headers2 = {
-            'Authorization': f'Basic {encoded2}',
-            'Content-Type': 'application/json'
-        }
-        try:
-            response2 = requests.get(f"{base_url}/surveys", headers=headers2, timeout=10)
-            results['basic_api_only'] = {
-                'status_code': response2.status_code,
-                'response_preview': response2.text[:500],
-                'headers': dict(response2.headers)
-            }
-        except Exception as e:
-            results['basic_api_only'] = {'error': str(e)}
+        # Method 1: Basic auth with API key only (standard format)
+        credentials_basic = f"{api_key}:"
+        encoded_basic = base64.b64encode(credentials_basic.encode()).decode()
         
-        # Method 3: Basic auth with workspace key (if available)
-        if workspace_key:
-            credentials3 = f"{api_key}:{workspace_key}"
-            encoded3 = base64.b64encode(credentials3.encode()).decode()
-            headers3 = {
-                'Authorization': f'Basic {encoded3}',
-                'Content-Type': 'application/json'
+        # Method 2: Basic auth with API key as username, empty password (alternative)
+        # Some APIs use apiKey:password format where password is empty
+        
+        # Method 3: Direct API key in Basic (non-standard but some APIs use this)
+        
+        for endpoint in test_endpoints:
+            endpoint_key = endpoint.replace('/', '_').strip('_')
+            
+            # Standard Basic auth: base64(apiKey:)
+            headers1 = {
+                'Authorization': f'Basic {encoded_basic}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
             }
             try:
-                response3 = requests.get(f"{base_url}/surveys", headers=headers3, timeout=10)
-                results['basic_with_workspace'] = {
-                    'status_code': response3.status_code,
-                    'response_preview': response3.text[:500],
-                    'headers': dict(response3.headers)
+                response1 = requests.get(f"{base_url}{endpoint}", headers=headers1, timeout=10)
+                results[f'{endpoint_key}_basic_standard'] = {
+                    'status_code': response1.status_code,
+                    'response_preview': response1.text[:1000],
+                    'content_type': response1.headers.get('Content-Type', ''),
+                    'is_json': 'application/json' in response1.headers.get('Content-Type', ''),
+                    'is_html': 'text/html' in response1.headers.get('Content-Type', ''),
+                    'headers': {k: v for k, v in response1.headers.items() if k.lower().startswith(('x-', 'cdn-', 'server'))}
                 }
             except Exception as e:
-                results['basic_with_workspace'] = {'error': str(e)}
+                results[f'{endpoint_key}_basic_standard'] = {'error': str(e)}
+        
+        # Also test with X-API-Key header (some APIs use this)
+        headers_x_api_key = {
+            'X-API-Key': api_key,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        try:
+            response_x = requests.get(f"{base_url}/surveys", headers=headers_x_api_key, timeout=10)
+            results['surveys_x_api_key_header'] = {
+                'status_code': response_x.status_code,
+                'response_preview': response_x.text[:1000],
+                'content_type': response_x.headers.get('Content-Type', ''),
+                'is_json': 'application/json' in response_x.headers.get('Content-Type', ''),
+            }
+        except Exception as e:
+            results['surveys_x_api_key_header'] = {'error': str(e)}
         
         return jsonify({
             'success': True,
             'base_url': base_url,
             'api_key_length': len(api_key) if api_key else 0,
+            'api_key_prefix': api_key[:10] + '...' if api_key and len(api_key) > 10 else api_key,
             'workspace_key_length': len(workspace_key) if workspace_key else 0,
+            'survey_id': Config.SURVICATE_SURVEY_ID,
+            'note': 'All methods returned 403 with S3 error - likely API key permissions or subscription plan issue',
             'test_results': results
         })
     

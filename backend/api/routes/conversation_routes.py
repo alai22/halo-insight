@@ -85,7 +85,15 @@ def conversations_summary():
         
         return jsonify({
             'success': True,
-            'summary': summary.to_string()
+            'summary': summary.to_string(),
+            'data': {
+                'total_items': summary.total_items,
+                'unique_customers': summary.unique_customers,
+                'unique_conversations': summary.unique_conversations,
+                'date_range': summary.date_range,
+                'content_types': summary.content_types,
+                'message_types': summary.message_types
+            }
         })
     
     except Exception as e:

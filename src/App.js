@@ -551,11 +551,6 @@ function App() {
                   setCurrentMode={setCurrentMode} 
                 />
               )}
-              {getCurrentConversationCount() > 0 && (
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                  {getCurrentConversationCount()} messages
-                </span>
-              )}
             </div>
             <div className="flex items-center space-x-3">
               <button
