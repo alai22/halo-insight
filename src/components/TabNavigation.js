@@ -26,6 +26,15 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
 
   const gladlyModes = [
     {
+      id: 'conversation-trends',
+      name: 'Conversation Trends',
+      description: 'Visualize conversation topic trends',
+      icon: TrendingUp,
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-50',
+      borderColor: 'border-blue-200'
+    },
+    {
       id: 'conversations',
       name: 'Search Conversations',
       description: 'Search Gladly conversation data',
@@ -42,15 +51,6 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
       color: 'text-purple-600',
       bgColor: 'bg-purple-50',
       borderColor: 'border-purple-200'
-    },
-    {
-      id: 'conversation-trends',
-      name: 'Conversation Trends',
-      description: 'Visualize conversation topic trends',
-      icon: TrendingUp,
-      color: 'text-blue-600',
-      bgColor: 'bg-blue-50',
-      borderColor: 'border-blue-200'
     }
   ];
 
@@ -91,7 +91,7 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
             setActiveTab('gladly');
             // Switch to first mode of the tab if current mode is from other tab
             if (!['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
-              const defaultMode = 'ask';
+              const defaultMode = 'conversation-trends';
               setCurrentMode(defaultMode);
               setSearchParams({ mode: defaultMode });
             }
