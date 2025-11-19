@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Bot, Settings as SettingsIcon, Download, TrendingUp, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import axios from 'axios';
 
@@ -32,6 +32,51 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
   });
   const [extractStartDate, setExtractStartDate] = useState('2025-10-20');
   const [extractEndDate, setExtractEndDate] = useState('2025-10-20');
+  const [lastRunTime, setLastRunTime] = useState(null);
+
+  // Fetch last run time on component mount
+  useEffect(() => {
+    const fetchLastRunTime = async () => {
+      try {
+        const statusResponse = await axios.get('/api/conversations/extract-topics-status');
+        if (statusResponse.data.success && statusResponse.data.end_time) {
+          setLastRunTime(statusResponse.data.end_time);
+        }
+      } catch (err) {
+        // Silently fail - not critical
+        console.debug('Could not fetch last run time:', err);
+      }
+    };
+    fetchLastRunTime();
+  }, []);
+
+  const formatLastRunTime = (isoString) => {
+    if (!isoString) return null;
+    try {
+      const date = new Date(isoString);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+      if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+      if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+      
+      // For older dates, show formatted date
+      return date.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric', 
+        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+        hour: 'numeric',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return null;
+    }
+  };
 
   const handleExtractTopics = async () => {
     const startTime = Date.now();
@@ -203,6 +248,11 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
                 console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Processed: ${status.processed_count}, Skipped: ${status.skipped_count}`);
                 console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Time elapsed: ${elapsedTimeStr}`);
                 
+                // Update last run time
+                if (status.end_time) {
+                  setLastRunTime(status.end_time);
+                }
+                
                 setTopicExtractionStatus({
                   isRunning: false,
                   progress: null,
@@ -342,6 +392,11 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
                 <p className="text-xs text-gray-600 mb-3">
                   Pre-process conversations to extract topics for trend analysis. This uses Claude AI to analyze conversation transcripts.
                 </p>
+                {lastRunTime && (
+                  <p className="text-xs text-gray-500 mb-3 italic">
+                    Last run: {formatLastRunTime(lastRunTime)}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
