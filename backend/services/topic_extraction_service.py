@@ -15,6 +15,15 @@ from .claude_service import ClaudeService
 
 logger = get_logger('topic_extraction_service')
 
+# Extraction methodology version
+# Increment this when:
+# - Topic categories change
+# - Prompt structure changes significantly
+# - Metadata fields are added/removed/changed
+# - Normalization logic changes
+# - Claude model version changes (if it affects output quality)
+EXTRACTION_VERSION = "2.0"
+
 # Define conversation topic categories
 CONVERSATION_TOPICS = [
     # Product Issue Subcategories (replacing broad "Product Issues / Technical Problems")
@@ -55,7 +64,7 @@ class TopicExtractionService:
             max_retries: Maximum number of retries for rate limit errors
             
         Returns:
-            Dict with keys: topic, sentiment, customer_sentiment, key_phrases, collar_firmware_version, collar_model, collar_serial_number, mobile_app_version, extracted_at
+            Dict with keys: topic, sentiment, customer_sentiment, key_phrases, collar_firmware_version, collar_model, collar_serial_number, mobile_app_version, extracted_at, extraction_version
         """
         # Get current timestamp in ISO format
         extracted_at = datetime.now(timezone.utc).isoformat()
@@ -70,7 +79,8 @@ class TopicExtractionService:
                 'collar_model': None,
                 'collar_serial_number': None,
                 'mobile_app_version': None,
-                'extracted_at': extracted_at
+                'extracted_at': extracted_at,
+                'extraction_version': EXTRACTION_VERSION
             }
         
         # Format conversation transcript
@@ -180,7 +190,8 @@ RESPONSE FORMAT (JSON only, no other text):
                     'collar_model': self._normalize_collar_model(metadata.get('collar_model')),
                     'collar_serial_number': self._normalize_serial_number(metadata.get('collar_serial_number')),
                     'mobile_app_version': self._normalize_app_version(metadata.get('mobile_app_version')),
-                    'extracted_at': extracted_at
+                    'extracted_at': extracted_at,
+                    'extraction_version': EXTRACTION_VERSION
                 }
                 
                 return result
@@ -202,7 +213,8 @@ RESPONSE FORMAT (JSON only, no other text):
                     'collar_model': None,
                     'collar_serial_number': None,
                     'mobile_app_version': None,
-                    'extracted_at': extracted_at
+                    'extracted_at': extracted_at,
+                    'extraction_version': EXTRACTION_VERSION
                 }
             except (HTTPError, RequestException) as e:
                 error_msg = str(e)
@@ -264,7 +276,8 @@ RESPONSE FORMAT (JSON only, no other text):
             'collar_model': None,
             'collar_serial_number': None,
             'mobile_app_version': None,
-            'extracted_at': extracted_at
+            'extracted_at': extracted_at,
+            'extraction_version': EXTRACTION_VERSION
         }
     
     def extract_conversation_topic(self, conversation_items: List[Dict], max_retries: int = 3) -> str:
@@ -588,7 +601,8 @@ Return ONLY the category name, nothing else."""
                     'collar_model': None,
                     'collar_serial_number': None,
                     'mobile_app_version': None,
-                    'extracted_at': extracted_at
+                    'extracted_at': extracted_at,
+                    'extraction_version': EXTRACTION_VERSION
                 }
                 results[conversation_id] = default_metadata
                 

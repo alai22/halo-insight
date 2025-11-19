@@ -557,20 +557,26 @@ def _run_topic_extraction(conversation_service, claude_service, start_date: str,
             conversations_to_process = {}
             date_skipped = 0
             
-            # Only re-extract conversations that don't have an extracted_at timestamp
-            # Skip conversations that already have timestamps (they have the full metadata)
+            # Only re-extract conversations that don't have current extraction_version
+            # Skip conversations that already have current version (they have up-to-date metadata)
+            from ...services.topic_extraction_service import EXTRACTION_VERSION
             for conv_id, items in date_conversations.items():
                 current_count += 1
                 if conv_id in existing_topics:
                     existing_value = existing_topics[conv_id]
-                    # Check if it's a dict with extracted_at timestamp
-                    if isinstance(existing_value, dict) and existing_value.get('extracted_at'):
-                        # Has timestamp, skip it
-                        total_skipped += 1
-                        date_skipped += 1
-                        all_extracted_mapping[conv_id] = existing_value
+                    # Check if it's a dict with extraction_version
+                    if isinstance(existing_value, dict):
+                        existing_version = existing_value.get('extraction_version')
+                        # Skip if version matches current version (has up-to-date extraction)
+                        if existing_version == EXTRACTION_VERSION:
+                            total_skipped += 1
+                            date_skipped += 1
+                            all_extracted_mapping[conv_id] = existing_value
+                        else:
+                            # Version mismatch or missing version, re-extract it
+                            conversations_to_process[conv_id] = items
                     else:
-                        # No timestamp (old format), re-extract it
+                        # Old format (string topic), re-extract it
                         conversations_to_process[conv_id] = items
                 else:
                     # Not in existing topics, extract it
@@ -578,11 +584,11 @@ def _run_topic_extraction(conversation_service, claude_service, start_date: str,
                 _update_extraction_progress(current_count, total_conversations, total_processed, total_skipped, 0)
             
             if not conversations_to_process:
-                logger.info(f"No conversations to re-extract for date {date_str} (all {date_skipped} have timestamps)")
+                logger.info(f"No conversations to re-extract for date {date_str} (all {date_skipped} have current extraction version {EXTRACTION_VERSION})")
                 dates_processed.append(date_str)
                 continue
             
-            logger.info(f"Processing {len(conversations_to_process)} conversations for date {date_str} (re-extracting {len(conversations_to_process)} without timestamps, skipping {date_skipped} with timestamps)")
+            logger.info(f"Processing {len(conversations_to_process)} conversations for date {date_str} (re-extracting {len(conversations_to_process)} with outdated/missing version, skipping {date_skipped} with current version {EXTRACTION_VERSION})")
             
             date_topic_mapping = {}
             date_last_save = 0
@@ -626,7 +632,7 @@ def _run_topic_extraction(conversation_service, claude_service, start_date: str,
         topic_extraction_state['dates_processed'] = dates_processed
         topic_extraction_state['is_running'] = False
         
-        logger.info(f"Topic extraction completed: {total_processed} processed, {total_skipped} skipped (conversations with timestamps were skipped)")
+        logger.info(f"Topic extraction completed: {total_processed} processed, {total_skipped} skipped (conversations with current extraction version {EXTRACTION_VERSION} were skipped)")
     
     except Exception as e:
         error_msg = str(e)
@@ -691,7 +697,7 @@ def get_topic_extraction_status():
 
 @conversation_bp.route('/conversation-count', methods=['GET'])
 def get_conversation_count():
-    """Get count of conversations for a specific date or date range"""
+    """Get count of conversations for a specific date or date range, including already-extracted count"""
     try:
         # Get service from container (injected via Flask's g)
         service_container = getattr(g, 'service_container', None)
@@ -715,13 +721,52 @@ def get_conversation_count():
         
         # Get conversations for the date range
         conversations_by_id = conversation_service.get_conversations_by_date_range(start_date, end_date)
-        count = len(conversations_by_id)
+        total_count = len(conversations_by_id)
+        
+        # Count how many conversations already have topics extracted
+        from ...services.topic_storage_service import TopicStorageService
+        from datetime import datetime
+        
+        topic_storage = TopicStorageService()
+        already_extracted_count = 0
+        
+        # Group conversations by date (same logic as _run_topic_extraction)
+        conversations_by_date: Dict[str, Dict[str, List[Dict]]] = {}
+        for conv_id, items in conversations_by_id.items():
+            if items and items[0].get('timestamp'):
+                try:
+                    item_time = datetime.fromisoformat(items[0]['timestamp'].replace('Z', '+00:00'))
+                    item_date_str = item_time.date().isoformat()
+                    if item_date_str not in conversations_by_date:
+                        conversations_by_date[item_date_str] = {}
+                    conversations_by_date[item_date_str][conv_id] = items
+                except (ValueError, KeyError):
+                    if start_date not in conversations_by_date:
+                        conversations_by_date[start_date] = {}
+                    conversations_by_date[start_date][conv_id] = items
+            else:
+                if start_date not in conversations_by_date:
+                    conversations_by_date[start_date] = {}
+                conversations_by_date[start_date][conv_id] = items
+        
+        # Count already-extracted conversations (same logic as _run_topic_extraction)
+        from ...services.topic_extraction_service import EXTRACTION_VERSION
+        for date_str, date_conversations in conversations_by_date.items():
+            existing_topics = topic_storage.get_topics_for_date(date_str) or {}
+            for conv_id in date_conversations.keys():
+                if conv_id in existing_topics:
+                    existing_value = existing_topics[conv_id]
+                    # Check if it's a dict with current extraction_version
+                    if isinstance(existing_value, dict) and existing_value.get('extraction_version') == EXTRACTION_VERSION:
+                        already_extracted_count += 1
         
         return jsonify({
             'success': True,
             'start_date': start_date,
             'end_date': end_date,
-            'count': count
+            'count': total_count,
+            'already_extracted_count': already_extracted_count,
+            'to_process_count': total_count - already_extracted_count
         })
     
     except Exception as e:

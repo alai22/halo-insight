@@ -126,7 +126,7 @@ class TopicStorageService:
         normalized_mapping = {}
         for conv_id, value in topic_mapping.items():
             if isinstance(value, str):
-                # Old format: just topic string - mark extracted_at as None (unknown)
+                # Old format: just topic string - mark extracted_at and extraction_version as None (unknown)
                 normalized_mapping[conv_id] = {
                     'topic': value,
                     'sentiment': 'Neutral',
@@ -136,13 +136,17 @@ class TopicStorageService:
                     'collar_model': None,
                     'collar_serial_number': None,
                     'mobile_app_version': None,
-                    'extracted_at': None  # Unknown timestamp for old data
+                    'extracted_at': None,  # Unknown timestamp for old data
+                    'extraction_version': None  # Unknown version for old data
                 }
             elif isinstance(value, dict):
-                # New format: metadata dict - ensure extracted_at exists and migrate old product_version if present
+                # New format: metadata dict - ensure extracted_at and extraction_version exist, migrate old product_version if present
                 if 'extracted_at' not in value:
                     # If missing timestamp, mark as unknown
                     value['extracted_at'] = None
+                if 'extraction_version' not in value:
+                    # If missing version, mark as unknown (will trigger re-extraction)
+                    value['extraction_version'] = None
                 
                 # Migrate old product_version field to new fields if present
                 if 'product_version' in value and value['product_version']:
@@ -186,7 +190,7 @@ class TopicStorageService:
         
         # Normalize to dict format
         if isinstance(topic_or_metadata, str):
-            # Old format: mark extracted_at as None (unknown)
+            # Old format: mark extracted_at and extraction_version as None (unknown)
             self.topics_by_date[date][conversation_id] = {
                 'topic': topic_or_metadata,
                 'sentiment': 'Neutral',
@@ -196,12 +200,15 @@ class TopicStorageService:
                 'collar_model': None,
                 'collar_serial_number': None,
                 'mobile_app_version': None,
-                'extracted_at': None  # Unknown timestamp for old data
+                'extracted_at': None,  # Unknown timestamp for old data
+                'extraction_version': None  # Unknown version for old data
             }
         elif isinstance(topic_or_metadata, dict):
-            # Ensure extracted_at exists in metadata dict
+            # Ensure extracted_at and extraction_version exist in metadata dict
             if 'extracted_at' not in topic_or_metadata:
                 topic_or_metadata['extracted_at'] = None
+            if 'extraction_version' not in topic_or_metadata:
+                topic_or_metadata['extraction_version'] = None
             
             # Migrate old product_version field to new fields if present
             if 'product_version' in topic_or_metadata and topic_or_metadata['product_version']:

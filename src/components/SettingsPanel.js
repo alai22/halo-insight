@@ -80,14 +80,21 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
 
     // Get conversation count first for accurate progress tracking
     let totalConversations = 0;
+    let toProcessCount = 0;
+    let alreadyExtractedCount = 0;
     try {
       const countResponse = await axios.get(`/api/conversations/conversation-count?start_date=${startDate}&end_date=${endDate}`);
       if (countResponse.data.success) {
         totalConversations = countResponse.data.count || 0;
-        const estimatedBatches = Math.ceil(totalConversations / 10);
-        const estimatedMinutes = Math.ceil((totalConversations * 0.5) / 60);
+        alreadyExtractedCount = countResponse.data.already_extracted_count || 0;
+        toProcessCount = countResponse.data.to_process_count || totalConversations;
+        const estimatedBatches = Math.ceil(toProcessCount / 10);
+        const estimatedMinutes = Math.ceil((toProcessCount * 0.5) / 60);
         console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Found ${totalConversations} conversations (${estimatedBatches} batches of 10)`);
-        console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Estimated time: ~${estimatedMinutes} minutes`);
+        if (alreadyExtractedCount > 0) {
+          console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] ${alreadyExtractedCount} already extracted, ${toProcessCount} to process`);
+        }
+        console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Estimated time: ~${estimatedMinutes} minutes (based on ${toProcessCount} conversations to process)`);
       }
     } catch (e) {
       console.warn(`[${getTimestamp()}] [TOPIC EXTRACTION] Could not get conversation count, will estimate progress`);
