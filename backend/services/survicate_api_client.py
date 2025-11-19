@@ -99,6 +99,7 @@ class SurvicateAPIClient:
         start: Optional[str] = None,
         end: Optional[str] = None,
         attributes: Optional[List[str]] = None,
+        filters: Optional[List[Dict[str, Any]]] = None,
         items_per_page: int = 100,
         next_url: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -110,6 +111,8 @@ class SurvicateAPIClient:
             start: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
             end: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
             attributes: List of respondent attributes to include (e.g., ['email', 'first_name'])
+            filters: List of filter objects (OsFilter, DeviceFilter, PlatformFilter, TranslationFilter, 
+                     UrlFilter, CustomAttributeFilter, or QuestionAnswerFilter)
             items_per_page: Number of items per page (1-100, default 100)
             next_url: URL for next page (from pagination_data.next_url)
         
@@ -142,6 +145,15 @@ class SurvicateAPIClient:
                     # Survicate expects attributes as array parameter
                     for attr in attributes:
                         params[f'attributes[]'] = attr
+                if filters:
+                    # Survicate expects filters as array parameter
+                    # Filters should be JSON objects, so we need to send them as JSON in the request body
+                    # However, GET requests typically don't have bodies, so filters might need to be
+                    # sent as query parameters. Let's try sending them as JSON-encoded query params
+                    import json
+                    for i, filter_obj in enumerate(filters):
+                        # Survicate API might expect filters as filters[]=JSON_STRING
+                        params[f'filters[{i}]'] = json.dumps(filter_obj)
             
             response = requests.get(url, headers=self.headers, params=params, timeout=60)
             
