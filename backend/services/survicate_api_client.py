@@ -33,18 +33,21 @@ class SurvicateAPIClient:
             raise ValueError("SURVICATE_API_KEY not configured")
         
         # Build authorization header
-        # Survicate API typically uses Bearer token authentication
-        # According to Survicate docs, use: Authorization: Bearer {API_KEY}
-        # Try Bearer token first (standard for Survicate API)
-        auth_header = f'Bearer {self.api_key}'
+        # According to Survicate Data Export API docs: Authorization: Basic {apiKey}
+        # Use Basic auth with API key only (no password/workspace key in Basic auth)
+        import base64
+        # Basic auth format: base64(apiKey:)
+        credentials = f"{self.api_key}:"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        auth_header = f'Basic {encoded_credentials}'
         
         self.headers = {
             'Authorization': auth_header,
             'Content-Type': 'application/json'
         }
         
-        # Store original auth method for fallback
-        self._auth_method = 'bearer'
+        # Store auth method
+        self._auth_method = 'basic'
         
         # Log initialization details (after _auth_method is set)
         logger.info(f"SurvicateAPIClient init - API key from env: {bool(api_key_env)}, from config: {bool(Config.SURVICATE_API_KEY)}, final: {bool(self.api_key)}")
@@ -62,33 +65,18 @@ class SurvicateAPIClient:
             # Log response details for debugging
             logger.info(f"Response status: {response.status_code}")
             
-            # If Bearer auth fails with 403, try alternative auth methods
-            if response.status_code == 403 and self._auth_method == 'bearer':
-                # Try Basic auth with API key only (some Survicate setups use this)
-                logger.info("Bearer auth failed with 403, trying Basic auth with API key only")
-                import base64
-                credentials = f"{self.api_key}:"
-                encoded_credentials = base64.b64encode(credentials.encode()).decode()
-                self.headers['Authorization'] = f'Basic {encoded_credentials}'
-                self._auth_method = 'basic'
-                logger.info(f"Retrying with Basic auth (API key only)")
-                response = requests.get(url, headers=self.headers, timeout=30)
-                logger.info(f"Retry response status: {response.status_code}")
-                
-                # If that fails and we have workspace key, try Basic auth with workspace key
-                if response.status_code == 403 and self.workspace_key:
-                    logger.info("Basic auth with API key only failed, trying Basic auth with workspace key")
-                    credentials = f"{self.api_key}:{self.workspace_key}"
-                    encoded_credentials = base64.b64encode(credentials.encode()).decode()
-                    self.headers['Authorization'] = f'Basic {encoded_credentials}'
-                    response = requests.get(url, headers=self.headers, timeout=30)
-                    logger.info(f"Retry with workspace key - response status: {response.status_code}")
+            # If Basic auth fails with 403, log error (no fallback - Basic is the correct method)
+            if response.status_code == 403:
+                logger.error("Basic auth failed with 403 - check API key permissions and Data Export API access")
             
             # Log response body for 403 errors to see what Survicate says
             if response.status_code == 403:
                 try:
-                    error_body = response.text[:500]  # First 500 chars
-                    logger.error(f"Survicate API 403 error response: {error_body}")
+                    error_body = response.text[:1000]  # First 1000 chars to see full HTML
+                    logger.error(f"Survicate API 403 error response (first 1000 chars): {error_body}")
+                    # Try to extract meaningful error from HTML if possible
+                    if '<html' in error_body.lower() or '<body' in error_body.lower():
+                        logger.error("Survicate returned HTML instead of JSON - this may indicate wrong endpoint or authentication format")
                 except:
                     pass
             
@@ -108,71 +96,77 @@ class SurvicateAPIClient:
     def get_responses(
         self,
         survey_id: str,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
         attributes: Optional[List[str]] = None,
-        limit: int = 100,
-        offset: int = 0
+        items_per_page: int = 100,
+        next_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get survey responses with pagination
+        Get survey responses with pagination (matches Survicate API documentation)
         
         Args:
             survey_id: Survey ID
-            since: ISO 8601 date string (e.g., '2024-01-01T00:00:00Z')
-            until: ISO 8601 date string (e.g., '2024-01-31T23:59:59Z')
+            start: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
+            end: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
             attributes: List of respondent attributes to include (e.g., ['email', 'first_name'])
-            limit: Number of responses per page (max 100)
-            offset: Pagination offset
+            items_per_page: Number of items per page (1-100, default 100)
+            next_url: URL for next page (from pagination_data.next_url)
         
         Returns:
-            Dict with 'responses' list and 'total' count
+            Dict with 'data' list and 'pagination_data' dict
         """
         try:
-            url = f"{self.base_url}/surveys/{survey_id}/responses"
-            params = {
-                'limit': min(limit, 100),  # API max is 100
-                'offset': offset
-            }
+            # If next_url is provided, use it directly (Survicate provides full URL)
+            if next_url:
+                # next_url might be relative or absolute
+                if next_url.startswith('http'):
+                    url = next_url
+                else:
+                    # Relative URL - prepend base URL
+                    url = f"{self.base_url}{next_url}"
+                params = {}
+            else:
+                url = f"{self.base_url}/surveys/{survey_id}/responses"
+                params = {
+                    'items_per_page': min(max(items_per_page, 1), 100)  # API range is 1-100
+                }
             
-            if since:
-                params['since'] = since
-            if until:
-                params['until'] = until
-            if attributes:
-                for attr in attributes:
-                    params[f'attributes[]'] = attr
+            # Add optional parameters (only if not using next_url)
+            if not next_url:
+                if start:
+                    params['start'] = start
+                if end:
+                    params['end'] = end
+                if attributes:
+                    # Survicate expects attributes as array parameter
+                    for attr in attributes:
+                        params[f'attributes[]'] = attr
             
             response = requests.get(url, headers=self.headers, params=params, timeout=60)
             
-            # If Bearer auth fails with 403, try alternative auth methods
-            if response.status_code == 403 and self._auth_method == 'bearer':
-                logger.info("Bearer auth failed with 403, trying Basic auth with API key only")
-                import base64
-                credentials = f"{self.api_key}:"
-                encoded_credentials = base64.b64encode(credentials.encode()).decode()
-                self.headers['Authorization'] = f'Basic {encoded_credentials}'
-                self._auth_method = 'basic'
-                response = requests.get(url, headers=self.headers, params=params, timeout=60)
-                
-                # If that fails and we have workspace key, try Basic auth with workspace key
-                if response.status_code == 403 and self.workspace_key:
-                    logger.info("Basic auth with API key only failed, trying Basic auth with workspace key")
-                    credentials = f"{self.api_key}:{self.workspace_key}"
-                    encoded_credentials = base64.b64encode(credentials.encode()).decode()
-                    self.headers['Authorization'] = f'Basic {encoded_credentials}'
-                    response = requests.get(url, headers=self.headers, params=params, timeout=60)
+            # If Basic auth fails with 403, log error (no fallback - Basic is the correct method)
+            if response.status_code == 403:
+                logger.error("Basic auth failed with 403 - check API key permissions and Data Export API access")
             
             # Log response body for 403 errors
             if response.status_code == 403:
                 try:
-                    error_body = response.text[:500]
-                    logger.error(f"Survicate API 403 error response: {error_body}")
+                    error_body = response.text[:1000]  # First 1000 chars
+                    logger.error(f"Survicate API 403 error response (first 1000 chars): {error_body}")
+                    if '<html' in error_body.lower() or '<body' in error_body.lower():
+                        logger.error("Survicate returned HTML instead of JSON - this may indicate wrong endpoint or authentication format")
                 except:
                     pass
             
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            # Ensure result has expected structure
+            if 'data' not in result:
+                result['data'] = []
+            if 'pagination_data' not in result:
+                result['pagination_data'] = {'has_more': False, 'next_url': None}
+            return result
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 403:
                 error_msg = "Survicate API access denied. Check SURVICATE_API_KEY and ensure it has Data Export API access. If you have a workspace key, set SURVICATE_WORKSPACE_KEY."
@@ -192,26 +186,27 @@ class SurvicateAPIClient:
     def get_all_responses(
         self,
         survey_id: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
         attributes: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Get all responses for a survey (handles pagination automatically)
+        Uses Survicate's pagination_data.next_url for pagination
         
         Args:
             survey_id: Survey ID (defaults to Config.SURVICATE_SURVEY_ID)
-            since: ISO 8601 date string
-            until: ISO 8601 date string
+            start: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
+            end: ISO 8601 timestamp with microseconds (e.g., '2023-01-01T00:00:00.000000Z')
             attributes: List of respondent attributes
         
         Returns:
-            List of all response objects
+            List of all response objects from 'data' array
         """
         survey_id = survey_id or Config.SURVICATE_SURVEY_ID
         all_responses = []
-        offset = 0
-        limit = 100
+        items_per_page = 100
+        next_url = None
         
         # Default attributes to include
         if attributes is None:
@@ -223,30 +218,33 @@ class SurvicateAPIClient:
             try:
                 result = self.get_responses(
                     survey_id=survey_id,
-                    since=since,
-                    until=until,
+                    start=start,
+                    end=end,
                     attributes=attributes,
-                    limit=limit,
-                    offset=offset
+                    items_per_page=items_per_page,
+                    next_url=next_url
                 )
                 
-                responses = result.get('responses', [])
+                # Survicate API returns responses in 'data' array
+                responses = result.get('data', [])
                 if not responses:
                     break
                 
                 all_responses.extend(responses)
-                total = result.get('total', len(responses))
                 
-                logger.info(f"Fetched {len(all_responses)}/{total} responses")
+                # Check pagination
+                pagination = result.get('pagination_data', {})
+                has_more = pagination.get('has_more', False)
+                next_url = pagination.get('next_url')
                 
-                # Check if we've fetched all responses
-                if len(all_responses) >= total or len(responses) < limit:
+                logger.info(f"Fetched {len(all_responses)} responses (has_more: {has_more})")
+                
+                # If no more pages, break
+                if not has_more or not next_url:
                     break
                 
-                offset += limit
-                
             except Exception as e:
-                logger.error(f"Error fetching responses at offset {offset}: {e}")
+                logger.error(f"Error fetching responses: {e}")
                 raise
         
         logger.info(f"Successfully fetched {len(all_responses)} total responses")

@@ -718,6 +718,93 @@ def check_env_vars():
     })
 
 
+@survicate_bp.route('/test-api-raw', methods=['GET'])
+def test_api_raw():
+    """Test Survicate API with raw request to see exact error response"""
+    try:
+        import requests
+        import os
+        import base64
+        
+        api_key = Config.SURVICATE_API_KEY
+        workspace_key = Config.SURVICATE_WORKSPACE_KEY
+        base_url = Config.SURVICATE_API_BASE_URL
+        
+        if not api_key:
+            return jsonify({
+                'success': False,
+                'error': 'SURVICATE_API_KEY not configured'
+            }), 500
+        
+        # Test different authentication methods
+        results = {}
+        
+        # Method 1: Bearer token
+        headers1 = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        try:
+            response1 = requests.get(f"{base_url}/surveys", headers=headers1, timeout=10)
+            results['bearer'] = {
+                'status_code': response1.status_code,
+                'response_preview': response1.text[:500],
+                'headers': dict(response1.headers)
+            }
+        except Exception as e:
+            results['bearer'] = {'error': str(e)}
+        
+        # Method 2: Basic auth with API key only
+        credentials2 = f"{api_key}:"
+        encoded2 = base64.b64encode(credentials2.encode()).decode()
+        headers2 = {
+            'Authorization': f'Basic {encoded2}',
+            'Content-Type': 'application/json'
+        }
+        try:
+            response2 = requests.get(f"{base_url}/surveys", headers=headers2, timeout=10)
+            results['basic_api_only'] = {
+                'status_code': response2.status_code,
+                'response_preview': response2.text[:500],
+                'headers': dict(response2.headers)
+            }
+        except Exception as e:
+            results['basic_api_only'] = {'error': str(e)}
+        
+        # Method 3: Basic auth with workspace key (if available)
+        if workspace_key:
+            credentials3 = f"{api_key}:{workspace_key}"
+            encoded3 = base64.b64encode(credentials3.encode()).decode()
+            headers3 = {
+                'Authorization': f'Basic {encoded3}',
+                'Content-Type': 'application/json'
+            }
+            try:
+                response3 = requests.get(f"{base_url}/surveys", headers=headers3, timeout=10)
+                results['basic_with_workspace'] = {
+                    'status_code': response3.status_code,
+                    'response_preview': response3.text[:500],
+                    'headers': dict(response3.headers)
+                }
+            except Exception as e:
+                results['basic_with_workspace'] = {'error': str(e)}
+        
+        return jsonify({
+            'success': True,
+            'base_url': base_url,
+            'api_key_length': len(api_key) if api_key else 0,
+            'workspace_key_length': len(workspace_key) if workspace_key else 0,
+            'test_results': results
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to test API raw: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @survicate_bp.route('/api-status', methods=['GET'])
 def get_api_status():
     """Test Survicate API connection"""

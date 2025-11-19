@@ -4,7 +4,7 @@ Survicate API Response Parser
 Converts Survicate API JSON responses to SurveyResponse objects
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from ..models.survey import SurveyResponse
 from ..utils.logging import get_logger
@@ -42,58 +42,83 @@ class SurvicateAPIParser:
     
     @staticmethod
     def _parse_single_response(api_response: Dict[str, Any]) -> Optional[SurveyResponse]:
-        """Parse a single API response object"""
-        # Extract basic fields
-        response_id = api_response.get('id', '')
-        respondent_id = api_response.get('respondentId', '')
+        """
+        Parse a single API response object according to Survicate API documentation
         
-        # Parse date/time
-        created_at = api_response.get('createdAt', '')
-        if created_at:
-            # Convert ISO 8601 to our format: 'YYYY-MM-DD HH:MM:SS'
+        Expected structure:
+        {
+            "uuid": "...",
+            "respondent_uuid": "...",
+            "collected_at": "2023-01-01T00:00:00.000000Z",
+            "url": "...",
+            "device_type": "Desktop|Mobile|Tablet|Tv",
+            "operating_system": "Android|iOS|...",
+            "language": "en",
+            "questions": [...],
+            "attributes": [{"name": "...", "value": "..."}]
+        }
+        """
+        # Extract basic fields (matching Survicate API docs)
+        response_uuid = api_response.get('uuid', '').strip()
+        respondent_uuid = api_response.get('respondent_uuid', '').strip()
+        
+        # Parse date/time (collected_at in Survicate API)
+        collected_at = api_response.get('collected_at', '')
+        if collected_at:
+            # Convert ISO 8601 with microseconds to our format: 'YYYY-MM-DD HH:MM:SS'
             try:
-                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                # Handle microseconds format: '2023-01-01T00:00:00.000000Z'
+                dt_str = collected_at.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(dt_str)
                 date_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                date_time = created_at
+            except Exception as e:
+                logger.warning(f"Failed to parse collected_at '{collected_at}': {e}")
+                date_time = collected_at
         else:
             date_time = ''
         
-        if not response_id or not date_time:
+        if not response_uuid or not date_time:
+            logger.warning(f"Missing required fields: uuid={bool(response_uuid)}, collected_at={bool(collected_at)}")
             return None
         
-        # Extract respondent attributes
-        attributes = api_response.get('attributes', {}) or {}
-        email = attributes.get('email') or None
-        first_name = attributes.get('first_name') or None
-        last_name = attributes.get('last_name') or None
-        user_id = attributes.get('user_id') or attributes.get('sso_id') or attributes.get('braze_id') or None
+        # Extract respondent attributes (array of {name, value} objects in Survicate API)
+        attributes_array = api_response.get('attributes', []) or []
+        attributes_dict = {}
+        for attr in attributes_array:
+            if isinstance(attr, dict):
+                name = attr.get('name', '').strip()
+                value = attr.get('value', '').strip()
+                if name:
+                    attributes_dict[name] = value
         
-        # Extract metadata
+        email = attributes_dict.get('email') or None
+        first_name = attributes_dict.get('first_name') or None
+        last_name = attributes_dict.get('last_name') or None
+        user_id = attributes_dict.get('user_id') or attributes_dict.get('sso_id') or attributes_dict.get('braze_id') or None
+        
+        # Extract metadata (matching Survicate API structure)
         metadata = {
-            'device': api_response.get('device', {}).get('type') if isinstance(api_response.get('device'), dict) else None,
-            'platform': api_response.get('device', {}).get('os') if isinstance(api_response.get('device'), dict) else None,
-            'page': api_response.get('page', ''),
-            'braze_id': attributes.get('braze_id'),
-            'sso_id': attributes.get('sso_id'),
+            'device': api_response.get('device_type') or None,
+            'platform': api_response.get('operating_system') or None,
+            'page': api_response.get('url') or None,
+            'braze_id': attributes_dict.get('braze_id'),
+            'sso_id': attributes_dict.get('sso_id'),
         }
         
-        # Extract answers
+        # Extract answers from questions array (matching Survicate API structure)
         answers = {}
-        api_answers = api_response.get('answers', []) or []
+        questions = api_response.get('questions', []) or []
         
-        for answer_obj in api_answers:
-            question_id = answer_obj.get('questionId', '')
-            question_text = answer_obj.get('questionText', '')
-            
-            # Generate question key (Q1, Q2, etc.)
-            question_key = SurvicateAPIParser._extract_question_key(question_id, question_text)
-            if not question_key:
+        for question_obj in questions:
+            question_id = question_obj.get('question_id')
+            if question_id is None:
                 continue
             
-            # Extract answer value
-            answer_value = SurvicateAPIParser._extract_answer_value(answer_obj)
-            comment_value = answer_obj.get('comment') or answer_obj.get('text') or None
+            # Generate question key (Q1, Q2, etc.)
+            question_key = f"Q{question_id}"
+            
+            # Extract answer based on question type
+            answer_value, comment_value = SurvicateAPIParser._extract_answer_from_question(question_obj)
             
             if answer_value or comment_value:
                 answers[question_key] = {
@@ -102,8 +127,8 @@ class SurvicateAPIParser:
                 }
         
         return SurveyResponse(
-            response_uuid=response_id,
-            respondent_uuid=respondent_id,
+            response_uuid=response_uuid,
+            respondent_uuid=respondent_uuid,
             date_time=date_time,
             email=email,
             first_name=first_name,
@@ -114,54 +139,81 @@ class SurvicateAPIParser:
         )
     
     @staticmethod
-    def _extract_question_key(question_id: str, question_text: str) -> Optional[str]:
-        """Extract question key from question ID or text"""
-        # Try to extract Q# pattern from question text
-        import re
+    def _extract_answer_from_question(question_obj: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Extract answer value and comment from question object (matching Survicate API structure)
         
-        # Look for Q# pattern in question text
-        match = re.search(r'Q#?(\d+)', question_text, re.IGNORECASE)
-        if match:
-            return f"Q{match.group(1)}"
+        Returns:
+            Tuple of (answer_value, comment_value)
+        """
+        question_type = question_obj.get('question_type', '')
+        answer_value = None
+        comment_value = None
         
-        # If question_id looks like a number, use it
-        if question_id.isdigit():
-            return f"Q{question_id}"
+        # Handle different answer types according to Survicate API docs
         
-        # Try to extract number from question_id
-        match = re.search(r'(\d+)', question_id)
-        if match:
-            return f"Q{match.group(1)}"
+        # SingleChoiceAnswer, RatingAnswer, NpsAnswer - has 'answer' object
+        if 'answer' in question_obj:
+            answer_obj = question_obj['answer']
+            
+            # Check if answer is a string (OpenQuestionAnswer)
+            if isinstance(answer_obj, str):
+                answer_value = answer_obj
+            # Otherwise it's an object
+            elif isinstance(answer_obj, dict):
+                # Extract content
+                if 'content' in answer_obj:
+                    answer_value = str(answer_obj['content'])
+                elif 'rating' in answer_obj:
+                    answer_value = str(answer_obj['rating'])
+                
+                # Extract comment
+                if 'comment' in answer_obj:
+                    comment_value = str(answer_obj['comment'])
         
-        # Fallback: use question_id as-is if it's short
-        if len(question_id) < 20:
-            return question_id
+        # MultipleChoiceAnswer, MatrixAnswer, RankingAnswer - has 'answers' array
+        if 'answers' in question_obj:
+            answers_array = question_obj['answers']
+            answer_parts = []
+            comments = []
+            
+            for ans in answers_array:
+                if isinstance(ans, dict):
+                    # Extract content/score/rank
+                    if 'content' in ans:
+                        answer_parts.append(str(ans['content']))
+                    elif 'score' in ans:
+                        answer_parts.append(str(ans['score']))
+                    elif 'rank' in ans:
+                        answer_parts.append(f"Rank {ans['rank']}: {ans.get('content', '')}")
+                    
+                    # Extract comment
+                    if 'comment' in ans and ans['comment']:
+                        comments.append(str(ans['comment']))
+            
+            if answer_parts:
+                answer_value = ', '.join(answer_parts)
+            if comments:
+                comment_value = ' | '.join(comments)
         
-        return None
-    
-    @staticmethod
-    def _extract_answer_value(answer_obj: Dict[str, Any]) -> Optional[str]:
-        """Extract answer value from answer object"""
-        # Try different answer fields
-        if answer_obj.get('answer'):
-            return str(answer_obj['answer'])
+        # FormAnswer - has 'fields' array
+        if 'fields' in question_obj:
+            fields = question_obj['fields']
+            field_parts = []
+            
+            for field in fields:
+                if isinstance(field, dict):
+                    field_type = field.get('type', '')
+                    field_content = field.get('content', '')
+                    if field_content:
+                        field_parts.append(f"{field_type}: {field_content}")
+            
+            if field_parts:
+                answer_value = ' | '.join(field_parts)
         
-        if answer_obj.get('value'):
-            return str(answer_obj['value'])
+        # CtaAnswer - has 'action_performed' boolean
+        if 'action_performed' in question_obj:
+            answer_value = "Yes" if question_obj['action_performed'] else "No"
         
-        if answer_obj.get('text'):
-            return str(answer_obj['text'])
-        
-        # Handle choice answers
-        choices = answer_obj.get('choices', [])
-        if choices:
-            choice_texts = [str(c.get('text', c.get('label', ''))) for c in choices if c]
-            return ', '.join([c for c in choice_texts if c])
-        
-        # Handle single choice
-        choice = answer_obj.get('choice')
-        if choice:
-            return str(choice.get('text', choice.get('label', '')))
-        
-        return None
+        return (answer_value, comment_value)
 
