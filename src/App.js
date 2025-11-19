@@ -522,6 +522,9 @@ function App() {
         healthStatus={healthStatus}
         onRefreshHealth={checkHealth}
         currentMode={currentMode}
+        setAdminMode={setAdminMode}
+        setCurrentMode={setCurrentMode}
+        onCloseSettings={() => setShowSettings(false)}
       />
 
       {/* Main Content */}

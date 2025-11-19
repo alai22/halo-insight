@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Database, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle, XCircle, Download } from 'lucide-react';
 
-const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
+const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
   const [downloadStats, setDownloadStats] = useState(null);
   const [surveyStats, setSurveyStats] = useState(null);
   const [dataSource, setDataSource] = useState(
@@ -143,6 +143,26 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode }) => {
           </button>
         </div>
       </div>
+
+      {/* Download Manager Button - Only show in Gladly Conversations tab */}
+      {(currentMode === 'conversations' || currentMode === 'ask' || currentMode === 'conversation-trends') && (
+        <div className="p-6 border-t border-gray-200">
+          <button
+            onClick={() => {
+              setAdminMode('download');
+              setCurrentMode('ask'); // Reset to a regular mode
+              if (onCloseSettings) onCloseSettings(); // Close settings panel if open
+            }}
+            className="w-full flex items-center space-x-3 px-4 py-3 bg-orange-50 border-2 border-orange-200 rounded-lg hover:bg-orange-100 hover:border-orange-300 transition-all group"
+          >
+            <Download className="h-5 w-5 text-orange-600 group-hover:text-orange-700" />
+            <div className="flex-1 text-left">
+              <div className="text-sm font-medium text-orange-900">Download Manager</div>
+              <div className="text-xs text-orange-600">Download conversation data from Gladly</div>
+            </div>
+          </button>
+        </div>
+      )}
 
       {/* Conversation Stats - Only show in Gladly Conversations mode */}
       {downloadStats && (currentMode === 'conversations' || currentMode === 'ask') && (
