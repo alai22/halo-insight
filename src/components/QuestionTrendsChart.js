@@ -24,16 +24,24 @@ const QuestionTrendsChart = ({ question, questionText }) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get(`/api/survicate/question-trends?question=${question}`);
+      // Get data source and file key from localStorage (set by Sidebar)
+      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const fileKey = localStorage.getItem('survicate_selected_file_key');
+      const url = `/api/survicate/question-trends?question=${question}&data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
+      const response = await axios.get(url);
       if (response.data.success) {
         setData(response.data.data);
         setAnswers(response.data.answers || []);
         setTotalResponses(response.data.total_responses || 0);
       } else {
-        setError(response.data.error || 'Failed to load question trends');
+        const errorMsg = response.data.error || 'Failed to load question trends';
+        const details = response.data.details ? ` - ${response.data.details}` : '';
+        setError(`${errorMsg}${details}`);
       }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to load question trends');
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to load question trends';
+      const details = err.response?.data?.details ? ` - ${err.response.data.details}` : '';
+      setError(`${errorMsg}${details}`);
       console.error('Error fetching question trends:', err);
     } finally {
       setLoading(false);
@@ -42,6 +50,33 @@ const QuestionTrendsChart = ({ question, questionText }) => {
 
   useEffect(() => {
     fetchQuestionTrends();
+    // Also refresh when data source changes
+    const handleStorageChange = () => {
+      fetchQuestionTrends();
+    };
+    const handleFileChange = () => {
+      fetchQuestionTrends();
+    };
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('survicate-file-changed', handleFileChange);
+    // Poll for data source changes (since localStorage events don't fire in same window)
+    const interval = setInterval(() => {
+      const currentSource = localStorage.getItem('survicate_data_source') || 'file';
+      const currentFileKey = localStorage.getItem('survicate_selected_file_key') || 'latest';
+      const lastSource = localStorage.getItem('_last_question_data_source') || 'file';
+      const lastFileKey = localStorage.getItem('_last_question_file_key') || 'latest';
+      if (currentSource !== lastSource || currentFileKey !== lastFileKey) {
+        localStorage.setItem('_last_question_data_source', currentSource);
+        localStorage.setItem('_last_question_file_key', currentFileKey);
+        fetchQuestionTrends();
+      }
+    }, 1000); // Check every second
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('survicate-file-changed', handleFileChange);
+      clearInterval(interval);
+    };
   }, [question]);
 
   if (loading) {

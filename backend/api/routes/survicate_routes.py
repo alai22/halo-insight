@@ -926,29 +926,73 @@ def get_question_trends():
     try:
         import pandas as pd
         import os
+        import io
         
-        # Get the path to the CSV file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_path = os.path.join(current_dir, '..', '..', '..', 'data', 
-                                'survicate_cancelled_subscriptions_augmented.csv')
+        # Check if we should use API mode (S3 cache) or file mode
+        data_source = request.args.get('data_source', 'file')
+        file_key = request.args.get('file_key')  # Optional: specific file to use
         
-        if not os.path.exists(csv_path):
-            logger.error(f"CSV file not found at {csv_path}")
-            return jsonify({
-                'error': 'Data file not found',
-                'details': f'Expected file at: {csv_path}'
-            }), 404
+        if data_source == 'api':
+            # Load from cache (S3 or local storage)
+            try:
+                from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+                cache_service = SurvicateS3CacheService()
+                
+                # Check if S3 is available or if local storage is being used
+                if not cache_service.use_local_storage and not cache_service.s3_client:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Storage not available',
+                        'details': 'S3 client not configured and local storage not enabled. Set S3_BUCKET_NAME or SURVICATE_USE_LOCAL_STORAGE=true.'
+                    }), 503
+                
+                augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
+                if not augmented_csv_content:
+                    storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                    return jsonify({
+                        'success': False,
+                        'error': 'Augmented CSV not found',
+                        'details': f'Please download and augment data from API first using the "Download from API" button. (Checked {storage_type})'
+                    }), 404
+                
+                # Read CSV from string content
+                df = pd.read_csv(io.StringIO(augmented_csv_content))
+                storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                logger.info(f"Loaded {len(df)} rows from {storage_type} augmented cache (file: {file_key or 'latest'})")
+                
+            except Exception as e:
+                logger.error(f"Failed to load from cache: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to load augmented CSV',
+                    'details': str(e)
+                }), 500
+        else:
+            # Load from local file
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            csv_path = os.path.join(current_dir, '..', '..', '..', 'data', 
+                                    'survicate_cancelled_subscriptions_augmented.csv')
+            
+            if not os.path.exists(csv_path):
+                logger.error(f"CSV file not found at {csv_path}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Data file not found',
+                    'details': f'Expected file at: {csv_path}'
+                }), 404
+            
+            # Read the CSV
+            df = pd.read_csv(csv_path)
+            logger.info(f"Loaded {len(df)} rows from local file")
         
         # Get question parameter
         question = request.args.get('question')
         if not question:
             return jsonify({
+                'success': False,
                 'error': 'Question parameter required',
                 'details': 'Specify question as Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, or Q11'
             }), 400
-        
-        # Read the CSV first to get actual column names
-        df = pd.read_csv(csv_path)
         
         # Map question codes to search patterns (flexible matching)
         question_patterns = {
@@ -966,6 +1010,7 @@ def get_question_trends():
         
         if question not in question_patterns:
             return jsonify({
+                'success': False,
                 'error': 'Invalid question',
                 'details': f'Valid questions: {", ".join(sorted(question_patterns.keys()))}'
             }), 400
@@ -1002,6 +1047,7 @@ def get_question_trends():
         if not column_name:
             logger.error(f"Could not find column for question {question}. Available columns: {[c for c in df.columns if question[1:] in str(c)]}")
             return jsonify({
+                'success': False,
                 'error': 'Column not found',
                 'details': f'Could not find matching column for question {question}'
             }), 404
@@ -1018,6 +1064,7 @@ def get_question_trends():
         
         if len(df) == 0:
             return jsonify({
+                'success': False,
                 'error': 'No valid data found',
                 'details': 'No rows with valid year_month'
             }), 400
@@ -1027,6 +1074,7 @@ def get_question_trends():
         
         if len(df_with_responses) == 0:
             return jsonify({
+                'success': False,
                 'error': 'No responses found',
                 'details': f'No responses found for question {question}'
             }), 400
