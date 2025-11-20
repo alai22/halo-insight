@@ -9,6 +9,10 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
   );
   const [cacheStatus, setCacheStatus] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [augmentedFiles, setAugmentedFiles] = useState([]);
+  const [selectedFileKey, setSelectedFileKey] = useState(
+    localStorage.getItem('survicate_selected_file_key') || 'latest'
+  );
 
   // Fetch download stats
   useEffect(() => {
@@ -104,6 +108,42 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       return () => clearInterval(interval);
     }
   }, [currentMode, dataSource]);
+
+  // Fetch augmented files list when in API mode
+  useEffect(() => {
+    const fetchAugmentedFiles = async () => {
+      if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+        try {
+          const response = await fetch('/api/survicate/augmented-files');
+          const data = await response.json();
+          if (data.success) {
+            setAugmentedFiles(data.files || []);
+          }
+        } catch (error) {
+          console.error('Error fetching augmented files:', error);
+        }
+      } else {
+        setAugmentedFiles([]);
+      }
+    };
+
+    fetchAugmentedFiles();
+    // Refresh files list every 30 seconds when in API mode
+    if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+      const interval = setInterval(fetchAugmentedFiles, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [currentMode, dataSource]);
+
+  const handleFileSelectionChange = (fileKey) => {
+    setSelectedFileKey(fileKey);
+    localStorage.setItem('survicate_selected_file_key', fileKey);
+    // Trigger chart refresh by reloading the page data
+    if (currentMode === 'churn-trends') {
+      // Force chart refresh by triggering a custom event
+      window.dispatchEvent(new CustomEvent('survicate-file-changed', { detail: { fileKey } }));
+    }
+  };
 
   const handleDataSourceChange = async (newSource) => {
     setDataSource(newSource);
@@ -355,6 +395,34 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
               <option value="file">File (CSV)</option>
               <option value="api">API (Live)</option>
             </select>
+          </div>
+        </div>
+      )}
+
+      {/* Augmented File Selection - Show when in API mode */}
+      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && augmentedFiles.length > 0 && (
+        <div className="p-6 border-t border-gray-200">
+          <div className="text-xs text-gray-500">
+            <div className="mb-2">
+              <strong>Augmented File:</strong>
+            </div>
+            <select
+              value={selectedFileKey}
+              onChange={(e) => handleFileSelectionChange(e.target.value)}
+              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="latest">Latest ({augmentedFiles[0]?.response_count || 0} responses)</option>
+              {augmentedFiles.map((file) => (
+                <option key={file.key} value={file.key}>
+                  {file.display_name} ({file.response_count} responses) - {new Date(file.timestamp).toLocaleString()}
+                </option>
+              ))}
+            </select>
+            {augmentedFiles.length > 1 && (
+              <div className="mt-1 text-xs text-gray-400">
+                {augmentedFiles.length} files available
+              </div>
+            )}
           </div>
         </div>
       )}

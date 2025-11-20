@@ -191,33 +191,119 @@ def search_surveys():
         }), 500
 
 
+@survicate_bp.route('/augmented-files', methods=['GET'])
+def list_augmented_files():
+    """List all available augmented CSV files in S3"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        cache_service = SurvicateS3CacheService()
+        
+        if not cache_service.s3_client:
+            return jsonify({
+                'success': False,
+                'error': 'S3 not available',
+                'details': 'S3 client not configured.'
+            }), 503
+        
+        metadata = cache_service.get_augmented_files_metadata()
+        if not metadata or not metadata.get('files'):
+            return jsonify({
+                'success': True,
+                'files': []
+            })
+        
+        # Format file info for frontend
+        files = []
+        for file_info in metadata['files']:
+            files.append({
+                'key': file_info['key'],
+                'timestamp': file_info.get('timestamp', ''),
+                'response_count': file_info.get('response_count', 0),
+                'file_size': file_info.get('file_size', 0),
+                'last_modified': file_info.get('last_modified', ''),
+                'display_name': file_info['key'].split('/')[-1] if '/' in file_info['key'] else file_info['key']
+            })
+        
+        return jsonify({
+            'success': True,
+            'files': files
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to list augmented files: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to list augmented files'
+        }), 500
+
+
 @survicate_bp.route('/churn-trends', methods=['GET'])
 def get_churn_trends():
     """Get churn reason trends by month for visualization"""
     try:
         import pandas as pd
         import os
+        import io
         
-        # Get the path to the CSV file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_path = os.path.join(current_dir, '..', '..', '..', 'data', 
-                                'survicate_cancelled_subscriptions_augmented.csv')
+        # Check if we should use API mode (S3 cache) or file mode
+        data_source = request.args.get('data_source', 'file')
+        file_key = request.args.get('file_key')  # Optional: specific file to use
         
-        if not os.path.exists(csv_path):
-            logger.error(f"CSV file not found at {csv_path}")
-            return jsonify({
-                'error': 'Data file not found',
-                'details': f'Expected file at: {csv_path}'
-            }), 404
-        
-        # Read the CSV
-        df = pd.read_csv(csv_path)
+        if data_source == 'api':
+            # Load from S3 augmented cache
+            try:
+                from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+                cache_service = SurvicateS3CacheService()
+                
+                if not cache_service.s3_client:
+                    return jsonify({
+                        'error': 'S3 not available',
+                        'details': 'S3 client not configured. Use file mode or configure S3.'
+                    }), 503
+                
+                augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
+                if not augmented_csv_content:
+                    return jsonify({
+                        'error': 'Augmented CSV not found in S3',
+                        'details': 'Please download and process data from API first using the "Download from API" button.'
+                    }), 404
+                
+                # Read CSV from string content
+                df = pd.read_csv(io.StringIO(augmented_csv_content))
+                logger.info(f"Loaded {len(df)} rows from S3 augmented cache (file: {file_key or 'latest'})")
+                
+            except Exception as e:
+                logger.error(f"Failed to load from S3: {e}")
+                return jsonify({
+                    'error': 'Failed to load from S3',
+                    'details': str(e)
+                }), 500
+        else:
+            # Load from local file
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            csv_path = os.path.join(current_dir, '..', '..', '..', 'data', 
+                                    'survicate_cancelled_subscriptions_augmented.csv')
+            
+            if not os.path.exists(csv_path):
+                logger.error(f"CSV file not found at {csv_path}")
+                return jsonify({
+                    'error': 'Data file not found',
+                    'details': f'Expected file at: {csv_path}'
+                }), 404
+            
+            # Read the CSV
+            df = pd.read_csv(csv_path)
         
         # Filter out rows with missing data
         df = df[df['augmented_churn_reason'].notna() & df['year_month'].notna()]
         
-        # Filter out November 2024 (low data volume)
-        df = df[df['year_month'] != '2024-11']
+        # Filter out excluded months (configurable via SURVICATE_EXCLUDE_MONTHS env var)
+        exclude_months = Config.SURVICATE_EXCLUDE_MONTHS.split(',') if Config.SURVICATE_EXCLUDE_MONTHS else []
+        exclude_months = [m.strip() for m in exclude_months if m.strip()]
+        if exclude_months:
+            df = df[~df['year_month'].isin(exclude_months)]
+            logger.info(f"Excluded months: {exclude_months}")
         
         if len(df) == 0:
             return jsonify({
@@ -546,8 +632,12 @@ def get_question_trends():
         # Filter out rows with missing year_month
         df = df[df['year_month'].notna()]
         
-        # Filter out November 2024 (low data volume)
-        df = df[df['year_month'] != '2024-11']
+        # Filter out excluded months (configurable via SURVICATE_EXCLUDE_MONTHS env var)
+        exclude_months = Config.SURVICATE_EXCLUDE_MONTHS.split(',') if Config.SURVICATE_EXCLUDE_MONTHS else []
+        exclude_months = [m.strip() for m in exclude_months if m.strip()]
+        if exclude_months:
+            df = df[~df['year_month'].isin(exclude_months)]
+            logger.info(f"Excluded months: {exclude_months}")
         
         if len(df) == 0:
             return jsonify({

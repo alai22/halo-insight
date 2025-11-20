@@ -49,7 +49,11 @@ const ChurnTrendsChart = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get('/api/survicate/churn-trends');
+      // Get data source and file key from localStorage (set by Sidebar)
+      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const fileKey = localStorage.getItem('survicate_selected_file_key');
+      const url = `/api/survicate/churn-trends?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
+      const response = await axios.get(url);
       if (response.data.success) {
         setData(response.data.data);
         setReasons(response.data.reasons);
@@ -69,6 +73,32 @@ const ChurnTrendsChart = () => {
 
   useEffect(() => {
     fetchChurnTrends();
+    // Also refresh when data source changes
+    const handleStorageChange = () => {
+      fetchChurnTrends();
+    };
+    const handleFileChange = () => {
+      fetchChurnTrends();
+    };
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('survicate-file-changed', handleFileChange);
+    // Poll for data source changes (since localStorage events don't fire in same window)
+    const interval = setInterval(() => {
+      const currentSource = localStorage.getItem('survicate_data_source') || 'file';
+      const currentFileKey = localStorage.getItem('survicate_selected_file_key') || 'latest';
+      const lastSource = localStorage.getItem('_last_data_source') || 'file';
+      const lastFileKey = localStorage.getItem('_last_file_key') || 'latest';
+      if (currentSource !== lastSource || currentFileKey !== lastFileKey) {
+        localStorage.setItem('_last_data_source', currentSource);
+        localStorage.setItem('_last_file_key', currentFileKey);
+        fetchChurnTrends();
+      }
+    }, 1000);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('survicate-file-changed', handleFileChange);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleDownloadPDF = async () => {

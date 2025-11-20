@@ -24,7 +24,10 @@ class SurvicateS3CacheService:
         """Initialize S3 cache service"""
         self.bucket_name = Config.S3_BUCKET_NAME
         self.cache_key = Config.SURVICATE_S3_CACHE_KEY
+        self.augmented_cache_key = Config.SURVICATE_S3_AUGMENTED_CACHE_KEY  # Legacy single file key
+        self.augmented_prefix = Config.SURVICATE_S3_AUGMENTED_PREFIX  # Prefix for timestamped files
         self.metadata_key = Config.SURVICATE_S3_METADATA_KEY
+        self.augmented_metadata_key = Config.SURVICATE_S3_AUGMENTED_METADATA_KEY
         self.max_age_hours = Config.SURVICATE_CACHE_MAX_AGE_HOURS
         
         if not self.bucket_name:
@@ -171,6 +174,204 @@ class SurvicateS3CacheService:
             # Update metadata with error
             self.update_metadata(datetime.now(timezone.utc), f'error: {str(e)}')
             raise
+    
+    def save_augmented_csv_to_s3(self, csv_content: str, response_count: int = 0) -> str:
+        """
+        Save augmented CSV content to S3 with timestamped filename
+        
+        Args:
+            csv_content: CSV content to save
+            response_count: Number of responses in the CSV
+            
+        Returns:
+            S3 key of the saved file
+        """
+        if not self.s3_client:
+            raise ValueError("S3 client not available")
+        
+        if not csv_content:
+            logger.warning("No augmented CSV content to save")
+            return None
+        
+        try:
+            # Create timestamped filename
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+            timestamped_key = f"{self.augmented_prefix}augmented_{timestamp}.csv"
+            
+            logger.info(f"Saving augmented CSV to S3: s3://{self.bucket_name}/{timestamped_key}")
+            
+            # Upload timestamped file to S3
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=timestamped_key,
+                Body=csv_content.encode('utf-8'),
+                ContentType='text/csv'
+            )
+            
+            logger.info(f"Successfully saved augmented CSV to S3: s3://{self.bucket_name}/{timestamped_key}")
+            
+            # Also save to legacy key for backward compatibility
+            try:
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=self.augmented_cache_key,
+                    Body=csv_content.encode('utf-8'),
+                    ContentType='text/csv'
+                )
+                logger.info(f"Also saved to legacy key: {self.augmented_cache_key}")
+            except Exception as e:
+                logger.warning(f"Failed to save to legacy key: {e}")
+            
+            # Update metadata file listing all augmented files
+            self._update_augmented_files_metadata(timestamped_key, response_count)
+            
+            return timestamped_key
+            
+        except Exception as e:
+            logger.error(f"Failed to save augmented CSV to S3: {e}")
+            raise
+    
+    def _update_augmented_files_metadata(self, new_file_key: str, response_count: int):
+        """Update metadata file with list of all augmented files"""
+        try:
+            # Load existing metadata
+            existing_files = []
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket_name,
+                    Key=self.augmented_metadata_key
+                )
+                metadata_content = response['Body'].read().decode('utf-8')
+                existing_files = json.loads(metadata_content).get('files', [])
+            except self.s3_client.exceptions.NoSuchKey:
+                pass  # No existing metadata, start fresh
+            except Exception as e:
+                logger.warning(f"Failed to load existing metadata: {e}")
+            
+            # Get file info from S3
+            try:
+                response = self.s3_client.head_object(
+                    Bucket=self.bucket_name,
+                    Key=new_file_key
+                )
+                file_size = response.get('ContentLength', 0)
+                last_modified = response.get('LastModified')
+            except Exception as e:
+                logger.warning(f"Failed to get file info: {e}")
+                file_size = 0
+                last_modified = datetime.now(timezone.utc)
+            
+            # Add new file entry
+            new_entry = {
+                'key': new_file_key,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'response_count': response_count,
+                'file_size': file_size,
+                'last_modified': last_modified.isoformat() if hasattr(last_modified, 'isoformat') else str(last_modified)
+            }
+            
+            # Remove duplicate if exists (shouldn't happen, but just in case)
+            existing_files = [f for f in existing_files if f['key'] != new_file_key]
+            
+            # Add new entry at the beginning (most recent first)
+            existing_files.insert(0, new_entry)
+            
+            # Keep only last 50 files to avoid metadata bloat
+            existing_files = existing_files[:50]
+            
+            # Save updated metadata
+            metadata = {
+                'files': existing_files,
+                'last_updated': datetime.now(timezone.utc).isoformat()
+            }
+            
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=self.augmented_metadata_key,
+                Body=json.dumps(metadata, indent=2).encode('utf-8'),
+                ContentType='application/json'
+            )
+            
+            logger.info(f"Updated augmented files metadata: {len(existing_files)} files")
+            
+        except Exception as e:
+            logger.warning(f"Failed to update augmented files metadata: {e}")
+            # Don't fail the whole operation if metadata update fails
+    
+    def load_augmented_csv_from_s3(self, file_key: Optional[str] = None) -> Optional[str]:
+        """
+        Load augmented CSV content from S3
+        
+        Args:
+            file_key: Specific S3 key to load. If None, loads the most recent file.
+        
+        Returns:
+            CSV content as string, or None if not found
+        """
+        if not self.s3_client:
+            raise ValueError("S3 client not available. Check S3_BUCKET_NAME configuration.")
+        
+        # If no specific key provided, get the most recent file
+        if not file_key:
+            file_key = self.get_latest_augmented_file_key()
+            if not file_key:
+                # Fallback to legacy key
+                file_key = self.augmented_cache_key
+        
+        try:
+            logger.info(f"Loading augmented CSV from S3: s3://{self.bucket_name}/{file_key}")
+            response = self.s3_client.get_object(
+                Bucket=self.bucket_name,
+                Key=file_key
+            )
+            
+            # Read CSV content
+            content = response['Body'].read().decode('utf-8')
+            logger.info(f"Loaded augmented CSV from S3 ({len(content)} bytes)")
+            return content
+                    
+        except self.s3_client.exceptions.NoSuchKey:
+            logger.info(f"Augmented CSV not found in S3: {file_key}")
+            return None
+        except self.s3_client.exceptions.ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            error_msg = e.response.get('Error', {}).get('Message', str(e))
+            if error_code in ('403', 'Forbidden', 'InvalidAccessKeyId', 'SignatureDoesNotMatch'):
+                raise ValueError(f"S3 access denied - check AWS credentials. Error: {error_code} - {error_msg}")
+            else:
+                logger.error(f"Failed to load augmented CSV from S3: {error_code} - {error_msg}")
+                raise
+        except Exception as e:
+            logger.error(f"Failed to load augmented CSV from S3: {e}")
+            raise
+    
+    def get_latest_augmented_file_key(self) -> Optional[str]:
+        """Get the S3 key of the most recent augmented file"""
+        try:
+            metadata = self.get_augmented_files_metadata()
+            if metadata and metadata.get('files'):
+                return metadata['files'][0]['key']  # Files are sorted newest first
+        except Exception as e:
+            logger.warning(f"Failed to get latest file key: {e}")
+        return None
+    
+    def get_augmented_files_metadata(self) -> Optional[Dict]:
+        """Get metadata about all available augmented files"""
+        if not self.s3_client:
+            return None
+        
+        try:
+            response = self.s3_client.get_object(
+                Bucket=self.bucket_name,
+                Key=self.augmented_metadata_key
+            )
+            metadata_content = response['Body'].read().decode('utf-8')
+            return json.loads(metadata_content)
+        except self.s3_client.exceptions.NoSuchKey:
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to load augmented files metadata: {e}")
+            return None
     
     def _responses_to_csv(self, responses: List[SurveyResponse]) -> str:
         """Convert SurveyResponse objects to CSV format matching manual export"""

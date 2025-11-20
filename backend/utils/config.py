@@ -119,7 +119,13 @@ class Config:
     # Survicate S3 Cache Configuration
     SURVICATE_CACHE_MAX_AGE_HOURS: int = int(os.getenv('SURVICATE_CACHE_MAX_AGE_HOURS', '24'))
     SURVICATE_S3_CACHE_KEY: str = os.getenv('SURVICATE_S3_CACHE_KEY', 'survicate-cache/api_responses.csv')
+    SURVICATE_S3_AUGMENTED_CACHE_KEY: str = os.getenv('SURVICATE_S3_AUGMENTED_CACHE_KEY', 'survicate-cache/api_responses_augmented.csv')
+    SURVICATE_S3_AUGMENTED_PREFIX: str = os.getenv('SURVICATE_S3_AUGMENTED_PREFIX', 'survicate-cache/augmented/')
     SURVICATE_S3_METADATA_KEY: str = os.getenv('SURVICATE_S3_METADATA_KEY', 'survicate-cache/api_cache_meta.json')
+    SURVICATE_S3_AUGMENTED_METADATA_KEY: str = os.getenv('SURVICATE_S3_AUGMENTED_METADATA_KEY', 'survicate-cache/augmented_files_meta.json')
+    
+    # Survicate Chart Configuration
+    SURVICATE_EXCLUDE_MONTHS: str = os.getenv('SURVICATE_EXCLUDE_MONTHS', '2024-11')  # Comma-separated list of year-month to exclude (e.g., '2024-11,2025-01')
     
     # Authentication Configuration
     # Password for password-based login (stored securely on backend)

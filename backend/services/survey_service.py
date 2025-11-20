@@ -171,15 +171,29 @@ class SurveyService:
             # Parse responses
             survey_responses = parser.parse_responses(api_responses)
             
-            # Save to S3
+            # Save raw CSV to S3
             try:
                 cache_service.save_to_s3(survey_responses)
-                api_refresh_state['last_fetch'] = datetime.now().isoformat()
-                logger.info(f"API cache refresh completed: {len(survey_responses)} responses")
+                logger.info(f"Raw CSV saved to S3: {len(survey_responses)} responses")
             except Exception as s3_error:
-                error_msg = f"Failed to save to S3: {s3_error}"
+                error_msg = f"Failed to save raw CSV to S3: {s3_error}"
                 logger.error(error_msg)
                 api_refresh_state['error'] = error_msg
+                return
+            
+            # Augment the data and save augmented CSV to S3
+            try:
+                logger.info("Starting augmentation process...")
+                self._augment_and_save_to_s3(cache_service, survey_responses)
+                logger.info("Augmentation completed successfully")
+            except Exception as aug_error:
+                error_msg = f"Failed to augment data: {aug_error}"
+                logger.error(error_msg, exc_info=True)
+                # Don't fail the whole refresh if augmentation fails - raw data is still saved
+                api_refresh_state['error'] = error_msg
+            
+            api_refresh_state['last_fetch'] = datetime.now().isoformat()
+            logger.info(f"API cache refresh completed: {len(survey_responses)} responses")
             
         except ValueError as e:
             # API authentication/authorization error
@@ -225,6 +239,80 @@ class SurveyService:
             }
         finally:
             api_refresh_state['is_running'] = False
+    
+    def _augment_and_save_to_s3(self, cache_service, survey_responses: List):
+        """Augment survey data and save augmented CSV to S3"""
+        import tempfile
+        import os
+        import sys
+        
+        # Import augmentation function
+        # Add project root to path to import augment_churn_reasons
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        try:
+            from augment_churn_reasons import augment_csv
+            
+            # Download raw CSV from S3 to temp file
+            logger.info("Downloading raw CSV from S3 for augmentation...")
+            raw_csv_content = None
+            try:
+                response = cache_service.s3_client.get_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=cache_service.cache_key
+                )
+                raw_csv_content = response['Body'].read().decode('utf-8')
+            except Exception as e:
+                logger.error(f"Failed to download raw CSV from S3: {e}")
+                raise
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_input:
+                temp_input.write(raw_csv_content)
+                temp_input_path = temp_input.name
+            
+            # Create temp output file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_output:
+                temp_output_path = temp_output.name
+            
+            try:
+                # Run augmentation with LLM (does keyword matching first, then LLM for remaining)
+                logger.info("Running augmentation with LLM (keyword matching first, then LLM for remaining)...")
+                augment_csv(
+                    input_path=temp_input_path,
+                    output_path=temp_output_path,
+                    use_claude=True  # Use LLM for better categorization
+                )
+                
+                # Read augmented CSV
+                with open(temp_output_path, 'r', encoding='utf-8') as f:
+                    augmented_csv_content = f.read()
+                
+                # Count responses (number of non-header lines)
+                response_count = len(augmented_csv_content.strip().split('\n')) - 1
+                
+                # Save augmented CSV to S3 with timestamp
+                logger.info("Saving augmented CSV to S3 with timestamp...")
+                saved_key = cache_service.save_augmented_csv_to_s3(augmented_csv_content, response_count=response_count)
+                logger.info(f"Augmented CSV saved to S3 successfully: {saved_key}")
+                
+            finally:
+                # Clean up temp files
+                for temp_path in [temp_input_path, temp_output_path]:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.unlink(temp_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+                            
+        except ImportError as e:
+            logger.error(f"Failed to import augment_churn_reasons: {e}")
+            raise ValueError(f"Augmentation script not available: {e}")
+        except Exception as e:
+            logger.error(f"Augmentation failed: {e}", exc_info=True)
+            raise
     
     def get_summary(self) -> SurveySummary:
         """Get survey data summary"""
