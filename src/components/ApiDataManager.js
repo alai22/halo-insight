@@ -208,7 +208,7 @@ const ApiDataManager = () => {
               <span className={`font-medium ${getCacheStatusColor()}`}>
                 {cacheStatus.is_fresh ? 'Fresh' : cacheStatus.cache_exists ? 'Stale' : 'No Cache'}
               </span>
-              {cacheStatus.cache_age_hours !== null && (
+              {cacheStatus.cache_age_hours != null && typeof cacheStatus.cache_age_hours === 'number' && (
                 <span className="text-sm text-gray-500">
                   ({cacheStatus.cache_age_hours.toFixed(1)}h ago)
                 </span>

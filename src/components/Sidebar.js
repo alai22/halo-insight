@@ -304,13 +304,89 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
   const getHealthStatusText = () => {
     if (!healthStatus) return 'Checking...';
     if (healthStatus.status === 'healthy') return 'Connected';
-    return 'Disconnected';
+    
+    // Build detailed status message
+    const issues = [];
+    
+    if (!healthStatus.claude_initialized) {
+      issues.push('Claude API');
+    }
+    if (!healthStatus.conversation_analyzer_initialized) {
+      issues.push('Conversation Analyzer');
+    }
+    
+    // Note about S3 on localhost
+    if (healthStatus.storage_type === 's3' && !healthStatus.storage_available) {
+      // S3 not configured, but this is expected on localhost
+      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (isLocalhost) {
+        // Don't add S3 to issues list on localhost - it's expected
+      } else {
+        issues.push('S3 Storage');
+      }
+    }
+    
+    if (issues.length === 0) {
+      return 'Disconnected';
+    }
+    
+    return `Disconnected: ${issues.join(', ')}`;
   };
 
   const getHealthStatusColor = () => {
     if (!healthStatus) return 'text-gray-500';
     if (healthStatus.status === 'healthy') return 'text-green-600';
+    
+    // For localhost with S3 unavailable, use yellow/warning instead of red
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (isLocalhost && healthStatus.storage_type === 's3' && !healthStatus.storage_available) {
+      // If only S3 is unavailable on localhost, and other services are OK, use warning color
+      if (healthStatus.claude_initialized && healthStatus.conversation_analyzer_initialized) {
+        return 'text-yellow-600';
+      }
+    }
+    
     return 'text-red-600';
+  };
+
+  const getHealthStatusDetails = () => {
+    if (!healthStatus || healthStatus.status === 'healthy') return null;
+    
+    const details = [];
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    // Claude status
+    if (!healthStatus.claude_initialized) {
+      details.push('Claude API: Not initialized (check ANTHROPIC_API_KEY)');
+    }
+    
+    // Conversation analyzer status
+    if (!healthStatus.conversation_analyzer_initialized) {
+      details.push('Conversation Analyzer: Not available');
+    }
+    
+    // Storage status with helpful context
+    if (healthStatus.storage_type === 's3') {
+      if (!healthStatus.storage_available) {
+        if (isLocalhost) {
+          details.push('S3 Storage: Not configured (expected on localhost - using local files)');
+        } else {
+          details.push('S3 Storage: Not configured (check S3_BUCKET_NAME)');
+        }
+      } else {
+        if (isLocalhost) {
+          details.push('S3 Storage: Configured (may not be accessible on localhost)');
+        }
+      }
+    } else if (healthStatus.storage_type === 'local') {
+      details.push('Storage: Using local files');
+    }
+    
+    if (healthStatus.error) {
+      details.push(`Error: ${healthStatus.error}`);
+    }
+    
+    return details.length > 0 ? details : null;
   };
 
   return (
@@ -326,42 +402,31 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         </div>
         
         {/* Health Status */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            {getHealthStatusIcon()}
-            <span className={`text-sm font-medium ${getHealthStatusColor()}`}>
-              {getHealthStatusText()}
-            </span>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              {getHealthStatusIcon()}
+              <span className={`text-sm font-medium ${getHealthStatusColor()}`}>
+                {getHealthStatusText()}
+              </span>
+            </div>
+            <button
+              onClick={onRefreshHealth}
+              className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+              title="Refresh connection"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
           </div>
-          <button
-            onClick={onRefreshHealth}
-            className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-            title="Refresh connection"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
+          {getHealthStatusDetails() && (
+            <div className="text-xs text-gray-500 space-y-1 pl-6">
+              {getHealthStatusDetails().map((detail, index) => (
+                <div key={index}>{detail}</div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
-
-      {/* Download Manager Button - Only show in Gladly Conversations tab */}
-      {(currentMode === 'conversations' || currentMode === 'ask' || currentMode === 'conversation-trends') && (
-        <div className="p-6 border-t border-gray-200">
-          <button
-            onClick={() => {
-              setAdminMode('download');
-              setCurrentMode('ask'); // Reset to a regular mode
-              if (onCloseSettings) onCloseSettings(); // Close settings panel if open
-            }}
-            className="w-full flex items-center space-x-3 px-4 py-3 bg-orange-50 border-2 border-orange-200 rounded-lg hover:bg-orange-100 hover:border-orange-300 transition-all group"
-          >
-            <Download className="h-5 w-5 text-orange-600 group-hover:text-orange-700" />
-            <div className="flex-1 text-left">
-              <div className="text-sm font-medium text-orange-900">Download Manager</div>
-              <div className="text-xs text-orange-600">Download conversation data from Gladly</div>
-            </div>
-          </button>
-        </div>
-      )}
 
       {/* Conversation Stats - Only show in Gladly Conversations mode */}
       {downloadStats && (currentMode === 'conversations' || currentMode === 'ask') && (

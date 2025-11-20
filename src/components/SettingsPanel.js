@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Bot, Settings as SettingsIcon, Download, TrendingUp, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { X, Bot, Settings as SettingsIcon, TrendingUp, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import axios from 'axios';
 
 const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurrentMode, onClose }) => {
@@ -346,33 +346,6 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
               </p>
               {adminMode === 'claude' && (
                 <p className="text-xs text-blue-600 mt-2 font-medium">Active</p>
-              )}
-            </button>
-
-            {/* Download Manager */}
-            <button
-              onClick={() => {
-                setAdminMode(adminMode === 'download' ? null : 'download');
-                setCurrentMode('ask'); // Reset to a regular mode
-                onClose();
-              }}
-              className={`p-4 border-2 rounded-lg text-left transition-all ${
-                adminMode === 'download'
-                  ? 'border-orange-500 bg-orange-50'
-                  : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center space-x-3 mb-2">
-                <Download className={`h-5 w-5 ${adminMode === 'download' ? 'text-orange-600' : 'text-gray-600'}`} />
-                <h4 className={`font-medium ${adminMode === 'download' ? 'text-orange-900' : 'text-gray-900'}`}>
-                  Download Manager
-                </h4>
-              </div>
-              <p className="text-xs text-gray-600">
-                Download conversation data from Gladly
-              </p>
-              {adminMode === 'download' && (
-                <p className="text-xs text-orange-600 mt-2 font-medium">Active</p>
               )}
             </button>
 

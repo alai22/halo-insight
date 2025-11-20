@@ -10,6 +10,7 @@ import DownloadManager from './components/DownloadManager';
 import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import ApiDataManager from './components/ApiDataManager';
+import Tools from './components/Tools';
 import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
 
@@ -41,7 +42,8 @@ function App() {
     survicate: [],
     'churn-trends': [],
     'conversation-trends': [],
-    'api-data-manager': []
+    'api-data-manager': [],
+    'tools': []
   });
   
   // Initialize currentMode from URL or default
@@ -509,7 +511,8 @@ function App() {
       'ask': 'Ask About Conversations',
       'download': 'Download Manager',
       'survicate': 'Ask About Churn',
-      'churn-trends': 'Churn Trends'
+      'churn-trends': 'Churn Trends',
+      'api-data-manager': 'Data Management'
     };
     if (adminMode) {
       return modeTitles[adminMode] || 'Admin Mode';
@@ -535,7 +538,7 @@ function App() {
         <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              {adminMode ? (
+              {adminMode && currentMode !== 'tools' ? (
                 <div className="flex items-center space-x-3 px-4 py-2 bg-orange-50 border-2 border-orange-200 rounded-lg">
                   <span className="text-sm font-medium text-orange-900">
                     Admin Mode: {getModeTitle()}
@@ -543,7 +546,7 @@ function App() {
                   <button
                     onClick={() => {
                       setAdminMode(null);
-                      setCurrentMode('ask');
+                      setCurrentMode('tools');
                     }}
                     className="text-xs text-orange-600 hover:text-orange-800 underline"
                   >
@@ -553,7 +556,8 @@ function App() {
               ) : (
                 <TabNavigation 
                   currentMode={currentMode} 
-                  setCurrentMode={setCurrentMode} 
+                  setCurrentMode={setCurrentMode}
+                  adminMode={adminMode}
                 />
               )}
             </div>
@@ -606,13 +610,27 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
-          {adminMode === 'download' ? (
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+          {/* Show actual tool components when active */}
+          {currentMode === 'api-data-manager' ? (
+            <ApiDataManager />
+          ) : adminMode === 'download' ? (
             <DownloadManager />
+          ) : adminMode === 'claude' ? (
+            <ConversationDisplay
+              conversations={getCurrentConversations()}
+              isLoading={isLoading}
+              error={error}
+            />
+          ) : currentMode === 'tools' ? (
+            <Tools 
+              currentMode={currentMode}
+              setCurrentMode={setCurrentMode}
+              adminMode={adminMode}
+              setAdminMode={setAdminMode}
+            />
           ) : currentMode === 'churn-trends' ? (
             <ChurnTrendsChart />
-          ) : currentMode === 'api-data-manager' ? (
-            <ApiDataManager />
           ) : currentMode === 'conversation-trends' ? (
             <ConversationTrendsChart />
           ) : (
@@ -625,7 +643,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && (
           <div className="bg-white border-t border-gray-200 p-6">
             <PromptInput
               onSendMessage={handleSendMessage}

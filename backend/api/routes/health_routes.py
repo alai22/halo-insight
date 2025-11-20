@@ -4,6 +4,7 @@ Health check routes
 
 from flask import Blueprint, jsonify, g
 from ...utils.logging import get_logger
+from ...utils.config import Config
 
 logger = get_logger('health_routes')
 
@@ -25,7 +26,9 @@ def health_check():
                 'status': 'unhealthy',
                 'error': 'Service container not initialized',
                 'claude_initialized': False,
-                'conversation_analyzer_initialized': False
+                'conversation_analyzer_initialized': False,
+                'storage_type': Config.STORAGE_TYPE,
+                'storage_available': False
             }), 200  # Return 200 with unhealthy status in body
         
         try:
@@ -37,7 +40,9 @@ def health_check():
                 'status': 'unhealthy',
                 'error': f'Failed to get services: {str(e)}',
                 'claude_initialized': False,
-                'conversation_analyzer_initialized': False
+                'conversation_analyzer_initialized': False,
+                'storage_type': Config.STORAGE_TYPE,
+                'storage_available': False
             }), 200  # Return 200 with unhealthy status in body
         
         # Check if services are initialized (don't make external HTTP calls)
@@ -52,19 +57,44 @@ def health_check():
             logger.error(f"Conversation service availability check failed: {str(e)}")
             conversation_available = False
         
+        # Check storage status
+        storage_type = Config.STORAGE_TYPE
+        storage_available = True  # Default to True
+        
+        # For S3, check if credentials/bucket are configured (but don't test actual connection)
+        if storage_type == 's3':
+            # S3 is expected to be unavailable on localhost, so mark as available if configured
+            # The actual availability will be tested when needed
+            storage_available = Config.S3_BUCKET_NAME is not None and Config.S3_BUCKET_NAME != "your-gladly-conversations-bucket"
+        elif storage_type == 'local':
+            # Local storage is always available (file may not exist, but storage type is available)
+            storage_available = True
+        elif storage_type == 'azure':
+            # Azure storage - check if connection string is configured
+            storage_available = Config.AZURE_CONNECTION_STRING is not None
+        
         # Don't call claude_service.is_available() here - it makes external HTTP requests
         # which can fail for network reasons and don't indicate actual service health
         # Instead, just check if the service is initialized
         status = 'healthy' if claude_initialized and conversation_available else 'unhealthy'
         
+        # Build error message if unhealthy
+        error_parts = []
+        if not claude_initialized:
+            error_parts.append('Claude API not initialized - check ANTHROPIC_API_KEY')
+        if not conversation_available:
+            error_parts.append('Conversation analyzer not available')
+        
         response_data = {
             'status': status,
             'claude_initialized': claude_initialized,
             'conversation_analyzer_initialized': conversation_available,
-            'error': 'ClaudeService not initialized - check ANTHROPIC_API_KEY' if not claude_initialized else None
+            'storage_type': storage_type,
+            'storage_available': storage_available,
+            'error': '; '.join(error_parts) if error_parts else None
         }
         
-        logger.debug(f"[HEALTH CHECK] Completed: status={status}, claude={claude_initialized}, conversations={conversation_available}")
+        logger.debug(f"[HEALTH CHECK] Completed: status={status}, claude={claude_initialized}, conversations={conversation_available}, storage={storage_type}")
         logger.debug(f"[HEALTH CHECK] Response data: {response_data}")
         
         return jsonify(response_data), 200  # Always return 200, let the status field indicate health
@@ -77,5 +107,7 @@ def health_check():
             'status': 'unhealthy',
             'error': str(e),
             'claude_initialized': False,
-            'conversation_analyzer_initialized': False
+            'conversation_analyzer_initialized': False,
+            'storage_type': Config.STORAGE_TYPE,
+            'storage_available': False
         }), 200  # Always return 200, let status field indicate health
