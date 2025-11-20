@@ -191,6 +191,80 @@ def search_surveys():
         }), 500
 
 
+@survicate_bp.route('/raw-files/download', methods=['GET'])
+def download_raw_file():
+    """Download a raw CSV file from S3"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        from flask import Response
+        import urllib.parse
+        
+        # Get file_key from query parameter
+        file_key = request.args.get('file_key')
+        if not file_key:
+            return jsonify({
+                'success': False,
+                'error': 'file_key parameter required'
+            }), 400
+        
+        cache_service = SurvicateS3CacheService()
+        
+        if not cache_service.s3_client:
+            return jsonify({
+                'success': False,
+                'error': 'S3 not available',
+                'details': 'S3 client not configured.'
+            }), 503
+        
+        # Decode the file key (it's URL encoded)
+        file_key = urllib.parse.unquote(file_key)
+        
+        try:
+            # Get the file from S3
+            response = cache_service.s3_client.get_object(
+                Bucket=cache_service.bucket_name,
+                Key=file_key
+            )
+            
+            # Get file content
+            file_content = response['Body'].read()
+            
+            # Get filename from key
+            filename = file_key.split('/')[-1] if '/' in file_key else file_key
+            
+            # Return as downloadable file
+            return Response(
+                file_content,
+                mimetype='text/csv',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Content-Type': 'text/csv; charset=utf-8'
+                }
+            )
+            
+        except cache_service.s3_client.exceptions.NoSuchKey:
+            return jsonify({
+                'success': False,
+                'error': 'File not found',
+                'details': f'File {file_key} does not exist in S3.'
+            }), 404
+        except Exception as e:
+            logger.error(f"Failed to download file: {e}")
+            return jsonify({
+                'success': False,
+                'error': 'Failed to download file',
+                'details': str(e)
+            }), 500
+    
+    except Exception as e:
+        logger.error(f"Failed to download raw file: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to download file'
+        }), 500
+
+
 @survicate_bp.route('/raw-files', methods=['GET'])
 def list_raw_files():
     """List all raw CSV files in S3"""

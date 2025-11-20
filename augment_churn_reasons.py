@@ -371,10 +371,27 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
             break
 
     if not q1_answer_col:
-        raise ValueError("Could not find Q1 Answer column. Make sure you're using the cleaned CSV with proper headers.")
+        # Find all Q1-related columns for debugging
+        q1_related_cols = [col for col in fieldnames if 'Q#1' in col or 'Q1' in col or 'q1' in col.lower()]
+        all_cols_sample = fieldnames[:20]  # First 20 columns for debugging
+        error_msg = (
+            f"Could not find Q1 Answer column. Make sure you're using the cleaned CSV with proper headers.\n"
+            f"Found {len(fieldnames)} total columns.\n"
+            f"Q1-related columns found: {q1_related_cols}\n"
+            f"First 20 columns: {all_cols_sample}"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     if not q1_comment_col:
-        raise ValueError("Could not find Q1 Comment column. Make sure you're using the cleaned CSV with proper headers.")
+        # Find all Q1-related columns for debugging
+        q1_related_cols = [col for col in fieldnames if 'Q#1' in col or 'Q1' in col or 'q1' in col.lower()]
+        error_msg = (
+            f"Could not find Q1 Comment column. Make sure you're using the cleaned CSV with proper headers.\n"
+            f"Q1-related columns found: {q1_related_cols}"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     logger.info(f"Processing {len(rows)} rows")
     logger.info(f"Q1 Answer column: {q1_answer_col}")

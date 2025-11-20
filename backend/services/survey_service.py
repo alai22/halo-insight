@@ -338,6 +338,16 @@ class SurveyService:
                 temp_output_path = temp_output.name
             
             try:
+                # Log CSV structure for debugging
+                import csv as csv_module
+                with open(temp_input_path, 'r', encoding='utf-8') as f:
+                    reader = csv_module.reader(f)
+                    headers = next(reader, [])
+                    logger.info(f"CSV headers found ({len(headers)} columns): {headers[:10]}...")  # Log first 10 headers
+                    # Check for Q1 columns
+                    q1_columns = [h for h in headers if 'Q#1' in h or 'Q1' in h]
+                    logger.info(f"Q1-related columns: {q1_columns}")
+                
                 # Run augmentation with LLM
                 logger.info("Running augmentation with LLM (keyword matching first, then LLM for remaining)...")
                 augment_csv(

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, RefreshCw, CheckCircle, XCircle, Download } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown } from 'lucide-react';
 
 const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
   const [downloadStats, setDownloadStats] = useState(null);
@@ -486,25 +486,36 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
                         {file.response_count.toLocaleString()} responses • {new Date(file.last_modified).toLocaleString()}
                       </div>
                     </div>
-                    {!file.has_augmentation && (
-                      <button
-                        onClick={() => handleTriggerAugmentation(file.key)}
-                        disabled={isAugmenting}
-                        className="ml-2 px-2 py-1 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-1"
-                        title="Run augmentation with LLM"
+                    <div className="flex items-center space-x-1 ml-2">
+                      <a
+                        href={`/api/survicate/raw-files/download?file_key=${encodeURIComponent(file.key)}`}
+                        download={file.display_name}
+                        className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 flex items-center space-x-1"
+                        title="Download CSV file"
                       >
-                        {isAugmenting ? (
-                          <RefreshCw className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <span>Augment</span>
-                        )}
-                      </button>
-                    )}
-                    {file.has_augmentation && (
-                      <span className="ml-2 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
-                        Augmented
-                      </span>
-                    )}
+                        <FileDown className="h-3 w-3" />
+                        <span>Download</span>
+                      </a>
+                      {!file.has_augmentation && (
+                        <button
+                          onClick={() => handleTriggerAugmentation(file.key)}
+                          disabled={isAugmenting}
+                          className="px-2 py-1 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-1"
+                          title="Run augmentation with LLM"
+                        >
+                          {isAugmenting ? (
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <span>Augment</span>
+                          )}
+                        </button>
+                      )}
+                      {file.has_augmentation && (
+                        <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                          Augmented
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
