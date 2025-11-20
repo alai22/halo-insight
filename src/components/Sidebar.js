@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp } from 'lucide-react';
 
 const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
   const [downloadStats, setDownloadStats] = useState(null);
@@ -8,6 +8,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     localStorage.getItem('survicate_data_source') || 'file'
   );
   const [cacheStatus, setCacheStatus] = useState(null);
+  const [isDataManagementExpanded, setIsDataManagementExpanded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [augmentedFiles, setAugmentedFiles] = useState([]);
   const [rawFiles, setRawFiles] = useState([]);
@@ -477,172 +478,190 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         </div>
       )}
 
-      {/* Raw Files - Hide when in api-data-manager mode (shown in main area) */}
-      {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && rawFiles.length > 0 && (
-        <div className="p-6 border-t border-gray-200">
-          <div className="text-xs text-gray-500">
-            <div className="mb-2">
-              <strong>Downloaded Files:</strong>
+      {/* Data Management Section - Collapsible when in API mode */}
+      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends' || currentMode === 'api-data-manager') && (
+        <div className="border-t border-gray-200">
+          {/* Collapsible Header */}
+          <button
+            onClick={() => setIsDataManagementExpanded(!isDataManagementExpanded)}
+            className="w-full px-6 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center space-x-2">
+              <Database className="h-4 w-4 text-gray-600" />
+              <span className="text-sm font-semibold text-gray-700">Data Management</span>
             </div>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
-              {rawFiles.slice(0, 5).map((file) => (
-                <div key={file.key} className="p-2 bg-gray-50 rounded border border-gray-200">
-                  <div className="flex justify-between items-start mb-1">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-gray-700 truncate" title={file.display_name}>
-                        {file.display_name}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {file.response_count.toLocaleString()} responses • {new Date(file.last_modified).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-1 ml-2">
-                      <a
-                        href={`/api/survicate/raw-files/download?file_key=${encodeURIComponent(file.key)}`}
-                        download={file.display_name}
-                        className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 flex items-center space-x-1"
-                        title="Download CSV file"
-                      >
-                        <FileDown className="h-3 w-3" />
-                        <span>Download</span>
-                      </a>
-                      {!file.has_augmentation && (
-                        <button
-                          onClick={() => handleTriggerAugmentation(file.key)}
-                          disabled={isAugmenting}
-                          className="px-2 py-1 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-1"
-                          title="Run augmentation with LLM"
-                        >
-                          {isAugmenting ? (
-                            <RefreshCw className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <span>Augment</span>
-                          )}
-                        </button>
-                      )}
-                      {file.has_augmentation && (
-                        <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
-                          Augmented
-                        </span>
-                      )}
-                    </div>
+            {isDataManagementExpanded ? (
+              <ChevronUp className="h-4 w-4 text-gray-500" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-gray-500" />
+            )}
+          </button>
+
+          {/* Collapsible Content */}
+          {isDataManagementExpanded && (
+            <div className="px-6 pb-6 space-y-4">
+              {/* Raw Files - Hide when in api-data-manager mode (shown in main area) */}
+              {currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && rawFiles.length > 0 && (
+                <div>
+                  <div className="text-xs text-gray-500 mb-2">
+                    <strong>Downloaded Files:</strong>
                   </div>
-                </div>
-              ))}
-              {rawFiles.length > 5 && (
-                <div className="text-xs text-gray-400 text-center">
-                  +{rawFiles.length - 5} more files
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {rawFiles.slice(0, 5).map((file) => (
+                      <div key={file.key} className="p-2 bg-gray-50 rounded border border-gray-200">
+                        <div className="flex justify-between items-start mb-1">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium text-gray-700 truncate" title={file.display_name}>
+                              {file.display_name}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {file.response_count.toLocaleString()} responses • {new Date(file.last_modified).toLocaleString()}
+                            </div>
+                          </div>
+                          <div className="flex items-center space-x-1 ml-2">
+                            <a
+                              href={`/api/survicate/raw-files/download?file_key=${encodeURIComponent(file.key)}`}
+                              download={file.display_name}
+                              className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 flex items-center space-x-1"
+                              title="Download CSV file"
+                            >
+                              <FileDown className="h-3 w-3" />
+                              <span>Download</span>
+                            </a>
+                            {!file.has_augmentation && (
+                              <button
+                                onClick={() => handleTriggerAugmentation(file.key)}
+                                disabled={isAugmenting}
+                                className="px-2 py-1 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-1"
+                                title="Run augmentation with LLM"
+                              >
+                                {isAugmenting ? (
+                                  <RefreshCw className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <span>Augment</span>
+                                )}
+                              </button>
+                            )}
+                            {file.has_augmentation && (
+                              <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                                Augmented
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {rawFiles.length > 5 && (
+                      <div className="text-xs text-gray-400 text-center">
+                        +{rawFiles.length - 5} more files
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Augmented File Selection - Hide when in api-data-manager mode (shown in main area) */}
-      {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && augmentedFiles.length > 0 && (
-        <div className="p-6 border-t border-gray-200">
-          <div className="text-xs text-gray-500">
-            <div className="mb-2">
-              <strong>Augmented File:</strong>
-            </div>
-            <select
-              value={selectedFileKey}
-              onChange={(e) => handleFileSelectionChange(e.target.value)}
-              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="latest">Latest ({augmentedFiles[0]?.response_count || 0} responses)</option>
-              {augmentedFiles.map((file) => (
-                <option key={file.key} value={file.key}>
-                  {file.display_name} ({file.response_count} responses) - {new Date(file.timestamp).toLocaleString()}
-                </option>
-              ))}
-            </select>
-            {augmentedFiles.length > 1 && (
-              <div className="mt-1 text-xs text-gray-400">
-                {augmentedFiles.length} files available
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Cache Status - Show when in API mode, but hide action buttons when in api-data-manager mode */}
-      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends' || currentMode === 'api-data-manager') && (
-        <div className="p-6 border-t border-gray-200">
-          <div className="text-xs text-gray-500">
-            <div className="mb-2">
-              <strong>Cache Status:</strong>
-            </div>
-            {cacheStatus ? (
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-600">Status</span>
-                  <span className={`font-semibold ${cacheStatus.is_fresh ? 'text-green-600' : 'text-yellow-600'}`}>
-                    {cacheStatus.is_fresh ? 'Fresh' : 'Stale'}
-                  </span>
+              {/* Augmented File Selection - Hide when in api-data-manager mode (shown in main area) */}
+              {currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && augmentedFiles.length > 0 && (
+                <div>
+                  <div className="text-xs text-gray-500 mb-2">
+                    <strong>Augmented File:</strong>
+                  </div>
+                  <select
+                    value={selectedFileKey}
+                    onChange={(e) => handleFileSelectionChange(e.target.value)}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="latest">Latest ({augmentedFiles[0]?.response_count || 0} responses)</option>
+                    {augmentedFiles.map((file) => (
+                      <option key={file.key} value={file.key}>
+                        {file.display_name} ({file.response_count} responses) - {new Date(file.timestamp).toLocaleString()}
+                      </option>
+                    ))}
+                  </select>
+                  {augmentedFiles.length > 1 && (
+                    <div className="mt-1 text-xs text-gray-400">
+                      {augmentedFiles.length} files available
+                    </div>
+                  )}
                 </div>
-                {cacheStatus.cache_age_hours !== null && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-600">Age</span>
-                    <span className="font-semibold text-gray-700">
-                      {Math.round(cacheStatus.cache_age_hours)}h ago
-                    </span>
+              )}
+
+              {/* Cache Status */}
+              <div>
+                <div className="text-xs text-gray-500 mb-2">
+                  <strong>Cache Status:</strong>
+                </div>
+                {cacheStatus ? (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-600">Status</span>
+                      <span className={`font-semibold ${cacheStatus.is_fresh ? 'text-green-600' : 'text-yellow-600'}`}>
+                        {cacheStatus.is_fresh ? 'Fresh' : 'Stale'}
+                      </span>
+                    </div>
+                    {cacheStatus.cache_age_hours !== null && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-600">Age</span>
+                        <span className="font-semibold text-gray-700">
+                          {Math.round(cacheStatus.cache_age_hours)}h ago
+                        </span>
+                      </div>
+                    )}
+                    {cacheStatus.refresh_in_progress && (
+                      <div className="flex items-center text-blue-600 mt-2">
+                        <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                        <span className="text-xs">Downloading from API...</span>
+                      </div>
+                    )}
+                    {cacheStatus.refresh_error && (
+                      <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                        Error: {cacheStatus.refresh_error}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-400 mb-2">Loading cache status...</div>
+                )}
+                
+                {/* Action Buttons - Hide when in api-data-manager mode (shown in main area) */}
+                {currentMode !== 'api-data-manager' && (
+                  <div className="mt-3 space-y-2">
+                    <button
+                      onClick={handleDownloadFromApi}
+                      disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                      className="w-full px-3 py-2 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                      title="Download fresh data from Survicate API and save to cache"
+                    >
+                      <Download className={`h-3 w-3 ${(isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)) ? 'animate-spin' : ''}`} />
+                      <span>Download from API</span>
+                    </button>
+                    <button
+                      onClick={handleReloadCache}
+                      disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                      className="w-full px-3 py-2 text-xs bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                      title="Reload data from existing cache (use already downloaded data)"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      <span>Reload Cache</span>
+                    </button>
                   </div>
                 )}
-                {cacheStatus.refresh_in_progress && (
-                  <div className="flex items-center text-blue-600 mt-2">
-                    <RefreshCw className="h-3 w-3 animate-spin mr-1" />
-                    <span className="text-xs">Downloading from API...</span>
-                  </div>
-                )}
-                {cacheStatus.refresh_error && (
-                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
-                    Error: {cacheStatus.refresh_error}
+                {/* Link to Data Manager when in API mode but not already there */}
+                {currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
+                  <div className="mt-3">
+                    <button
+                      onClick={() => setCurrentMode('api-data-manager')}
+                      className="w-full px-3 py-2 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 flex items-center justify-center space-x-1"
+                      title="Open Data Management in main area"
+                    >
+                      <Database className="h-3 w-3" />
+                      <span>Manage Data</span>
+                    </button>
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="text-xs text-gray-400 mb-2">Loading cache status...</div>
-            )}
-            
-            {/* Action Buttons - Hide when in api-data-manager mode (shown in main area) */}
-            {currentMode !== 'api-data-manager' && (
-              <div className="mt-3 space-y-2">
-                <button
-                  onClick={handleDownloadFromApi}
-                  disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
-                  className="w-full px-3 py-2 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
-                  title="Download fresh data from Survicate API and save to cache"
-                >
-                  <Download className={`h-3 w-3 ${(isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)) ? 'animate-spin' : ''}`} />
-                  <span>Download from API</span>
-                </button>
-                <button
-                  onClick={handleReloadCache}
-                  disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
-                  className="w-full px-3 py-2 text-xs bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
-                  title="Reload data from existing cache (use already downloaded data)"
-                >
-                  <RefreshCw className="h-3 w-3" />
-                  <span>Reload Cache</span>
-                </button>
-              </div>
-            )}
-            {/* Link to Data Manager when in API mode but not already there */}
-            {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
-              <div className="mt-3">
-                <button
-                  onClick={() => setCurrentMode('api-data-manager')}
-                  className="w-full px-3 py-2 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 flex items-center justify-center space-x-1"
-                  title="Open Data Management in main area"
-                >
-                  <Database className="h-3 w-3" />
-                  <span>Manage Data</span>
-                </button>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
 

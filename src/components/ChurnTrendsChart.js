@@ -655,36 +655,72 @@ const ChurnTrendsChart = () => {
 
               const weeklyChartDataWithTotal = [...weeklyChartData, weeklyAggregateData];
 
+              // Format week labels to be more compact
+              const formatWeekLabel = (weekLabel) => {
+                if (weekLabel === 'Total') return 'Total';
+                
+                // Parse "YYYY-MM-DD to YYYY-MM-DD" format
+                const match = weekLabel.match(/(\d{4})-(\d{2})-(\d{2}) to (\d{4})-(\d{2})-(\d{2})/);
+                if (match) {
+                  const [, startYear, startMonth, startDay, endYear, endMonth, endDay] = match;
+                  
+                  // Remove leading zeros from month and day
+                  const startMonthNum = parseInt(startMonth, 10);
+                  const startDayNum = parseInt(startDay, 10);
+                  const endMonthNum = parseInt(endMonth, 10);
+                  const endDayNum = parseInt(endDay, 10);
+                  
+                  // If same year, show: "M/D-M/D" (compact format)
+                  if (startYear === endYear) {
+                    return `${startMonthNum}/${startDayNum}-${endMonthNum}/${endDayNum}`;
+                  } else {
+                    // Year change - show abbreviated: "M/D/YY-M/D/YY"
+                    return `${startMonthNum}/${startDayNum}/${startYear.slice(-2)}-${endMonthNum}/${endDayNum}/${endYear.slice(-2)}`;
+                  }
+                }
+                
+                // Fallback to original if format doesn't match
+                return weekLabel;
+              };
+
+              // Determine how many labels to show (every Nth week)
+              // Show more labels if there are fewer weeks, fewer if there are many
+              const targetLabelCount = 25; // Target ~25 labels for readability
+              const showEveryNth = Math.max(1, Math.floor(weeks.length / targetLabelCount));
+              
               return (
                 <div style={{ height: '900px', flexShrink: 0 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
                       data={weeklyChartDataWithTotal}
-                      margin={{ top: 10, right: 30, left: 20, bottom: 50 }}
+                      margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis 
                         dataKey="week" 
-                        angle={-45}
+                        angle={-60}
                         textAnchor="end"
-                        height={80}
-                        tick={{ fontSize: 11 }}
-                        tickFormatter={(value) => value}
+                        height={120}
+                        interval={showEveryNth > 1 ? showEveryNth - 1 : 0}
+                        tick={{ fontSize: 10 }}
+                        tickFormatter={formatWeekLabel}
                         tick={(props) => {
                           const { x, y, payload } = props;
                           const isTotal = payload.value === 'Total';
+                          const formattedValue = formatWeekLabel(payload.value);
+                          
                           return (
                             <g transform={`translate(${x},${y})`}>
                               <text
                                 x={0}
                                 y={0}
-                                dy={16}
+                                dy={20}
                                 textAnchor="end"
                                 fill={isTotal ? '#1f2937' : '#6b7280'}
-                                fontSize={isTotal ? 13 : 11}
+                                fontSize={isTotal ? 12 : 10}
                                 fontWeight={isTotal ? '600' : '400'}
                               >
-                                {payload.value}
+                                {formattedValue}
                               </text>
                             </g>
                           );
