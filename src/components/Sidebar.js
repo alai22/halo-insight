@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown } from 'lucide-react';
 
 const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
@@ -36,8 +36,8 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch cache status function
-  const fetchCacheStatus = async () => {
+  // Fetch cache status function (memoized with useCallback)
+  const fetchCacheStatus = useCallback(async () => {
     if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
       try {
         const response = await fetch('/api/survicate/cache-status');
@@ -61,7 +61,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     } else {
       setCacheStatus(null);
     }
-  };
+  }, [currentMode, dataSource]);
 
   // Fetch survey stats when in survicate or churn-trends mode
   useEffect(() => {
@@ -103,8 +103,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       const interval = setInterval(fetchCacheStatus, 10000);
       return () => clearInterval(interval);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMode, dataSource]);
+  }, [currentMode, dataSource, fetchCacheStatus]);
 
   // Fetch augmented files list when in API mode
   useEffect(() => {
