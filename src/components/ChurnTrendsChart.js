@@ -61,10 +61,16 @@ const ChurnTrendsChart = () => {
         setTotalResponses(response.data.total_responses || 0);
         setReasonTotals(response.data.reason_totals || {});
       } else {
-        setError(response.data.error || 'Failed to load churn trends');
+        // Handle non-success response
+        const errorMsg = response.data.error || 'Failed to load churn trends';
+        const details = response.data.details ? ` - ${response.data.details}` : '';
+        setError(`${errorMsg}${details}`);
       }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to load churn trends');
+      // Handle axios errors (including 404, 500, etc.)
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to load churn trends';
+      const details = err.response?.data?.details ? ` - ${err.response.data.details}` : '';
+      setError(`${errorMsg}${details}`);
       console.error('Error fetching churn trends:', err);
     } finally {
       setLoading(false);

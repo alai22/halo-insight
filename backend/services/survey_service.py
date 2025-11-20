@@ -314,6 +314,66 @@ class SurveyService:
             logger.error(f"Augmentation failed: {e}", exc_info=True)
             raise
     
+    def _augment_raw_csv_and_save_to_s3(self, cache_service, raw_csv_content: str, source_file_key: str = None):
+        """Augment raw CSV content and save augmented CSV to S3 (can be called independently)"""
+        import tempfile
+        import os
+        import sys
+        
+        # Import augmentation function
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        try:
+            from augment_churn_reasons import augment_csv
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_input:
+                temp_input.write(raw_csv_content)
+                temp_input_path = temp_input.name
+            
+            # Create temp output file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_output:
+                temp_output_path = temp_output.name
+            
+            try:
+                # Run augmentation with LLM
+                logger.info("Running augmentation with LLM (keyword matching first, then LLM for remaining)...")
+                augment_csv(
+                    input_path=temp_input_path,
+                    output_path=temp_output_path,
+                    use_claude=True
+                )
+                
+                # Read augmented CSV
+                with open(temp_output_path, 'r', encoding='utf-8') as f:
+                    augmented_csv_content = f.read()
+                
+                # Count responses (number of non-header lines)
+                response_count = max(0, len(augmented_csv_content.strip().split('\n')) - 1)
+                
+                # Save augmented CSV to S3 with timestamp
+                logger.info("Saving augmented CSV to S3 with timestamp...")
+                saved_key = cache_service.save_augmented_csv_to_s3(augmented_csv_content, response_count=response_count)
+                logger.info(f"Augmented CSV saved to S3 successfully: {saved_key}")
+                
+            finally:
+                # Clean up temp files
+                for temp_path in [temp_input_path, temp_output_path]:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.unlink(temp_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+                            
+        except ImportError as e:
+            logger.error(f"Failed to import augment_churn_reasons: {e}")
+            raise ValueError(f"Augmentation script not available: {e}")
+        except Exception as e:
+            logger.error(f"Augmentation failed: {e}", exc_info=True)
+            raise
+    
     def get_summary(self) -> SurveySummary:
         """Get survey data summary"""
         if not self.surveys:

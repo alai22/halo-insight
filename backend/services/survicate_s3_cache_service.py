@@ -373,6 +373,102 @@ class SurvicateS3CacheService:
             logger.warning(f"Failed to load augmented files metadata: {e}")
             return None
     
+    def list_raw_files(self) -> List[Dict]:
+        """List all raw CSV files in S3 cache"""
+        if not self.s3_client:
+            return []
+        
+        try:
+            # List objects with the cache key prefix (survicate-cache/)
+            prefix = 'survicate-cache/'
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix
+            )
+            
+            raw_files = []
+            augmented_keys = set()
+            
+            # Get list of augmented file keys for comparison
+            augmented_metadata = self.get_augmented_files_metadata()
+            if augmented_metadata and augmented_metadata.get('files'):
+                augmented_keys = {f['key'] for f in augmented_metadata['files']}
+            
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    # Only include CSV files that are raw (not augmented, not metadata)
+                    if (key.endswith('.csv') and 
+                        'augmented' not in key and 
+                        key != self.augmented_cache_key and  # Exclude legacy augmented key
+                        not key.endswith('_meta.json')):
+                        
+                        # Get file info
+                        try:
+                            # Count rows (approximate - read first chunk)
+                            try:
+                                get_response = self.s3_client.get_object(
+                                    Bucket=self.bucket_name,
+                                    Key=key,
+                                    Range='bytes=0-50000'  # Read first 50KB to count headers and some rows
+                                )
+                                content_preview = get_response['Body'].read().decode('utf-8')
+                                # Count lines (subtract 1 for header)
+                                lines = content_preview.strip().split('\n')
+                                line_count = max(0, len(lines) - 1)
+                            except:
+                                line_count = 0
+                            
+                            last_modified = obj.get('LastModified')
+                            if hasattr(last_modified, 'isoformat'):
+                                last_modified_str = last_modified.isoformat()
+                            else:
+                                last_modified_str = str(last_modified) if last_modified else datetime.now(timezone.utc).isoformat()
+                            
+                            raw_files.append({
+                                'key': key,
+                                'display_name': key.split('/')[-1],
+                                'file_size': obj.get('Size', 0),
+                                'last_modified': last_modified_str,
+                                'response_count': line_count,
+                                'has_augmentation': len(augmented_keys) > 0  # For now, just check if any augmented files exist
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to get info for {key}: {e}")
+            
+            # Sort by last modified (newest first)
+            raw_files.sort(key=lambda x: x['last_modified'], reverse=True)
+            return raw_files
+            
+        except Exception as e:
+            logger.error(f"Failed to list raw files: {e}")
+            return []
+    
+    def check_if_raw_file_has_augmentation(self, raw_file_key: str) -> Optional[str]:
+        """Check if a raw file has a corresponding augmented file"""
+        if not self.s3_client:
+            return None
+        
+        try:
+            # Get augmented files metadata
+            metadata = self.get_augmented_files_metadata()
+            if not metadata or not metadata.get('files'):
+                return None
+            
+            # Check if any augmented file corresponds to this raw file
+            # We'll match by timestamp (raw file timestamp should match augmented file timestamp)
+            # For now, just return the most recent augmented file if it exists
+            # In the future, we could add a mapping in metadata
+            augmented_files = metadata['files']
+            if augmented_files:
+                # Return the most recent augmented file key
+                return augmented_files[0]['key']
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to check augmentation status: {e}")
+            return None
+    
     def _responses_to_csv(self, responses: List[SurveyResponse]) -> str:
         """Convert SurveyResponse objects to CSV format matching manual export"""
         output = io.StringIO()

@@ -191,6 +191,49 @@ def search_surveys():
         }), 500
 
 
+@survicate_bp.route('/raw-files', methods=['GET'])
+def list_raw_files():
+    """List all raw CSV files in S3"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        cache_service = SurvicateS3CacheService()
+        
+        if not cache_service.s3_client:
+            return jsonify({
+                'success': False,
+                'error': 'S3 not available',
+                'details': 'S3 client not configured.'
+            }), 503
+        
+        raw_files = cache_service.list_raw_files()
+        
+        # Check augmentation status for each file
+        augmented_metadata = cache_service.get_augmented_files_metadata()
+        augmented_keys = set()
+        if augmented_metadata and augmented_metadata.get('files'):
+            augmented_keys = {f['key'] for f in augmented_metadata['files']}
+        
+        # Add augmentation status
+        for file_info in raw_files:
+            # Check if this raw file has been augmented
+            # For now, we'll mark it as augmented if any augmented file exists
+            # In the future, we could add better matching logic
+            file_info['has_augmentation'] = len(augmented_keys) > 0
+        
+        return jsonify({
+            'success': True,
+            'files': raw_files
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to list raw files: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to list raw files'
+        }), 500
+
+
 @survicate_bp.route('/augmented-files', methods=['GET'])
 def list_augmented_files():
     """List all available augmented CSV files in S3"""
@@ -238,6 +281,124 @@ def list_augmented_files():
         }), 500
 
 
+@survicate_bp.route('/augment', methods=['POST'])
+def trigger_augmentation():
+    """Manually trigger augmentation of raw CSV file"""
+    try:
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            logger.error("Service container not available in request context")
+            return jsonify({'error': 'Service container not initialized'}), 500
+        
+        data = request.get_json() or {}
+        raw_file_key = data.get('raw_file_key')  # Optional: specific raw file to augment
+        
+        survey_service = service_container.get_survey_service()
+        
+        # Check if augmentation is already running
+        from ...services.survey_service import api_refresh_state
+        if api_refresh_state.get('is_running', False):
+            return jsonify({
+                'success': False,
+                'error': 'Augmentation already in progress',
+                'details': 'Please wait for the current augmentation to complete.'
+            }), 409
+        
+        # Import cache service
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        cache_service = SurvicateS3CacheService()
+        
+        if not cache_service.s3_client:
+            return jsonify({
+                'success': False,
+                'error': 'S3 not available',
+                'details': 'S3 client not configured.'
+            }), 503
+        
+        # Check if raw file exists
+        if raw_file_key:
+            try:
+                cache_service.s3_client.head_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=raw_file_key
+                )
+            except cache_service.s3_client.exceptions.NoSuchKey:
+                return jsonify({
+                    'success': False,
+                    'error': 'Raw file not found',
+                    'details': f'File {raw_file_key} does not exist in S3.'
+                }), 404
+        else:
+            # Use default cache key
+            raw_file_key = cache_service.cache_key
+            try:
+                cache_service.s3_client.head_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=raw_file_key
+                )
+            except cache_service.s3_client.exceptions.NoSuchKey:
+                return jsonify({
+                    'success': False,
+                    'error': 'No raw file found',
+                    'details': 'Please download data from API first using the "Download from API" button.'
+                }), 404
+        
+        # Trigger augmentation in background
+        # We'll use a thread to run augmentation without blocking
+        import threading
+        
+        def run_augmentation():
+            try:
+                # Temporarily set cache key to the specified file
+                original_key = cache_service.cache_key
+                cache_service.cache_key = raw_file_key
+                
+                # Download raw CSV content
+                try:
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=raw_file_key
+                    )
+                    raw_csv_content = response['Body'].read().decode('utf-8')
+                    # Count responses (approximate - number of lines minus header)
+                    response_count = max(0, len(raw_csv_content.strip().split('\n')) - 1)
+                except Exception as e:
+                    logger.error(f"Failed to read raw file: {e}")
+                    response_count = 0
+                    raw_csv_content = None
+                
+                if not raw_csv_content:
+                    logger.error("No raw CSV content to augment")
+                    return
+                
+                # Run augmentation using the survey service method
+                survey_service._augment_raw_csv_and_save_to_s3(cache_service, raw_csv_content, raw_file_key)
+                
+                # Restore original key
+                cache_service.cache_key = original_key
+                
+            except Exception as e:
+                logger.error(f"Background augmentation failed: {e}", exc_info=True)
+        
+        # Start augmentation in background thread
+        thread = threading.Thread(target=run_augmentation, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Augmentation started in background',
+            'raw_file_key': raw_file_key
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to trigger augmentation: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to trigger augmentation'
+        }), 500
+
+
 @survicate_bp.route('/churn-trends', methods=['GET'])
 def get_churn_trends():
     """Get churn reason trends by month for visualization"""
@@ -258,6 +419,7 @@ def get_churn_trends():
                 
                 if not cache_service.s3_client:
                     return jsonify({
+                        'success': False,
                         'error': 'S3 not available',
                         'details': 'S3 client not configured. Use file mode or configure S3.'
                     }), 503
@@ -265,6 +427,7 @@ def get_churn_trends():
                 augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
                 if not augmented_csv_content:
                     return jsonify({
+                        'success': False,
                         'error': 'Augmented CSV not found in S3',
                         'details': 'Please download and process data from API first using the "Download from API" button.'
                     }), 404
@@ -276,6 +439,7 @@ def get_churn_trends():
             except Exception as e:
                 logger.error(f"Failed to load from S3: {e}")
                 return jsonify({
+                    'success': False,
                     'error': 'Failed to load from S3',
                     'details': str(e)
                 }), 500

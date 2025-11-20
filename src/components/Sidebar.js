@@ -10,9 +10,11 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
   const [cacheStatus, setCacheStatus] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [augmentedFiles, setAugmentedFiles] = useState([]);
+  const [rawFiles, setRawFiles] = useState([]);
   const [selectedFileKey, setSelectedFileKey] = useState(
     localStorage.getItem('survicate_selected_file_key') || 'latest'
   );
+  const [isAugmenting, setIsAugmenting] = useState(false);
 
   // Fetch download stats
   useEffect(() => {
@@ -135,6 +137,32 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     }
   }, [currentMode, dataSource]);
 
+  // Fetch raw files list when in API mode
+  useEffect(() => {
+    const fetchRawFiles = async () => {
+      if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+        try {
+          const response = await fetch('/api/survicate/raw-files');
+          const data = await response.json();
+          if (data.success) {
+            setRawFiles(data.files || []);
+          }
+        } catch (error) {
+          console.error('Error fetching raw files:', error);
+        }
+      } else {
+        setRawFiles([]);
+      }
+    };
+
+    fetchRawFiles();
+    // Refresh files list every 30 seconds when in API mode
+    if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+      const interval = setInterval(fetchRawFiles, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [currentMode, dataSource]);
+
   const handleFileSelectionChange = (fileKey) => {
     setSelectedFileKey(fileKey);
     localStorage.setItem('survicate_selected_file_key', fileKey);
@@ -142,6 +170,46 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     if (currentMode === 'churn-trends') {
       // Force chart refresh by triggering a custom event
       window.dispatchEvent(new CustomEvent('survicate-file-changed', { detail: { fileKey } }));
+    }
+  };
+
+  const handleTriggerAugmentation = async (rawFileKey) => {
+    if (isAugmenting) return;
+    
+    setIsAugmenting(true);
+    try {
+      const response = await fetch('/api/survicate/augment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          raw_file_key: rawFileKey
+        }),
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        alert('Augmentation started in background. This may take a few minutes. The augmented file will appear when complete.');
+        // Refresh files list after a delay
+        setTimeout(() => {
+          fetch('/api/survicate/augmented-files')
+            .then(res => res.json())
+            .then(data => {
+              if (data.success) {
+                setAugmentedFiles(data.files || []);
+              }
+            })
+            .catch(err => console.error('Error refreshing augmented files:', err));
+        }, 5000);
+      } else {
+        alert(data.error || 'Failed to start augmentation');
+      }
+    } catch (error) {
+      console.error('Error triggering augmentation:', error);
+      alert('Failed to trigger augmentation');
+    } finally {
+      setIsAugmenting(false);
     }
   };
 
@@ -395,6 +463,57 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
               <option value="file">File (CSV)</option>
               <option value="api">API (Live)</option>
             </select>
+          </div>
+        </div>
+      )}
+
+      {/* Raw Files - Show when in API mode */}
+      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && rawFiles.length > 0 && (
+        <div className="p-6 border-t border-gray-200">
+          <div className="text-xs text-gray-500">
+            <div className="mb-2">
+              <strong>Downloaded Files:</strong>
+            </div>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {rawFiles.slice(0, 5).map((file) => (
+                <div key={file.key} className="p-2 bg-gray-50 rounded border border-gray-200">
+                  <div className="flex justify-between items-start mb-1">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-gray-700 truncate" title={file.display_name}>
+                        {file.display_name}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {file.response_count.toLocaleString()} responses • {new Date(file.last_modified).toLocaleString()}
+                      </div>
+                    </div>
+                    {!file.has_augmentation && (
+                      <button
+                        onClick={() => handleTriggerAugmentation(file.key)}
+                        disabled={isAugmenting}
+                        className="ml-2 px-2 py-1 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-1"
+                        title="Run augmentation with LLM"
+                      >
+                        {isAugmenting ? (
+                          <RefreshCw className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <span>Augment</span>
+                        )}
+                      </button>
+                    )}
+                    {file.has_augmentation && (
+                      <span className="ml-2 px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                        Augmented
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {rawFiles.length > 5 && (
+                <div className="text-xs text-gray-400 text-center">
+                  +{rawFiles.length - 5} more files
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
