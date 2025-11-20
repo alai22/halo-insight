@@ -115,3 +115,4 @@ echo "  3. Response headers showing BunnyCDN and AWS S3 errors"
 echo "  4. Full error response body"
 echo "  5. Confirmation that subscription plan includes Data Export API access"
 
+

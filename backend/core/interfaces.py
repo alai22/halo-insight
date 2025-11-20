@@ -64,3 +64,4 @@ class IConversationService(ABC):
         """Search conversations for specific content"""
         pass
 
+

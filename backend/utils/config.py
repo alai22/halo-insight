@@ -114,7 +114,7 @@ class Config:
     SURVICATE_WORKSPACE_KEY: Optional[str] = os.getenv('SURVICATE_WORKSPACE_KEY')
     SURVICATE_WORKSPACE_ID: Optional[str] = os.getenv('SURVICATE_WORKSPACE_ID')
     SURVICATE_SURVEY_ID: str = os.getenv('SURVICATE_SURVEY_ID', 'e08c3365f14085e2')
-    SURVICATE_API_BASE_URL: str = os.getenv('SURVICATE_API_BASE_URL', 'https://api.survicate.com/v1')
+    SURVICATE_API_BASE_URL: str = os.getenv('SURVICATE_API_BASE_URL', 'https://data-api.survicate.com/v2')
     
     # Survicate S3 Cache Configuration
     SURVICATE_CACHE_MAX_AGE_HOURS: int = int(os.getenv('SURVICATE_CACHE_MAX_AGE_HOURS', '24'))
