@@ -12,6 +12,15 @@ const ChurnTrendsChart = () => {
   const [error, setError] = useState(null);
   const [totalResponses, setTotalResponses] = useState(0);
   const [reasonTotals, setReasonTotals] = useState({});
+  
+  // Weekly chart state
+  const [weeklyData, setWeeklyData] = useState([]);
+  const [weeklyReasons, setWeeklyReasons] = useState([]);
+  const [weeks, setWeeks] = useState([]);
+  const [weeklyLoading, setWeeklyLoading] = useState(true);
+  const [weeklyError, setWeeklyError] = useState(null);
+  const [weeklyTotalResponses, setWeeklyTotalResponses] = useState(0);
+  const [weeklyReasonTotals, setWeeklyReasonTotals] = useState({});
 
   // Google Sheets style: Fixed hue sequence repeated at progressively lower saturation levels
   // Sequence: Blue, Red, Yellow, Green, Orange, Purple, Teal (repeated 3 times with decreasing saturation)
@@ -77,14 +86,49 @@ const ChurnTrendsChart = () => {
     }
   };
 
+  const fetchChurnTrendsWeekly = async () => {
+    setWeeklyLoading(true);
+    setWeeklyError(null);
+    try {
+      // Get data source and file key from localStorage (set by Sidebar)
+      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const fileKey = localStorage.getItem('survicate_selected_file_key');
+      const url = `/api/survicate/churn-trends-weekly?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
+      const response = await axios.get(url);
+      if (response.data.success) {
+        setWeeklyData(response.data.data);
+        setWeeklyReasons(response.data.reasons);
+        setWeeks(response.data.weeks);
+        setWeeklyTotalResponses(response.data.total_responses || 0);
+        setWeeklyReasonTotals(response.data.reason_totals || {});
+      } else {
+        // Handle non-success response
+        const errorMsg = response.data.error || 'Failed to load weekly churn trends';
+        const details = response.data.details ? ` - ${response.data.details}` : '';
+        setWeeklyError(`${errorMsg}${details}`);
+      }
+    } catch (err) {
+      // Handle axios errors (including 404, 500, etc.)
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to load weekly churn trends';
+      const details = err.response?.data?.details ? ` - ${err.response.data.details}` : '';
+      setWeeklyError(`${errorMsg}${details}`);
+      console.error('Error fetching weekly churn trends:', err);
+    } finally {
+      setWeeklyLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchChurnTrends();
+    fetchChurnTrendsWeekly();
     // Also refresh when data source changes
     const handleStorageChange = () => {
       fetchChurnTrends();
+      fetchChurnTrendsWeekly();
     };
     const handleFileChange = () => {
       fetchChurnTrends();
+      fetchChurnTrendsWeekly();
     };
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('survicate-file-changed', handleFileChange);
@@ -98,6 +142,7 @@ const ChurnTrendsChart = () => {
         localStorage.setItem('_last_data_source', currentSource);
         localStorage.setItem('_last_file_key', currentFileKey);
         fetchChurnTrends();
+        fetchChurnTrendsWeekly();
       }
     }, 1000);
     return () => {
@@ -534,6 +579,309 @@ const ChurnTrendsChart = () => {
             ))}
           </BarChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* Weekly Chart */}
+      <div className="mt-12 pt-8 border-t border-gray-200 flex-shrink-0">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Churn Reasons Over Time (Weekly)</h2>
+            <p className="text-sm text-gray-600 mt-1">
+              {weeklyTotalResponses.toLocaleString()} total responses across {weeks.length} weeks
+            </p>
+          </div>
+          <button
+            onClick={fetchChurnTrendsWeekly}
+            className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center space-x-2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        {weeklyLoading ? (
+          <div className="flex items-center justify-center h-64 p-8">
+            <div className="text-center">
+              <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
+              <p className="text-gray-600">Loading weekly churn trends data...</p>
+            </div>
+          </div>
+        ) : weeklyError ? (
+          <div className="flex items-center justify-center h-64 p-8">
+            <div className="text-center max-w-md">
+              <AlertCircle className="h-8 w-8 text-red-500 mx-auto mb-4" />
+              <p className="text-red-600 mb-2 font-semibold">Error loading data</p>
+              <p className="text-gray-600 text-sm mb-4">{weeklyError}</p>
+              <button
+                onClick={fetchChurnTrendsWeekly}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : weeklyData.length === 0 ? (
+          <div className="flex items-center justify-center h-64 p-8">
+            <div className="text-center">
+              <p className="text-gray-600">No weekly data available</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Prepare weekly data for Recharts */}
+            {(() => {
+              const weeklyChartData = weeklyData.map(item => {
+                const chartItem = { week: item.week, _total: item._total || 0 };
+                weeklyReasons.forEach(reason => {
+                  chartItem[reason] = item[reason] || 0;
+                  chartItem[`${reason}_count`] = item[`${reason}_count`] || 0;
+                });
+                return chartItem;
+              });
+
+              // Calculate aggregate "Total" column
+              const weeklyAggregateData = {
+                week: 'Total',
+                _total: weeklyTotalResponses,
+                _isAggregate: true
+              };
+              
+              weeklyReasons.forEach(reason => {
+                const totalCount = weeklyReasonTotals[reason] || 0;
+                const aggregatePercentage = weeklyTotalResponses > 0 ? (totalCount / weeklyTotalResponses) * 100 : 0;
+                weeklyAggregateData[reason] = Math.round(aggregatePercentage * 100) / 100;
+                weeklyAggregateData[`${reason}_count`] = totalCount;
+              });
+
+              const weeklyChartDataWithTotal = [...weeklyChartData, weeklyAggregateData];
+
+              return (
+                <div style={{ height: '900px', flexShrink: 0 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={weeklyChartDataWithTotal}
+                      margin={{ top: 10, right: 30, left: 20, bottom: 50 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="week" 
+                        angle={-45}
+                        textAnchor="end"
+                        height={80}
+                        tick={{ fontSize: 11 }}
+                        tickFormatter={(value) => value}
+                        tick={(props) => {
+                          const { x, y, payload } = props;
+                          const isTotal = payload.value === 'Total';
+                          return (
+                            <g transform={`translate(${x},${y})`}>
+                              <text
+                                x={0}
+                                y={0}
+                                dy={16}
+                                textAnchor="end"
+                                fill={isTotal ? '#1f2937' : '#6b7280'}
+                                fontSize={isTotal ? 13 : 11}
+                                fontWeight={isTotal ? '600' : '400'}
+                              >
+                                {payload.value}
+                              </text>
+                            </g>
+                          );
+                        }}
+                      />
+                      <YAxis 
+                        label={{ value: 'Percentage of Churn (%)', angle: -90, position: 'insideLeft' }}
+                        domain={[0, 100]}
+                        ticks={[0, 20, 40, 60, 80, 100]}
+                        tickFormatter={(value) => `${value}%`}
+                        tick={{ fontSize: 12 }}
+                      />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#ffffff',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '12px',
+                          padding: '0',
+                          boxShadow: '0 8px 16px rgba(0, 0, 0, 0.12)',
+                          maxWidth: '350px',
+                          opacity: 1
+                        }}
+                        wrapperStyle={{ 
+                          opacity: 1,
+                          backgroundColor: '#ffffff'
+                        }}
+                        cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload || payload.length === 0) {
+                            return null;
+                          }
+                          
+                          // Sort by value (descending) for better readability
+                          const sortedPayload = [...payload].sort((a, b) => (b.value || 0) - (a.value || 0));
+                          
+                          const total = payload[0]?.payload?._total || 0;
+                          
+                          return (
+                            <div style={{ padding: '12px', backgroundColor: '#ffffff' }}>
+                              <div style={{ 
+                                fontWeight: '600', 
+                                fontSize: '13px', 
+                                color: '#1f2937', 
+                                marginBottom: '8px', 
+                                borderBottom: '1px solid #e5e7eb', 
+                                paddingBottom: '8px' 
+                              }}>
+                                Week: {label}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {sortedPayload.filter(item => item.value > 0).map((item, index) => {
+                                  const reason = item.dataKey;
+                                  const percentage = item.value || 0;
+                                  const count = item.payload[`${reason}_count`] || 0;
+                                  const color = item.color;
+                                  
+                                  return (
+                                    <div key={index} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                                      <div 
+                                        style={{ 
+                                          width: '12px', 
+                                          height: '12px', 
+                                          backgroundColor: color,
+                                          borderRadius: '2px',
+                                          flexShrink: 0,
+                                          marginTop: '2px'
+                                        }} 
+                                      />
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: '600', color: '#1f2937', fontSize: '12px', marginBottom: '3px' }}>
+                                          {reason}
+                                        </div>
+                                        <div style={{ fontSize: '14px', fontWeight: '700', color: '#1f2937', marginBottom: '2px' }}>
+                                          {percentage.toFixed(2)}%
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                                          {count.toLocaleString()} of {total.toLocaleString()} responses
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Legend 
+                        wrapperStyle={{ 
+                          paddingTop: '10px',
+                          paddingBottom: '5px'
+                        }}
+                        iconType="rect"
+                        iconSize={14}
+                        formatter={(value) => {
+                          return value.length > 35 ? value.substring(0, 32) + '...' : value;
+                        }}
+                        content={({ payload }) => {
+                          if (!payload || payload.length === 0) return null;
+                          
+                          const sortedPayload = [...payload].sort((a, b) => {
+                            const totalA = weeklyReasonTotals[a.dataKey] || 0;
+                            const totalB = weeklyReasonTotals[b.dataKey] || 0;
+                            return totalB - totalA;
+                          });
+                          
+                          const screenWidth = window.innerWidth;
+                          let numColumns = 3;
+                          if (screenWidth >= 1920) {
+                            numColumns = 5;
+                          } else if (screenWidth >= 1440) {
+                            numColumns = 4;
+                          } else if (screenWidth >= 1024) {
+                            numColumns = 3;
+                          } else {
+                            numColumns = 2;
+                          }
+                          
+                          const itemsPerColumn = Math.ceil(sortedPayload.length / numColumns);
+                          const columns = [];
+                          for (let i = 0; i < sortedPayload.length; i += itemsPerColumn) {
+                            columns.push(sortedPayload.slice(i, i + itemsPerColumn));
+                          }
+                          
+                          return (
+                            <div style={{ 
+                              display: 'flex', 
+                              justifyContent: 'center', 
+                              gap: '40px',
+                              padding: '12px 20px 8px 20px',
+                              flexWrap: 'wrap',
+                              backgroundColor: '#f9fafb',
+                              borderRadius: '8px',
+                              marginTop: '10px'
+                            }}>
+                              {columns.map((column, colIndex) => (
+                                <div key={colIndex} style={{ 
+                                  display: 'flex', 
+                                  flexDirection: 'column', 
+                                  gap: '10px', 
+                                  minWidth: '220px',
+                                  maxWidth: '280px'
+                                }}>
+                                  {column.map((entry, index) => (
+                                    <div 
+                                      key={`legend-item-${index}`}
+                                      style={{ 
+                                        display: 'flex', 
+                                        alignItems: 'flex-start', 
+                                        gap: '10px',
+                                        fontSize: '13px',
+                                        lineHeight: '1.6',
+                                        padding: '4px 0'
+                                      }}
+                                    >
+                                      <div 
+                                        style={{ 
+                                          width: '16px', 
+                                          height: '16px', 
+                                          backgroundColor: entry.color,
+                                          borderRadius: '3px',
+                                          flexShrink: 0,
+                                          marginTop: '2px',
+                                          border: '1px solid rgba(0, 0, 0, 0.1)'
+                                        }} 
+                                      />
+                                      <span style={{ 
+                                        color: '#1f2937',
+                                        fontWeight: '500',
+                                        wordBreak: 'break-word'
+                                      }}>
+                                        {entry.value}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        }}
+                      />
+                      {weeklyReasons.map((reason, index) => (
+                        <Bar
+                          key={reason}
+                          dataKey={reason}
+                          stackId="b"
+                          fill={colors[index % colors.length]}
+                          name={reason}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
+          </>
+        )}
       </div>
 
       {/* Additional Question Trends */}

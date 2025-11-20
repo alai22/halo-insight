@@ -796,6 +796,228 @@ def get_churn_trends():
         }), 500
 
 
+@survicate_bp.route('/churn-trends-weekly', methods=['GET'])
+def get_churn_trends_weekly():
+    """Get churn reason trends by week for visualization"""
+    try:
+        import pandas as pd
+        import os
+        import io
+        from datetime import datetime
+        
+        # Check if we should use API mode (S3 cache) or file mode
+        data_source = request.args.get('data_source', 'file')
+        file_key = request.args.get('file_key')  # Optional: specific file to use
+        
+        if data_source == 'api':
+            # Load from cache (S3 or local storage)
+            try:
+                from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+                cache_service = SurvicateS3CacheService()
+                
+                # Check if S3 is available or if local storage is being used
+                if not cache_service.use_local_storage and not cache_service.s3_client:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Storage not available',
+                        'details': 'S3 client not configured and local storage not enabled. Set S3_BUCKET_NAME or SURVICATE_USE_LOCAL_STORAGE=true.'
+                    }), 503
+                
+                augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
+                if not augmented_csv_content:
+                    storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                    return jsonify({
+                        'success': False,
+                        'error': 'Augmented CSV not found',
+                        'details': f'Please download and augment data from API first using the "Download from API" button. (Checked {storage_type})'
+                    }), 404
+                
+                # Read CSV from string content
+                df = pd.read_csv(io.StringIO(augmented_csv_content))
+                storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                logger.info(f"Loaded {len(df)} rows from {storage_type} augmented cache (file: {file_key or 'latest'})")
+                
+            except Exception as e:
+                logger.error(f"Failed to load augmented CSV: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to load augmented CSV',
+                    'details': str(e)
+                }), 500
+        else:
+            # Load from local file
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            csv_path = os.path.join(current_dir, '..', '..', '..', 'data', 
+                                    'survicate_cancelled_subscriptions_augmented.csv')
+            
+            if not os.path.exists(csv_path):
+                logger.error(f"CSV file not found at {csv_path}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Data file not found',
+                    'details': f'Expected file at: {csv_path}'
+                }), 404
+            
+            # Read the CSV
+            df = pd.read_csv(csv_path)
+            logger.info(f"Loaded {len(df)} rows from local file")
+        
+        # Filter out rows with missing data
+        df = df[df['augmented_churn_reason'].notna() & df['Date & Time (UTC)'].notna()]
+        
+        # Parse date column and create week identifier
+        df['date'] = pd.to_datetime(df['Date & Time (UTC)'], errors='coerce')
+        df = df[df['date'].notna()]  # Remove rows with invalid dates
+        
+        # Create year-week identifier using ISO week format
+        # Get ISO year and week number
+        df['iso_year'] = df['date'].dt.isocalendar().year
+        df['iso_week'] = df['date'].dt.isocalendar().week
+        df['year_week'] = df['iso_year'].astype(str) + '-W' + df['iso_week'].astype(str).str.zfill(2)
+        
+        # Also create a more readable format: "YYYY-MM-DD to YYYY-MM-DD"
+        def get_week_range(date_series):
+            """Get start and end dates of the week for a date (Monday to Sunday)"""
+            week_ranges = []
+            for date in date_series:
+                # Get Monday of the week (ISO week starts on Monday)
+                days_since_monday = date.weekday()  # Monday is 0
+                week_start = date - pd.Timedelta(days=days_since_monday)
+                week_end = week_start + pd.Timedelta(days=6)
+                week_ranges.append(f"{week_start.strftime('%Y-%m-%d')} to {week_end.strftime('%Y-%m-%d')}")
+            return week_ranges
+        
+        df['week_label'] = get_week_range(df['date'])
+        
+        # Filter out excluded months (configurable via SURVICATE_EXCLUDE_MONTHS env var)
+        exclude_months = Config.SURVICATE_EXCLUDE_MONTHS.split(',') if Config.SURVICATE_EXCLUDE_MONTHS else []
+        exclude_months = [m.strip() for m in exclude_months if m.strip()]
+        if exclude_months:
+            # Convert exclude_months to year-month format and filter
+            df['year_month'] = df['date'].dt.strftime('%Y-%m')
+            df = df[~df['year_month'].isin(exclude_months)]
+            logger.info(f"Excluded months: {exclude_months}")
+        
+        if len(df) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No valid data found',
+                'details': 'No rows with valid augmented_churn_reason and date'
+            }), 400
+        
+        # Group by year_week and augmented_churn_reason
+        grouped = df.groupby(['year_week', 'week_label', 'augmented_churn_reason']).size().reset_index(name='count')
+        
+        # Calculate percentages for each week
+        weekly_totals = df.groupby('year_week').size()
+        grouped['percentage'] = grouped.apply(
+            lambda row: (row['count'] / weekly_totals[row['year_week']]) * 100, 
+            axis=1
+        )
+        
+        # Get unique weeks and reasons
+        # Sort by year_week but use week_label for display
+        weeks_df = grouped[['year_week', 'week_label']].drop_duplicates().sort_values('year_week')
+        weeks = weeks_df['week_label'].tolist()
+        reasons = sorted(grouped['augmented_churn_reason'].unique())
+        
+        # Format data for frontend - create array of objects with week and all reason percentages and counts
+        data = []
+        for week_label in weeks:
+            week_data = {'week': week_label}
+            year_week = weeks_df[weeks_df['week_label'] == week_label]['year_week'].iloc[0]
+            week_total = int(weekly_totals[year_week])
+            week_data['_total'] = week_total  # Store total for the week
+            week_df = grouped[grouped['year_week'] == year_week]
+            for reason in reasons:
+                reason_data = week_df[week_df['augmented_churn_reason'] == reason]
+                count_key = f'{reason}_count'
+                if len(reason_data) > 0:
+                    week_data[reason] = round(reason_data['percentage'].values[0], 2)
+                    week_data[count_key] = int(reason_data['count'].values[0])
+                else:
+                    week_data[reason] = 0
+                    week_data[count_key] = 0
+            data.append(week_data)
+        
+        # Calculate total counts for each reason (for sorting/legend)
+        reason_totals = {}
+        for reason in reasons:
+            reason_totals[reason] = int(grouped[grouped['augmented_churn_reason'] == reason]['count'].sum())
+        
+        # Sort reasons by total count (descending) for consistent ordering
+        sorted_reasons = sorted(reasons, key=lambda x: reason_totals[x], reverse=True)
+        
+        # Keep only top 11 reasons, aggregate the rest into "Other"
+        top_n = 11
+        top_reasons = sorted_reasons[:top_n]
+        other_reasons = sorted_reasons[top_n:] if len(sorted_reasons) > top_n else []
+        
+        # Aggregate data: combine non-top reasons into "Other"
+        aggregated_data = []
+        for week_label in weeks:
+            year_week = weeks_df[weeks_df['week_label'] == week_label]['year_week'].iloc[0]
+            week_data = {'week': week_label}
+            week_total = int(weekly_totals[year_week])
+            week_data['_total'] = week_total
+            
+            # Get data for this week
+            week_df = grouped[grouped['year_week'] == year_week]
+            
+            # Add top reasons
+            for reason in top_reasons:
+                reason_data = week_df[week_df['augmented_churn_reason'] == reason]
+                count_key = f'{reason}_count'
+                if len(reason_data) > 0:
+                    week_data[reason] = round(reason_data['percentage'].values[0], 2)
+                    week_data[count_key] = int(reason_data['count'].values[0])
+                else:
+                    week_data[reason] = 0
+                    week_data[count_key] = 0
+            
+            # Aggregate "Other" reasons
+            other_count = 0
+            other_percentage = 0
+            for reason in other_reasons:
+                reason_data = week_df[week_df['augmented_churn_reason'] == reason]
+                if len(reason_data) > 0:
+                    other_count += int(reason_data['count'].values[0])
+                    other_percentage += reason_data['percentage'].values[0]
+            
+            # Add "Other" category
+            if len(other_reasons) > 0:
+                week_data['Other'] = round(other_percentage, 2)
+                week_data['Other_count'] = other_count
+            
+            aggregated_data.append(week_data)
+        
+        # Create final reasons list with "Other" if needed
+        final_reasons = top_reasons.copy()
+        if len(other_reasons) > 0:
+            final_reasons.append('Other')
+            reason_totals['Other'] = sum(reason_totals[r] for r in other_reasons)
+        
+        return jsonify({
+            'success': True,
+            'data': aggregated_data,
+            'reasons': final_reasons,
+            'weeks': weeks,
+            'reason_totals': {r: reason_totals[r] for r in final_reasons},
+            'total_responses': int(len(df)),
+            'other_reasons_count': len(other_reasons)
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to get churn trends weekly: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to process churn trends weekly data'
+        }), 500
+
+
 @survicate_bp.route('/generate-pdf-report', methods=['POST'])
 def generate_pdf_report():
     """Generate and return a PDF report of churn trends"""
