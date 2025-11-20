@@ -1,0 +1,184 @@
+{
+  "info": {
+    "name": "Survicate API Test - 403 Error Demo",
+    "description": "Test collection to demonstrate 403 Forbidden errors despite correct API key format",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. List All Surveys",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{SURVICATE_API_KEY}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "url": {
+          "raw": "https://api.survicate.com/v1/surveys",
+          "protocol": "https",
+          "host": [
+            "api",
+            "survicate",
+            "com"
+          ],
+          "path": [
+            "v1",
+            "surveys"
+          ]
+        },
+        "description": "Test listing all surveys. Expected: 403 Forbidden with AWS S3 error"
+      },
+      "response": []
+    },
+    {
+      "name": "2. Get Survey Responses",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{SURVICATE_API_KEY}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "url": {
+          "raw": "https://api.survicate.com/v1/surveys/{{SURVICATE_SURVEY_ID}}/responses?items_per_page=10",
+          "protocol": "https",
+          "host": [
+            "api",
+            "survicate",
+            "com"
+          ],
+          "path": [
+            "v1",
+            "surveys",
+            "{{SURVICATE_SURVEY_ID}}",
+            "responses"
+          ],
+          "query": [
+            {
+              "key": "items_per_page",
+              "value": "10"
+            }
+          ]
+        },
+        "description": "Test getting survey responses. Expected: 403 Forbidden with AWS S3 error"
+      },
+      "response": []
+    },
+    {
+      "name": "3. Get Survey Responses with Attributes",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{SURVICATE_API_KEY}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "url": {
+          "raw": "https://api.survicate.com/v1/surveys/{{SURVICATE_SURVEY_ID}}/responses?items_per_page=10&attributes[]=email&attributes[]=first_name",
+          "protocol": "https",
+          "host": [
+            "api",
+            "survicate",
+            "com"
+          ],
+          "path": [
+            "v1",
+            "surveys",
+            "{{SURVICATE_SURVEY_ID}}",
+            "responses"
+          ],
+          "query": [
+            {
+              "key": "items_per_page",
+              "value": "10"
+            },
+            {
+              "key": "attributes[]",
+              "value": "email"
+            },
+            {
+              "key": "attributes[]",
+              "value": "first_name"
+            }
+          ]
+        },
+        "description": "Test getting survey responses with specific attributes. Expected: 403 Forbidden with AWS S3 error"
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "SURVICATE_API_KEY",
+      "value": "YOUR_API_KEY_HERE",
+      "type": "string"
+    },
+    {
+      "key": "SURVICATE_SURVEY_ID",
+      "value": "e08c3365f14085e2",
+      "type": "string"
+    }
+  ]
+}
+

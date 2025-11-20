@@ -38,10 +38,21 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
           const data = await response.json();
           if (data.success) {
             setSurveyStats(data.summary);
+          } else if (data.error && dataSource === 'api') {
+            // If API mode fails, automatically switch to file mode
+            console.warn('API mode failed, switching to file mode:', data.error);
+            setDataSource('file');
+            localStorage.setItem('survicate_data_source', 'file');
           }
         } catch (error) {
           console.error('Error fetching survey stats:', error);
           setSurveyStats(null);
+          // If API mode fails completely, switch to file mode
+          if (dataSource === 'api') {
+            console.warn('API mode failed, switching to file mode');
+            setDataSource('file');
+            localStorage.setItem('survicate_data_source', 'file');
+          }
         }
       } else {
         setSurveyStats(null);
@@ -60,10 +71,24 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
           const data = await response.json();
           if (data.success) {
             setCacheStatus(data.cache_status);
+            
+            // If API mode has errors and no cache exists, automatically switch to file mode
+            const cacheStatus = data.cache_status;
+            if (cacheStatus && !cacheStatus.s3_available && cacheStatus.error) {
+              console.warn('API mode not available, switching to file mode');
+              setDataSource('file');
+              localStorage.setItem('survicate_data_source', 'file');
+            }
           }
         } catch (error) {
           console.error('Error fetching cache status:', error);
           setCacheStatus(null);
+          // If API mode fails completely, switch to file mode
+          if (dataSource === 'api') {
+            console.warn('API mode failed, switching to file mode');
+            setDataSource('file');
+            localStorage.setItem('survicate_data_source', 'file');
+          }
         }
       } else {
         setCacheStatus(null);
