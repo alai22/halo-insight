@@ -129,7 +129,7 @@ def start_download():
         # Initialize download service with error handling
         try:
             download_service = GladlyDownloadService()
-            logger.info("Download service initialized successfully")
+            logger.debug("Download service initialized")
         except Exception as e:
             error_msg = f"Failed to initialize download service: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")

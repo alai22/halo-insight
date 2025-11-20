@@ -159,3 +159,4 @@ def custom_env(monkeypatch):
 Integration tests patch the service container. Make sure you're using the `mock_storage_service` and `mock_claude_service` fixtures.
 
 
+

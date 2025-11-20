@@ -14,13 +14,11 @@ health_bp = Blueprint('health', __name__, url_prefix='/api')
 @health_bp.route('/health')
 def health_check():
     """Health check endpoint"""
-    logger.info("[HEALTH CHECK] Starting health check request")
+    logger.debug("[HEALTH CHECK] Starting health check request")
     try:
         # Get services from container (injected via Flask's g)
         # Use getattr with default None to avoid AttributeError
-        logger.debug(f"[HEALTH CHECK] Getting service container from g: {hasattr(g, 'service_container')}")
         service_container = getattr(g, 'service_container', None)
-        logger.debug(f"[HEALTH CHECK] Service container: {service_container is not None}")
         if not service_container:
             logger.error("Service container not available in request context")
             return jsonify({
@@ -66,7 +64,7 @@ def health_check():
             'error': 'ClaudeService not initialized - check ANTHROPIC_API_KEY' if not claude_initialized else None
         }
         
-        logger.info(f"[HEALTH CHECK] Health check completed: status={status}, claude={claude_initialized}, conversations={conversation_available}")
+        logger.debug(f"[HEALTH CHECK] Completed: status={status}, claude={claude_initialized}, conversations={conversation_available}")
         logger.debug(f"[HEALTH CHECK] Response data: {response_data}")
         
         return jsonify(response_data), 200  # Always return 200, let the status field indicate health

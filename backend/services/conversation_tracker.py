@@ -39,7 +39,13 @@ class ConversationTracker:
             if self.bucket_name:
                 return self._load_from_s3()
         except Exception as e:
-            logger.warning(f"Failed to load tracking data from S3: {e}")
+            # Suppress expected S3 errors (InvalidAccessKeyId, etc.) when bucket is not configured
+            # These are normal in local development
+            error_str = str(e)
+            if 'InvalidAccessKeyId' in error_str or 'NoCredentialsError' in error_str:
+                logger.debug(f"S3 not available (expected in local mode): {type(e).__name__}")
+            else:
+                logger.warning(f"Failed to load tracking data from S3: {e}")
         
         # Fallback to local file
         if os.path.exists(self.tracking_file):
@@ -71,8 +77,14 @@ class ConversationTracker:
             logger.info("No tracking data found in S3, starting fresh")
             return {}
         except Exception as e:
-            logger.error(f"Error loading tracking data from S3: {e}")
-            raise
+            # Suppress expected S3 errors (InvalidAccessKeyId, etc.) when bucket is not configured
+            error_str = str(e)
+            if 'InvalidAccessKeyId' in error_str or 'NoCredentialsError' in error_str:
+                logger.debug(f"S3 not available (expected in local mode): {type(e).__name__}")
+                raise
+            else:
+                logger.error(f"Error loading tracking data from S3: {e}")
+                raise
     
     def _save_tracking_data(self):
         """Save tracking data to S3 and local fallback"""

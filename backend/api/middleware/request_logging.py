@@ -14,23 +14,27 @@ def register_request_logging(app):
     
     @app.before_request
     def log_request():
-        """Log incoming requests"""
+        """Log incoming requests - only log non-GET requests and errors"""
         g.request_start_time = time.time()
         g.request_id = f"{time.time()}-{id(request)}"
         
         # Calculate total header size
         header_size = sum(len(k) + len(v) + 4 for k, v in request.headers.items())  # +4 for ': ' and '\r\n'
         
-        logger.info(
-            f"[REQUEST] {request.method} {request.path} | "
-            f"Remote: {request.remote_addr} | "
-            f"User-Agent: {request.headers.get('User-Agent', 'Unknown')[:50]} | "
-            f"Content-Type: {request.content_type} | "
-            f"Content-Length: {request.content_length or 0} | "
-            f"Header Size: {header_size} bytes"
-        )
+        # Only log non-GET requests (POST, PUT, DELETE, etc.) to reduce noise
+        # GET requests are logged at debug level, errors are always logged
+        if request.method != 'GET':
+            logger.info(
+                f"[REQUEST] {request.method} {request.path} | "
+                f"Remote: {request.remote_addr}"
+            )
+        else:
+            logger.debug(
+                f"[REQUEST] {request.method} {request.path} | "
+                f"Remote: {request.remote_addr}"
+            )
         
-        # Log if headers are large (potential 431 issue)
+        # Log if headers are large (potential 431 issue) - always log warnings
         if header_size > 8000:
             logger.warning(
                 f"[REQUEST] Large headers detected: {header_size} bytes | "
@@ -69,17 +73,27 @@ def register_request_logging(app):
     
     @app.after_request
     def log_response(response):
-        """Log outgoing responses"""
+        """Log outgoing responses - only log errors and non-GET requests"""
         duration = time.time() - g.get('request_start_time', time.time())
         request_id = g.get('request_id', 'unknown')
         
-        logger.info(
-            f"[RESPONSE] {request.method} {request.path} | "
-            f"Status: {response.status_code} | "
-            f"Duration: {duration:.3f}s | "
-            f"Size: {response.content_length or len(response.get_data())} bytes | "
-            f"Request-ID: {request_id}"
-        )
+        # Only log non-GET requests or slow requests (>1s) at info level
+        # Errors are always logged
+        if response.status_code >= 400:
+            # Errors are logged below
+            pass
+        elif request.method != 'GET' or duration > 1.0:
+            logger.info(
+                f"[RESPONSE] {request.method} {request.path} | "
+                f"Status: {response.status_code} | "
+                f"Duration: {duration:.3f}s"
+            )
+        else:
+            logger.debug(
+                f"[RESPONSE] {request.method} {request.path} | "
+                f"Status: {response.status_code} | "
+                f"Duration: {duration:.3f}s"
+            )
         
         # Log response body for errors (truncated)
         # Skip error logging for common static asset requests (browsers request these automatically)

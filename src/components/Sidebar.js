@@ -44,24 +44,19 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         const data = await response.json();
         if (data.success) {
           setCacheStatus(data.cache_status);
-          
-          // If API mode has errors and no cache exists, automatically switch to file mode
-          const cacheStatus = data.cache_status;
-          if (cacheStatus && !cacheStatus.s3_available && cacheStatus.error) {
-            console.warn('API mode not available, switching to file mode');
-            setDataSource('file');
-            localStorage.setItem('survicate_data_source', 'file');
-          }
+        } else {
+          // Show error but don't switch modes - let user see the error and fix it
+          console.error('Cache status error:', data.error);
+          setCacheStatus({
+            ...data.cache_status,
+            refresh_error: data.error || 'Failed to fetch cache status'
+          });
         }
       } catch (error) {
         console.error('Error fetching cache status:', error);
-        setCacheStatus(null);
-        // If API mode fails completely, switch to file mode
-        if (dataSource === 'api') {
-          console.warn('API mode failed, switching to file mode');
-          setDataSource('file');
-          localStorage.setItem('survicate_data_source', 'file');
-        }
+        setCacheStatus({
+          refresh_error: `Network error: ${error.message}`
+        });
       }
     } else {
       setCacheStatus(null);
@@ -77,21 +72,20 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
           const data = await response.json();
           if (data.success) {
             setSurveyStats(data.summary);
-          } else if (data.error && dataSource === 'api') {
-            // If API mode fails, automatically switch to file mode
-            console.warn('API mode failed, switching to file mode:', data.error);
-            setDataSource('file');
-            localStorage.setItem('survicate_data_source', 'file');
+          } else {
+            // Show error but don't switch modes - let user see the error and fix it
+            console.error('Survey stats error:', data.error);
+            setSurveyStats({
+              total_responses: 0,
+              error: data.error || 'Failed to fetch survey stats'
+            });
           }
         } catch (error) {
           console.error('Error fetching survey stats:', error);
-          setSurveyStats(null);
-          // If API mode fails completely, switch to file mode
-          if (dataSource === 'api') {
-            console.warn('API mode failed, switching to file mode');
-            setDataSource('file');
-            localStorage.setItem('survicate_data_source', 'file');
-          }
+          setSurveyStats({
+            total_responses: 0,
+            error: `Network error: ${error.message}`
+          });
         }
       } else {
         setSurveyStats(null);
@@ -109,6 +103,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       const interval = setInterval(fetchCacheStatus, 10000);
       return () => clearInterval(interval);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMode, dataSource]);
 
   // Fetch augmented files list when in API mode
@@ -407,42 +402,58 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       )}
 
       {/* Churn Trends Stats */}
-      {surveyStats && currentMode === 'churn-trends' && (
+      {(surveyStats || (currentMode === 'churn-trends' && dataSource === 'api')) && currentMode === 'churn-trends' && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
               <strong>Churn Trends Data:</strong>
             </div>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-gray-600">Survey Responses</span>
-                <span className="font-semibold text-blue-600">{surveyStats.total_responses?.toLocaleString() || 0}</span>
-              </div>
-              {surveyStats.date_range && (
-                <div className="flex flex-col space-y-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-600">Start Date</span>
-                    <span className="font-semibold text-gray-700 text-xs">
-                      {surveyStats.date_range.start !== 'Unknown' ? (
-                        new Date(surveyStats.date_range.start).toLocaleDateString()
-                      ) : 'N/A'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-600">End Date</span>
-                    <span className="font-semibold text-gray-700 text-xs">
-                      {surveyStats.date_range.end !== 'Unknown' ? (
-                        new Date(surveyStats.date_range.end).toLocaleDateString()
-                      ) : 'N/A'}
-                    </span>
-                  </div>
+            {surveyStats?.error ? (
+              <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                <div className="font-semibold mb-1">API Error:</div>
+                <div>{surveyStats.error}</div>
+                <div className="mt-2 text-xs text-red-700">
+                  Check API configuration and try downloading from API using the button above.
                 </div>
-              )}
-            </div>
-            {surveyStats.total_responses === 0 && (
-              <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-                No survey data loaded. Ensure the CSV file is in the data directory.
               </div>
+            ) : surveyStats ? (
+              <>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Survey Responses</span>
+                    <span className="font-semibold text-blue-600">{surveyStats.total_responses?.toLocaleString() || 0}</span>
+                  </div>
+                  {surveyStats.date_range && (
+                    <div className="flex flex-col space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-600">Start Date</span>
+                        <span className="font-semibold text-gray-700 text-xs">
+                          {surveyStats.date_range.start !== 'Unknown' ? (
+                            new Date(surveyStats.date_range.start).toLocaleDateString()
+                          ) : 'N/A'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-600">End Date</span>
+                        <span className="font-semibold text-gray-700 text-xs">
+                          {surveyStats.date_range.end !== 'Unknown' ? (
+                            new Date(surveyStats.date_range.end).toLocaleDateString()
+                          ) : 'N/A'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {surveyStats.total_responses === 0 && (
+                  <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+                    {dataSource === 'api' 
+                      ? 'No survey data loaded. Use "Download from API" button above to fetch data.'
+                      : 'No survey data loaded. Ensure the CSV file is in the data directory.'}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-xs text-gray-400">Loading survey stats...</div>
             )}
           </div>
         </div>
@@ -467,8 +478,8 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         </div>
       )}
 
-      {/* Raw Files - Show when in API mode */}
-      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && rawFiles.length > 0 && (
+      {/* Raw Files - Hide when in api-data-manager mode (shown in main area) */}
+      {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && rawFiles.length > 0 && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
@@ -529,8 +540,8 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         </div>
       )}
 
-      {/* Augmented File Selection - Show when in API mode */}
-      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && augmentedFiles.length > 0 && (
+      {/* Augmented File Selection - Hide when in api-data-manager mode (shown in main area) */}
+      {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && augmentedFiles.length > 0 && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
@@ -557,8 +568,8 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         </div>
       )}
 
-      {/* Cache Status - Show when in API mode */}
-      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
+      {/* Cache Status - Show when in API mode, but hide action buttons when in api-data-manager mode */}
+      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends' || currentMode === 'api-data-manager') && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
@@ -596,60 +607,89 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
               <div className="text-xs text-gray-400 mb-2">Loading cache status...</div>
             )}
             
-            {/* Action Buttons */}
-            <div className="mt-3 space-y-2">
-              <button
-                onClick={handleDownloadFromApi}
-                disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
-                className="w-full px-3 py-2 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
-                title="Download fresh data from Survicate API and save to cache"
-              >
-                <Download className={`h-3 w-3 ${(isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)) ? 'animate-spin' : ''}`} />
-                <span>Download from API</span>
-              </button>
-              <button
-                onClick={handleReloadCache}
-                disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
-                className="w-full px-3 py-2 text-xs bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
-                title="Reload data from existing cache (use already downloaded data)"
-              >
-                <RefreshCw className="h-3 w-3" />
-                <span>Reload Cache</span>
-              </button>
-            </div>
+            {/* Action Buttons - Hide when in api-data-manager mode (shown in main area) */}
+            {currentMode !== 'api-data-manager' && (
+              <div className="mt-3 space-y-2">
+                <button
+                  onClick={handleDownloadFromApi}
+                  disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                  className="w-full px-3 py-2 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                  title="Download fresh data from Survicate API and save to cache"
+                >
+                  <Download className={`h-3 w-3 ${(isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)) ? 'animate-spin' : ''}`} />
+                  <span>Download from API</span>
+                </button>
+                <button
+                  onClick={handleReloadCache}
+                  disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                  className="w-full px-3 py-2 text-xs bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                  title="Reload data from existing cache (use already downloaded data)"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  <span>Reload Cache</span>
+                </button>
+              </div>
+            )}
+            {/* Link to Data Manager when in API mode but not already there */}
+            {dataSource === 'api' && currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
+              <div className="mt-3">
+                <button
+                  onClick={() => setCurrentMode('api-data-manager')}
+                  className="w-full px-3 py-2 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 flex items-center justify-center space-x-1"
+                  title="Open Data Management in main area"
+                >
+                  <Database className="h-3 w-3" />
+                  <span>Manage Data</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* Survey Stats */}
-      {surveyStats && currentMode === 'survicate' && (
+      {(surveyStats || (currentMode === 'survicate' && dataSource === 'api')) && currentMode === 'survicate' && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
               <strong>Survey Responses:</strong>
             </div>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-gray-600">Available in RAG</span>
-                <span className="font-semibold text-blue-600">{surveyStats.total_responses?.toLocaleString() || 0}</span>
-              </div>
-              {surveyStats.date_range && (
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-600">Date Range</span>
-                  <span className="font-semibold text-gray-700 text-xs">
-                    {surveyStats.date_range.start !== 'Unknown' && surveyStats.date_range.end !== 'Unknown' ? (
-                      <>{new Date(surveyStats.date_range.start).toLocaleDateString()} - {new Date(surveyStats.date_range.end).toLocaleDateString()}</>
-                    ) : 'N/A'}
-                  </span>
+            {surveyStats?.error ? (
+              <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                <div className="font-semibold mb-1">API Error:</div>
+                <div>{surveyStats.error}</div>
+                <div className="mt-2 text-xs text-red-700">
+                  Check API configuration and try downloading from API using the button above.
                 </div>
-              )}
-            </div>
-            {surveyStats.total_responses === 0 && (
-              <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-                {dataSource === 'api' 
-                  ? 'No survey data loaded. Cache may be refreshing or API may be unavailable.'
-                  : 'No survey data loaded. Ensure the CSV file is in the data directory.'}
               </div>
+            ) : surveyStats ? (
+              <>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Available in RAG</span>
+                    <span className="font-semibold text-blue-600">{surveyStats.total_responses?.toLocaleString() || 0}</span>
+                  </div>
+                  {surveyStats.date_range && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-600">Date Range</span>
+                      <span className="font-semibold text-gray-700 text-xs">
+                        {surveyStats.date_range.start !== 'Unknown' && surveyStats.date_range.end !== 'Unknown' ? (
+                          <>{new Date(surveyStats.date_range.start).toLocaleDateString()} - {new Date(surveyStats.date_range.end).toLocaleDateString()}</>
+                        ) : 'N/A'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {surveyStats.total_responses === 0 && (
+                  <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+                    {dataSource === 'api' 
+                      ? 'No survey data loaded. Use "Download from API" button above to fetch data.'
+                      : 'No survey data loaded. Ensure the CSV file is in the data directory.'}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-xs text-gray-400">Loading survey stats...</div>
             )}
           </div>
         </div>

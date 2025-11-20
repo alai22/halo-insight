@@ -22,9 +22,15 @@ def setup_logging(level: str = 'INFO', log_file: Optional[str] = None) -> loggin
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Console handler
+    # Console handler with UTF-8 encoding support for Windows
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    # Configure handler to handle encoding errors gracefully
+    if hasattr(console_handler.stream, 'reconfigure'):
+        try:
+            console_handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass  # Stream doesn't support reconfigure (e.g., some file streams)
     logger.addHandler(console_handler)
     
     # File handler (if specified)

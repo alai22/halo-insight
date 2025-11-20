@@ -49,7 +49,7 @@ class SurveyService:
         try:
             parser = SurveyParserService(path)
             self.surveys = parser.parse_csv()
-            logger.info(f"Surveys loaded from file: {len(self.surveys)}")
+            logger.debug(f"Surveys loaded from file: {len(self.surveys)}")
         except Exception as e:
             logger.error(f"Failed to load surveys from file: {str(e)}")
             self.surveys = []
@@ -63,7 +63,7 @@ class SurveyService:
             
             # Check if S3 is available
             if not cache_service.s3_client:
-                logger.warning("S3 client not available, falling back to file mode")
+                logger.debug("S3 client not available, using file mode (expected in local development)")
                 self.load_from_file()
                 return
             
@@ -72,7 +72,7 @@ class SurveyService:
                 logger.info("Cache is fresh, loading from S3")
                 try:
                     self.surveys = cache_service.load_from_s3()
-                    logger.info(f"Surveys loaded from S3 cache: {len(self.surveys)}")
+                    logger.debug(f"Surveys loaded from S3 cache: {len(self.surveys)}")
                 except ValueError as e:
                     # S3 credential error - fallback to file
                     logger.warning(f"S3 access error: {e}. Falling back to file mode.")
@@ -150,12 +150,14 @@ class SurveyService:
             # Initialize services
             logger.info("Initializing SurvicateAPIClient...")
             api_client = SurvicateAPIClient()
-            logger.info("SurvicateAPIClient initialized successfully")
+            logger.debug("SurvicateAPIClient initialized")
             parser = SurvicateAPIParser()
             cache_service = SurvicateS3CacheService()
             
-            # Check if S3 is available
-            if not cache_service.s3_client:
+            # Check if storage is available (S3 or local)
+            if cache_service.use_local_storage:
+                logger.info(f"Using local storage for cache: {cache_service.local_cache_dir}")
+            elif not cache_service.s3_client:
                 error_msg = "S3 client not available. Check AWS credentials and S3_BUCKET_NAME configuration."
                 logger.error(error_msg)
                 api_refresh_state['error'] = error_msg
@@ -166,7 +168,9 @@ class SurveyService:
             questions_map = {}
             try:
                 questions_map = api_client.get_survey_questions(Config.SURVICATE_SURVEY_ID)
-                logger.info(f"Fetched {len(questions_map)} questions: {questions_map}")
+                # Log questions map, sanitizing Unicode for Windows console
+                questions_map_safe = {k: v.encode('ascii', 'replace').decode('ascii') for k, v in questions_map.items()}
+                logger.info(f"Fetched {len(questions_map)} questions: {questions_map_safe}")
                 # Store questions map in parser for use during CSV generation
                 parser.questions_map = questions_map
             except Exception as e:
@@ -181,10 +185,31 @@ class SurveyService:
             )
             logger.info(f"Successfully fetched {len(api_responses)} responses from API")
             
-            # Log sample response structure for debugging
+            # Log response statistics for debugging
             if api_responses:
+                # Count unique respondents
+                respondent_uuids = set()
+                response_uuids = set()
+                for resp in api_responses:
+                    if resp.get('respondent_uuid'):
+                        respondent_uuids.add(resp.get('respondent_uuid'))
+                    if resp.get('uuid'):
+                        response_uuids.add(resp.get('uuid'))
+                
+                logger.info(f"Response statistics:")
+                logger.info(f"  - Total API responses: {len(api_responses)}")
+                logger.info(f"  - Unique response UUIDs: {len(response_uuids)}")
+                logger.info(f"  - Unique respondent UUIDs: {len(respondent_uuids)}")
+                
+                # Check if responses have survey_id field (to verify we're getting the right survey)
                 sample_response = api_responses[0]
                 logger.info(f"Sample API response keys: {list(sample_response.keys())}")
+                if 'survey_id' in sample_response:
+                    survey_ids = set(r.get('survey_id') for r in api_responses if r.get('survey_id'))
+                    logger.info(f"Survey IDs in responses: {survey_ids}")
+                    if len(survey_ids) > 1:
+                        logger.warning(f"⚠️  WARNING: Responses contain multiple survey IDs: {survey_ids}")
+                
                 if 'questions' in sample_response:
                     questions = sample_response.get('questions', [])
                     logger.info(f"Sample response has {len(questions)} questions")
@@ -192,24 +217,28 @@ class SurveyService:
                         logger.info(f"Sample question structure: {questions[0]}")
                     else:
                         logger.warning("Sample response has empty questions array!")
+                elif 'answers' in sample_response:
+                    answers = sample_response.get('answers', [])
+                    logger.info(f"Sample response has {len(answers)} answers (using 'answers' array format)")
                 else:
-                    logger.warning("Sample response does not have 'questions' key!")
+                    logger.warning("Sample response does not have 'questions' or 'answers' key!")
             
             # Parse responses
             survey_responses = parser.parse_responses(api_responses)
             
-            # Log parsing results
+            # Log parsing results (debug level for details)
             if survey_responses:
                 sample_parsed = survey_responses[0]
-                logger.info(f"Sample parsed response has {len(sample_parsed.answers)} answers")
-                logger.info(f"Sample parsed answer keys: {list(sample_parsed.answers.keys())}")
+                logger.debug(f"Sample parsed response has {len(sample_parsed.answers)} answers")
+                logger.debug(f"Sample parsed answer keys: {list(sample_parsed.answers.keys())}")
+                logger.info(f"Successfully parsed {len(survey_responses)} responses from API")
             else:
                 logger.warning("No responses were parsed from API data!")
             
             # Save raw CSV to S3 (with questions map for proper headers)
             try:
                 cache_service.save_to_s3(survey_responses, questions_map=questions_map)
-                logger.info(f"Raw CSV saved to S3: {len(survey_responses)} responses")
+                logger.info(f"Raw CSV saved: {len(survey_responses)} responses")
             except Exception as s3_error:
                 error_msg = f"Failed to save raw CSV to S3: {s3_error}"
                 logger.error(error_msg)
@@ -290,26 +319,38 @@ class SurveyService:
         try:
             from augment_churn_reasons import augment_csv
             
-            # Download raw CSV from S3 to temp file
-            logger.info("Downloading raw CSV from S3 for augmentation...")
+            # Download raw CSV from S3 or local file for augmentation
+            logger.info(f"Loading raw CSV from {'local storage' if cache_service.use_local_storage else 'S3'} for augmentation...")
             raw_csv_content = None
             try:
-                response = cache_service.s3_client.get_object(
-                    Bucket=cache_service.bucket_name,
-                    Key=cache_service.cache_key
-                )
-                raw_csv_content = response['Body'].read().decode('utf-8')
+                if cache_service.use_local_storage:
+                    # Load from local file
+                    cache_file = cache_service.local_cache_dir / cache_service.cache_key.split('/')[-1]
+                    if not cache_file.exists():
+                        raise FileNotFoundError(f"Cache file not found: {cache_file}")
+                    raw_csv_content = cache_file.read_text(encoding='utf-8')
+                    logger.info(f"Loaded raw CSV from local file: {cache_file}")
+                else:
+                    # Load from S3
+                    if not cache_service.s3_client:
+                        raise ValueError("S3 client not available")
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=cache_service.cache_key
+                    )
+                    raw_csv_content = response['Body'].read().decode('utf-8')
+                    logger.info(f"Loaded raw CSV from S3: {cache_service.cache_key}")
             except Exception as e:
-                logger.error(f"Failed to download raw CSV from S3: {e}")
+                logger.error(f"Failed to load raw CSV: {e}")
                 raise
             
             # Write to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_input:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as temp_input:
                 temp_input.write(raw_csv_content)
                 temp_input_path = temp_input.name
             
             # Create temp output file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_output:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as temp_output:
                 temp_output_path = temp_output.name
             
             try:
@@ -364,12 +405,12 @@ class SurveyService:
             from augment_churn_reasons import augment_csv
             
             # Write to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_input:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as temp_input:
                 temp_input.write(raw_csv_content)
                 temp_input_path = temp_input.name
             
             # Create temp output file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_output:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as temp_output:
                 temp_output_path = temp_output.name
             
             try:

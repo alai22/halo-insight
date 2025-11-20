@@ -20,6 +20,22 @@ from backend.utils.logging import get_logger
 
 logger = get_logger('augment_churn_reasons')
 
+# Safe print function for Windows console (handles Unicode encoding errors)
+def safe_print(*args, **kwargs):
+    """Print function that handles Unicode encoding errors on Windows"""
+    import builtins
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Fallback: encode to ASCII with replacement
+        safe_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                safe_args.append(arg.encode('ascii', 'replace').decode('ascii'))
+            else:
+                safe_args.append(str(arg).encode('ascii', 'replace').decode('ascii'))
+        builtins.print(*safe_args, **kwargs)
+
 # Category name normalization mapping
 # Maps original category names to preferred normalized names
 # This allows consolidating similar categories for easier grouping
@@ -394,13 +410,16 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
         raise ValueError(error_msg)
 
     logger.info(f"Processing {len(rows)} rows")
-    logger.info(f"Q1 Answer column: {q1_answer_col}")
-    logger.info(f"Q1 Comment column: {q1_comment_col}")
+    # Sanitize column names for logging (remove Unicode characters)
+    q1_answer_col_safe = q1_answer_col.encode('ascii', 'replace').decode('ascii') if q1_answer_col else None
+    q1_comment_col_safe = q1_comment_col.encode('ascii', 'replace').decode('ascii') if q1_comment_col else None
+    logger.info(f"Q1 Answer column: {q1_answer_col_safe}")
+    logger.info(f"Q1 Comment column: {q1_comment_col_safe}")
     
     # Print initial status
-    print(f"\n{'='*60}")
-    print(f"Processing {len(rows):,} survey responses...")
-    print(f"{'='*60}\n")
+    safe_print(f"\n{'='*60}")
+    safe_print(f"Processing {len(rows):,} survey responses...")
+    safe_print(f"{'='*60}\n")
     
     # Process each row - first pass: keyword matching
     categorized_count = 0
@@ -419,7 +438,7 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
     log_points = [0, 0.25, 0.5, 0.75, 1.0]
     logged_milestones = set()  # Track which milestones we've already logged
     
-    print("Phase 1: Keyword matching...")
+    safe_print("Phase 1: Keyword matching...")
     for i, row in enumerate(rows):
         q1_answer = row.get(q1_answer_col, '').strip()
 
@@ -462,16 +481,16 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
                 logged_milestones.add(point)
                 elapsed = time.time() - start_time
                 if point == 0:
-                    print(f"Starting processing...")
+                    safe_print(f"Starting processing...")
                 else:
-                    print(f"Progress: {i+1:,}/{len(rows):,} ({progress_pct*100:.1f}%) | "
+                    safe_print(f"Progress: {i+1:,}/{len(rows):,} ({progress_pct*100:.1f}%) | "
                           f"Other: {other_count:,} | Keyword matched: {keyword_matched:,} | "
                           f"Queued for Claude: {len(claude_queue):,}")
                 break  # Only log once per milestone
         
         # Debug: log first few "Other" comments to verify reading
         if q1_answer.lower() == 'other (please specify)' and i < 5:
-            print(f"  Sample 'Other' response {i+1}: Comment='{q1_comment[:60]}...' (len={len(q1_comment)})")
+            safe_print(f"  Sample 'Other' response {i+1}: Comment='{q1_comment[:60]}...' (len={len(q1_comment)})")
         
         # Determine augmented reason and categorization method
         if q1_answer.lower() == 'other (please specify)':
@@ -485,7 +504,7 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
                     categorization_method = 'keyword'
                     categorized_count += 1
                     if categorized_count <= 5:  # Show first 5 categorizations
-                        print(f"  [OK] Keyword matched: '{q1_comment[:60]}...' -> '{augmented_reason}'")
+                        safe_print(f"  [OK] Keyword matched: '{q1_comment[:60]}...' -> '{augmented_reason}'")
                 elif use_claude and claude_service:
                     # Queue for batch Claude processing
                     claude_queue.append((i, q1_comment))
@@ -513,10 +532,10 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
     
     # Phase 2: Batch Claude categorization
     if claude_queue and use_claude and claude_service:
-        print(f"\n{'='*60}")
-        print(f"Phase 2: Claude batch categorization")
-        print(f"{'='*60}")
-        print(f"Processing {len(claude_queue)} comments in batches...\n")
+        safe_print(f"\n{'='*60}")
+        safe_print(f"Phase 2: Claude batch categorization")
+        safe_print(f"{'='*60}")
+        safe_print(f"Processing {len(claude_queue)} comments in batches...\n")
         
         BATCH_SIZE = 20  # Process 20 comments per API call
         total_batches = (len(claude_queue) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -534,7 +553,7 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
             rate = (batch_num * BATCH_SIZE) / elapsed if elapsed > 0 else 0
             remaining = (len(claude_queue) - batch_num * BATCH_SIZE) / rate if rate > 0 else 0
             
-            print(f"Batch {batch_num + 1}/{total_batches}: Processing {len(batch_comments)} comments...", end=' ', flush=True)
+            safe_print(f"Batch {batch_num + 1}/{total_batches}: Processing {len(batch_comments)} comments...", end=' ', flush=True)
             
             try:
                 batch_categories = categorize_other_comment_batch(batch_comments, claude_service)
@@ -551,9 +570,9 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
                         claude_categorized += 1
                         categorized_count += 1
                         if claude_categorized <= 5:  # Show first 5 Claude categorizations
-                            print(f"\n  [OK] Claude categorized: '{batch_comments[j][:60]}...' -> '{category}'")
+                            safe_print(f"\n  [OK] Claude categorized: '{batch_comments[j][:60]}...' -> '{category}'")
                 
-                print(f"✓ ({claude_categorized}/{len(claude_queue)} categorized, ETA: {remaining:.0f}s)")
+                safe_print(f"[OK] ({claude_categorized}/{len(claude_queue)} categorized, ETA: {remaining:.0f}s)")
                 
             except Exception as e:
                 logger.error(f"Batch {batch_num + 1} failed: {e}")
@@ -561,33 +580,33 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
                 for row_idx in batch_indices:
                     rows[row_idx]['augmented_churn_reason'] = 'Other (please specify)'
                     rows[row_idx]['categorization_method'] = 'llm_failed'
-                print(f"✗ (fallback to 'Other')")
+                safe_print(f"[ERROR] (fallback to 'Other')")
         
-        print(f"\n✓ Batch processing complete: {claude_categorized} comments categorized by Claude\n")
+        safe_print(f"\n[OK] Batch processing complete: {claude_categorized} comments categorized by Claude\n")
     elif claude_queue:
         # Claude was requested but service not available - set all to "Other"
-        print(f"\nWarning: {len(claude_queue)} comments queued for Claude but service not available. Setting to 'Other (please specify)'.")
+        safe_print(f"\nWarning: {len(claude_queue)} comments queued for Claude but service not available. Setting to 'Other (please specify)'.")
         for row_idx, _ in claude_queue:
             rows[row_idx]['augmented_churn_reason'] = 'Other (please specify)'
             rows[row_idx]['categorization_method'] = 'uncategorized'
     
     total_time = time.time() - start_time
     
-    print(f"\n{'='*60}")
-    print(f"Processing complete!")
-    print(f"{'='*60}")
-    print(f"Total rows processed: {len(rows):,}")
-    print(f"Time elapsed: {total_time:.1f}s")
-    print(f"\nCategorization Summary:")
-    print(f"  - 'Other' responses found: {other_count:,}")
+    safe_print(f"\n{'='*60}")
+    safe_print(f"Processing complete!")
+    safe_print(f"{'='*60}")
+    safe_print(f"Total rows processed: {len(rows):,}")
+    safe_print(f"Time elapsed: {total_time:.1f}s")
+    safe_print(f"\nCategorization Summary:")
+    safe_print(f"  - 'Other' responses found: {other_count:,}")
     if other_count > 0:
-        print(f"  - Successfully categorized: {categorized_count:,} ({categorized_count/other_count*100:.1f}% of 'Other' responses)")
-        print(f"    • Keyword matching: {keyword_matched:,}")
+        safe_print(f"  - Successfully categorized: {categorized_count:,} ({categorized_count/other_count*100:.1f}% of 'Other' responses)")
+        safe_print(f"    • Keyword matching: {keyword_matched:,}")
         if use_claude:
-            print(f"    • Claude categorization: {claude_categorized:,}")
-        print(f"  - Remaining uncategorized: {other_count - categorized_count:,}")
+            safe_print(f"    • Claude categorization: {claude_categorized:,}")
+        safe_print(f"  - Remaining uncategorized: {other_count - categorized_count:,}")
     else:
-        print(f"  - No 'Other' responses found")
+        safe_print(f"  - No 'Other' responses found")
     
     logger.info(f"\nProcessing complete!")
     logger.info(f"Total rows processed: {len(rows)}")
@@ -598,14 +617,14 @@ def augment_csv(input_path: str, output_path: str, use_claude: bool = True):
     logger.info(f"Uncategorized: {other_count - categorized_count}")
     
     # Write output CSV
-    print(f"\nWriting augmented CSV to: {output_path}")
+    safe_print(f"\nWriting augmented CSV to: {output_path}")
     logger.info(f"\nWriting augmented CSV to: {output_path}")
     with open(output_path, 'w', encoding='utf-8', newline='') as outfile:
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
     
-    print(f"[OK] Augmented CSV written successfully!")
+    safe_print(f"[OK] Augmented CSV written successfully!")
     logger.info(f"Augmented CSV written successfully!")
     
     # Print summary statistics

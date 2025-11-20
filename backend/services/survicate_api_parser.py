@@ -107,33 +107,94 @@ class SurvicateAPIParser:
             'sso_id': attributes_dict.get('sso_id'),
         }
         
-        # Extract answers from questions array (matching Survicate API structure)
+        # Extract answers from answers array (Survicate API v2 format)
         answers = {}
-        questions = api_response.get('questions', []) or []
+        answers_array = api_response.get('answers', []) or []
+        questions_array = api_response.get('questions', []) or []
         
-        # Log if questions array is missing or empty
-        if not questions:
-            logger.warning(f"Response {response_uuid} has no questions array or empty questions array. Full response keys: {list(api_response.keys())}")
+        # Handle both formats: 'answers' array (v2 API) or 'questions' array (v1 API)
+        if answers_array:
+            # Survicate API v2 format: answers array with question_id, question_type, and answer
+            logger.debug(f"Response {response_uuid} has 'answers' array with {len(answers_array)} items")
+            
+            for answer_item in answers_array:
+                if not isinstance(answer_item, dict):
+                    continue
+                
+                question_id = answer_item.get('question_id')
+                if question_id is None:
+                    logger.debug(f"Answer item missing question_id, skipping: {list(answer_item.keys())}")
+                    continue
+                
+                question_type = answer_item.get('question_type', '')
+                answer_data = answer_item.get('answer')
+                
+                # Generate question key (Q#1, Q#2, etc.) to match manual export format
+                # Note: question_id is numeric (e.g., 2780078), but we need sequential Q#1, Q#2
+                # For now, use the question_id directly - we'll need a mapping later
+                question_key = f"Q#{question_id}"
+                
+                # Extract answer based on question type
+                answer_value = None
+                comment_value = None
+                
+                if question_type == 'text':
+                    # Text questions: answer is a string
+                    if isinstance(answer_data, str):
+                        answer_value = answer_data
+                    elif answer_data is not None:
+                        answer_value = str(answer_data)
+                elif question_type in ('single', 'dropdown_list'):
+                    # Single choice/dropdown: answer is an object with {id, content, comment}
+                    if isinstance(answer_data, dict):
+                        answer_value = answer_data.get('content', '')
+                        comment_value = answer_data.get('comment') or ''
+                elif question_type == 'empty':
+                    # Empty/CTA questions: skip or handle action_performed
+                    if answer_item.get('action_performed'):
+                        answer_value = 'Yes'  # CTA was performed
+                    else:
+                        continue  # Skip empty questions without action
+                else:
+                    # Fallback: try to extract from answer object
+                    if isinstance(answer_data, dict):
+                        answer_value = answer_data.get('content') or answer_data.get('answer', '')
+                        comment_value = answer_data.get('comment') or ''
+                    elif answer_data is not None:
+                        answer_value = str(answer_data)
+                
+                # Store answer if we have any value
+                if answer_value or comment_value:
+                    answers[question_key] = {
+                        'Answer': answer_value or '',
+                        'Comment': comment_value or ''
+                    }
         
-        for question_obj in questions:
-            question_id = question_obj.get('question_id')
-            if question_id is None:
-                logger.warning(f"Question object missing question_id: {question_obj.keys()}")
-                continue
+        elif questions_array:
+            # Survicate API v1 format: questions array (legacy)
+            logger.debug(f"Response {response_uuid} has 'questions' array with {len(questions_array)} items")
             
-            # Generate question key (Q#1, Q#2, etc.) to match manual export format
-            question_key = f"Q#{question_id}"
-            
-            # Extract answer based on question type
-            answer_value, comment_value = self._extract_answer_from_question(question_obj)
-            
-            if answer_value or comment_value:
-                answers[question_key] = {
-                    'Answer': answer_value,
-                    'Comment': comment_value
-                }
-            else:
-                logger.debug(f"Question {question_id} has no answer or comment")
+            for question_obj in questions_array:
+                question_id = question_obj.get('question_id')
+                if question_id is None:
+                    logger.warning(f"Question object missing question_id: {question_obj.keys()}")
+                    continue
+                
+                # Generate question key (Q#1, Q#2, etc.) to match manual export format
+                question_key = f"Q#{question_id}"
+                
+                # Extract answer based on question type
+                answer_value, comment_value = self._extract_answer_from_question(question_obj)
+                
+                if answer_value or comment_value:
+                    answers[question_key] = {
+                        'Answer': answer_value,
+                        'Comment': comment_value
+                    }
+        
+        else:
+            # No answers or questions found
+            logger.warning(f"Response {response_uuid} has no questions/answers array. Full response keys: {list(api_response.keys())}")
         
         return SurveyResponse(
             response_uuid=response_uuid,

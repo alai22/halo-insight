@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, MessageSquare, BarChart3, FileText, TrendingUp } from 'lucide-react';
+import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Database } from 'lucide-react';
 
 const TabNavigation = ({ currentMode, setCurrentMode }) => {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => {
     // Determine active tab based on current mode
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
@@ -19,7 +19,7 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
   useEffect(() => {
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       setActiveTab('gladly');
-    } else if (['churn-trends', 'survicate'].includes(currentMode)) {
+    } else if (['churn-trends', 'survicate', 'api-data-manager'].includes(currentMode)) {
       setActiveTab('churn');
     }
   }, [currentMode]);
@@ -72,6 +72,15 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
       borderColor: 'border-teal-200'
+    },
+    {
+      id: 'api-data-manager',
+      name: 'Data Management',
+      description: 'Download and augment API data',
+      icon: Database,
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-50',
+      borderColor: 'border-blue-200'
     }
   ];
 
@@ -79,8 +88,6 @@ const TabNavigation = ({ currentMode, setCurrentMode }) => {
     setCurrentMode(modeId);
     setSearchParams({ mode: modeId });
   };
-
-  const currentModeData = [...gladlyModes, ...churnModes].find(mode => mode.id === currentMode);
 
   return (
     <div className="flex flex-col space-y-3">

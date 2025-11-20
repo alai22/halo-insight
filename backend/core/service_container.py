@@ -44,7 +44,7 @@ class ServiceContainer:
         # Track if services are overridden (for testing)
         self._overrides: dict = {}
         
-        logger.info("Service container initialized")
+        logger.debug("Service container initialized")
     
     # Storage Service
     def get_storage_service(self, override: Optional['StorageService'] = None) -> 'StorageService':
@@ -103,7 +103,7 @@ class ServiceContainer:
                 
                 logger.debug("Creating ClaudeService instance")
                 self._claude_service = ClaudeService()
-                logger.info("ClaudeService initialized successfully")
+                logger.debug("ClaudeService initialized")
             except ValueError as e:
                 # ValueError means API key is missing - this is expected in some environments
                 logger.warning(f"ClaudeService not initialized - API key not configured: {str(e)}")

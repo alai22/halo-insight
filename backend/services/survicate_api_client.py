@@ -93,12 +93,14 @@ class SurvicateAPIClient:
     def get_survey_questions(self, survey_id: str) -> Dict[int, str]:
         """
         Get all questions for a survey and return a mapping of question_id -> question_text
+        Questions are returned in order, which we use to map question_id to sequential Q#1, Q#2, etc.
         
         Args:
             survey_id: Survey ID
             
         Returns:
             Dict mapping question_id (int) to question_text (str)
+            Questions are in the order they appear in the survey
         """
         try:
             questions_map = {}
@@ -120,13 +122,25 @@ class SurvicateAPIClient:
                 response.raise_for_status()
                 data = response.json()
                 
-                # Extract questions from response
+                # Extract questions from response (maintain order)
                 questions = data.get('data', [])
                 for question in questions:
                     question_id = question.get('id')
                     question_text = question.get('question', '')
-                    if question_id is not None and question_text:
-                        questions_map[question_id] = question_text
+                    question_type = question.get('type', '')
+                    
+                    # Only include questions that have text (skip empty/CTA questions)
+                    if question_id is not None:
+                        # Use question text if available, otherwise use introduction or type
+                        if question_text:
+                            questions_map[question_id] = question_text
+                        elif question.get('introduction'):
+                            questions_map[question_id] = question.get('introduction')
+                        elif question_type:
+                            questions_map[question_id] = f"[{question_type}]"
+                        else:
+                            # Still include it so we can map it, but with a placeholder
+                            questions_map[question_id] = f"[Question {question_id}]"
                 
                 # Check for more pages
                 pagination = data.get('pagination_data', {})
@@ -136,6 +150,15 @@ class SurvicateAPIClient:
                     break
             
             logger.info(f"Fetched {len(questions_map)} questions for survey {survey_id}")
+            if questions_map:
+                # Log first few questions to verify order
+                question_ids = list(questions_map.keys())
+                logger.info(f"Question order (first 5): {question_ids[:5]}")
+                # Log first question text, sanitizing Unicode for Windows console
+                first_q_text = list(questions_map.values())[0][:100] if questions_map else 'N/A'
+                # Replace problematic Unicode characters for logging
+                first_q_text_safe = first_q_text.encode('ascii', 'replace').decode('ascii')
+                logger.info(f"First question text: {first_q_text_safe}")
             return questions_map
             
         except requests.exceptions.RequestException as e:
@@ -304,7 +327,11 @@ class SurvicateAPIClient:
                 has_more = pagination.get('has_more', False)
                 next_url = pagination.get('next_url')
                 
-                logger.info(f"Fetched {len(all_responses)} responses (has_more: {has_more})")
+                # Only log every 1000 responses or at milestones to reduce noise
+                if len(all_responses) % 1000 == 0 or not has_more:
+                    logger.info(f"Fetched {len(all_responses)} responses (has_more: {has_more})")
+                else:
+                    logger.debug(f"Fetched {len(all_responses)} responses (has_more: {has_more})")
                 
                 # If no more pages, break
                 if not has_more or not next_url:

@@ -31,7 +31,7 @@ class SurveyParserService:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 
-                logger.info(f"Parsing {len(rows)} survey responses from {self.csv_path}")
+                logger.debug(f"Parsing {len(rows)} survey responses from {self.csv_path}")
                 
                 for row_num, row in enumerate(rows, start=2):  # Start at 2 because row 1 is headers
                     try:
@@ -42,7 +42,7 @@ class SurveyParserService:
                         logger.warning(f"Failed to parse row {row_num}: {str(e)}")
                         continue
                 
-                logger.info(f"Successfully parsed {len(responses)} survey responses")
+                logger.debug(f"Successfully parsed {len(responses)} survey responses")
                 
         except Exception as e:
             logger.error(f"Failed to parse CSV file: {str(e)}")

@@ -220,29 +220,63 @@ def download_raw_file():
         file_key = urllib.parse.unquote(file_key)
         
         try:
-            # Get the file from S3
-            response = cache_service.s3_client.get_object(
-                Bucket=cache_service.bucket_name,
-                Key=file_key
-            )
+            if cache_service.use_local_storage:
+                # Load from local file
+                filename = file_key.split('/')[-1] if '/' in file_key else file_key
+                file_path = cache_service.local_cache_dir / filename
+                
+                # Check if it's in augmented subdirectory
+                if not file_path.exists():
+                    file_path = cache_service.local_cache_dir / 'augmented' / filename
+                
+                if not file_path.exists():
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found',
+                        'details': f'File {file_key} does not exist locally.'
+                    }), 404
+                
+                file_content = file_path.read_bytes()
+                
+                return Response(
+                    file_content,
+                    mimetype='text/csv',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Type': 'text/csv; charset=utf-8'
+                    }
+                )
+            else:
+                # Get the file from S3
+                if not cache_service.s3_client:
+                    return jsonify({
+                        'success': False,
+                        'error': 'S3 not available',
+                        'details': 'S3 client not configured.'
+                    }), 503
+                
+                response = cache_service.s3_client.get_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=file_key
+                )
+                
+                # Get file content
+                file_content = response['Body'].read()
+                
+                # Get filename from key
+                filename = file_key.split('/')[-1] if '/' in file_key else file_key
+                
+                # Return as downloadable file
+                return Response(
+                    file_content,
+                    mimetype='text/csv',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Type': 'text/csv; charset=utf-8'
+                    }
+                )
             
-            # Get file content
-            file_content = response['Body'].read()
-            
-            # Get filename from key
-            filename = file_key.split('/')[-1] if '/' in file_key else file_key
-            
-            # Return as downloadable file
-            return Response(
-                file_content,
-                mimetype='text/csv',
-                headers={
-                    'Content-Disposition': f'attachment; filename="{filename}"',
-                    'Content-Type': 'text/csv; charset=utf-8'
-                }
-            )
-            
-        except cache_service.s3_client.exceptions.NoSuchKey:
+        except cache_service.s3_client.exceptions.NoSuchKey if cache_service.s3_client else Exception:
             return jsonify({
                 'success': False,
                 'error': 'File not found',
@@ -267,16 +301,16 @@ def download_raw_file():
 
 @survicate_bp.route('/raw-files', methods=['GET'])
 def list_raw_files():
-    """List all raw CSV files in S3"""
+    """List all raw CSV files in S3 or local storage"""
     try:
         from ...services.survicate_s3_cache_service import SurvicateS3CacheService
         cache_service = SurvicateS3CacheService()
         
-        if not cache_service.s3_client:
+        if not cache_service.use_local_storage and not cache_service.s3_client:
             return jsonify({
                 'success': False,
                 'error': 'S3 not available',
-                'details': 'S3 client not configured.'
+                'details': 'S3 client not configured and local storage not enabled.'
             }), 503
         
         raw_files = cache_service.list_raw_files()
@@ -310,16 +344,16 @@ def list_raw_files():
 
 @survicate_bp.route('/augmented-files', methods=['GET'])
 def list_augmented_files():
-    """List all available augmented CSV files in S3"""
+    """List all available augmented CSV files in S3 or local storage"""
     try:
         from ...services.survicate_s3_cache_service import SurvicateS3CacheService
         cache_service = SurvicateS3CacheService()
         
-        if not cache_service.s3_client:
+        if not cache_service.use_local_storage and not cache_service.s3_client:
             return jsonify({
                 'success': False,
                 'error': 'S3 not available',
-                'details': 'S3 client not configured.'
+                'details': 'S3 client not configured and local storage not enabled.'
             }), 503
         
         metadata = cache_service.get_augmented_files_metadata()
@@ -355,6 +389,82 @@ def list_augmented_files():
         }), 500
 
 
+@survicate_bp.route('/augmented-files/download', methods=['GET'])
+def download_augmented_file():
+    """Download an augmented CSV file"""
+    try:
+        from flask import send_file
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        import os
+        
+        file_key = request.args.get('file_key')
+        if not file_key:
+            return jsonify({
+                'success': False,
+                'error': 'file_key parameter is required'
+            }), 400
+        
+        cache_service = SurvicateS3CacheService()
+        
+        if cache_service.use_local_storage:
+            # Load from local file
+            file_path = cache_service.local_cache_dir / file_key
+            if not file_path.exists():
+                return jsonify({
+                    'success': False,
+                    'error': 'File not found',
+                    'details': f'File {file_key} does not exist in local cache.'
+                }), 404
+            
+            return send_file(
+                str(file_path),
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=file_key.split('/')[-1]
+            )
+        else:
+            # Load from S3
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available',
+                    'details': 'S3 client not configured.'
+                }), 503
+            
+            try:
+                response = cache_service.s3_client.get_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=file_key
+                )
+                
+                # Create temporary file
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
+                    temp_file.write(response['Body'].read())
+                    temp_path = temp_file.name
+                
+                return send_file(
+                    temp_path,
+                    mimetype='text/csv',
+                    as_attachment=True,
+                    download_name=file_key.split('/')[-1]
+                )
+            except cache_service.s3_client.exceptions.NoSuchKey:
+                return jsonify({
+                    'success': False,
+                    'error': 'File not found',
+                    'details': f'File {file_key} does not exist in S3.'
+                }), 404
+    
+    except Exception as e:
+        logger.error(f"Failed to download augmented file: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to download augmented file'
+        }), 500
+
+
 @survicate_bp.route('/augment', methods=['POST'])
 def trigger_augmentation():
     """Manually trigger augmentation of raw CSV file"""
@@ -382,40 +492,59 @@ def trigger_augmentation():
         from ...services.survicate_s3_cache_service import SurvicateS3CacheService
         cache_service = SurvicateS3CacheService()
         
-        if not cache_service.s3_client:
+        if not cache_service.use_local_storage and not cache_service.s3_client:
             return jsonify({
                 'success': False,
-                'error': 'S3 not available',
-                'details': 'S3 client not configured.'
+                'error': 'Storage not available',
+                'details': 'S3 client not configured and local storage not enabled.'
             }), 503
         
         # Check if raw file exists
         if raw_file_key:
-            try:
-                cache_service.s3_client.head_object(
-                    Bucket=cache_service.bucket_name,
-                    Key=raw_file_key
-                )
-            except cache_service.s3_client.exceptions.NoSuchKey:
-                return jsonify({
-                    'success': False,
-                    'error': 'Raw file not found',
-                    'details': f'File {raw_file_key} does not exist in S3.'
-                }), 404
+            # Check if file exists in local storage or S3
+            if cache_service.use_local_storage:
+                file_path = cache_service.local_cache_dir / raw_file_key.split('/')[-1]
+                if not file_path.exists():
+                    return jsonify({
+                        'success': False,
+                        'error': 'Raw file not found',
+                        'details': f'File {raw_file_key} does not exist in local storage.'
+                    }), 404
+            else:
+                try:
+                    cache_service.s3_client.head_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=raw_file_key
+                    )
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Raw file not found',
+                        'details': f'File {raw_file_key} does not exist in S3.'
+                    }), 404
         else:
             # Use default cache key
             raw_file_key = cache_service.cache_key
-            try:
-                cache_service.s3_client.head_object(
-                    Bucket=cache_service.bucket_name,
-                    Key=raw_file_key
-                )
-            except cache_service.s3_client.exceptions.NoSuchKey:
-                return jsonify({
-                    'success': False,
-                    'error': 'No raw file found',
-                    'details': 'Please download data from API first using the "Download from API" button.'
-                }), 404
+            if cache_service.use_local_storage:
+                file_path = cache_service.local_cache_dir / raw_file_key.split('/')[-1]
+                if not file_path.exists():
+                    return jsonify({
+                        'success': False,
+                        'error': 'No raw file found',
+                        'details': 'Please download data from API first using the "Download from API" button.'
+                    }), 404
+            else:
+                try:
+                    cache_service.s3_client.head_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=raw_file_key
+                    )
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'No raw file found',
+                        'details': 'Please download data from API first using the "Download from API" button.'
+                    }), 404
         
         # Trigger augmentation in background
         # We'll use a thread to run augmentation without blocking
@@ -427,13 +556,20 @@ def trigger_augmentation():
                 original_key = cache_service.cache_key
                 cache_service.cache_key = raw_file_key
                 
-                # Download raw CSV content
+                # Load raw CSV content from local storage or S3
                 try:
-                    response = cache_service.s3_client.get_object(
-                        Bucket=cache_service.bucket_name,
-                        Key=raw_file_key
-                    )
-                    raw_csv_content = response['Body'].read().decode('utf-8')
+                    if cache_service.use_local_storage:
+                        file_path = cache_service.local_cache_dir / raw_file_key.split('/')[-1]
+                        raw_csv_content = file_path.read_text(encoding='utf-8')
+                        logger.info(f"Loaded raw CSV from local file: {file_path}")
+                    else:
+                        response = cache_service.s3_client.get_object(
+                            Bucket=cache_service.bucket_name,
+                            Key=raw_file_key
+                        )
+                        raw_csv_content = response['Body'].read().decode('utf-8')
+                        logger.info(f"Loaded raw CSV from S3: {raw_file_key}")
+                    
                     # Count responses (approximate - number of lines minus header)
                     response_count = max(0, len(raw_csv_content.strip().split('\n')) - 1)
                 except Exception as e:
@@ -486,35 +622,38 @@ def get_churn_trends():
         file_key = request.args.get('file_key')  # Optional: specific file to use
         
         if data_source == 'api':
-            # Load from S3 augmented cache
+            # Load from cache (S3 or local storage)
             try:
                 from ...services.survicate_s3_cache_service import SurvicateS3CacheService
                 cache_service = SurvicateS3CacheService()
                 
-                if not cache_service.s3_client:
+                # Check if S3 is available or if local storage is being used
+                if not cache_service.use_local_storage and not cache_service.s3_client:
                     return jsonify({
                         'success': False,
-                        'error': 'S3 not available',
-                        'details': 'S3 client not configured. Use file mode or configure S3.'
+                        'error': 'Storage not available',
+                        'details': 'S3 client not configured and local storage not enabled. Set S3_BUCKET_NAME or SURVICATE_USE_LOCAL_STORAGE=true.'
                     }), 503
                 
                 augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
                 if not augmented_csv_content:
+                    storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
                     return jsonify({
                         'success': False,
-                        'error': 'Augmented CSV not found in S3',
-                        'details': 'Please download and process data from API first using the "Download from API" button.'
+                        'error': 'Augmented CSV not found',
+                        'details': f'Please download and augment data from API first using the "Download from API" button. (Checked {storage_type})'
                     }), 404
                 
                 # Read CSV from string content
                 df = pd.read_csv(io.StringIO(augmented_csv_content))
-                logger.info(f"Loaded {len(df)} rows from S3 augmented cache (file: {file_key or 'latest'})")
+                storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                logger.info(f"Loaded {len(df)} rows from {storage_type} augmented cache (file: {file_key or 'latest'})")
                 
             except Exception as e:
-                logger.error(f"Failed to load from S3: {e}")
+                logger.error(f"Failed to load augmented CSV: {e}")
                 return jsonify({
                     'success': False,
-                    'error': 'Failed to load from S3',
+                    'error': 'Failed to load augmented CSV',
                     'details': str(e)
                 }), 500
         else:
@@ -1138,6 +1277,78 @@ def test_api_raw():
         return jsonify({
             'success': False,
             'error': str(e)
+        }), 500
+
+
+@survicate_bp.route('/inspect-response', methods=['GET'])
+def inspect_response():
+    """Inspect a sample API response to see its structure"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        
+        api_client = SurvicateAPIClient()
+        
+        # Fetch just one page of responses to inspect
+        result = api_client.get_responses(
+            survey_id=Config.SURVICATE_SURVEY_ID,
+            items_per_page=1  # Just get one response
+        )
+        
+        responses = result.get('data', [])
+        if not responses:
+            return jsonify({
+                'success': False,
+                'error': 'No responses found',
+                'note': 'The API returned an empty data array. Check if the survey has any responses.'
+            }), 404
+        
+        sample_response = responses[0]
+        
+        # Analyze the response structure
+        response_keys = list(sample_response.keys())
+        has_questions = 'questions' in sample_response
+        has_answers = 'answers' in sample_response
+        
+        questions_info = None
+        answers_info = None
+        
+        if has_questions:
+            questions = sample_response.get('questions', [])
+            questions_info = {
+                'count': len(questions),
+                'sample': questions[0] if questions else None,
+                'sample_keys': list(questions[0].keys()) if questions and questions[0] else None
+            }
+        
+        if has_answers:
+            answers = sample_response.get('answers', [])
+            answers_info = {
+                'count': len(answers),
+                'sample': answers[0] if answers else None,
+                'sample_keys': list(answers[0].keys()) if answers and answers[0] else None
+            }
+        
+        return jsonify({
+            'success': True,
+            'survey_id': Config.SURVICATE_SURVEY_ID,
+            'response_structure': {
+                'all_keys': response_keys,
+                'has_questions': has_questions,
+                'has_answers': has_answers,
+                'questions_info': questions_info,
+                'answers_info': answers_info
+            },
+            'sample_response': sample_response,  # Full response for inspection
+            'note': 'This shows the structure of a single API response. Check if questions/answers are present.'
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to inspect response: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }), 500
 
 
