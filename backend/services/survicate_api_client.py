@@ -90,6 +90,64 @@ class SurvicateAPIClient:
                     pass
             raise
     
+    def get_survey_questions(self, survey_id: str) -> Dict[int, str]:
+        """
+        Get all questions for a survey and return a mapping of question_id -> question_text
+        
+        Args:
+            survey_id: Survey ID
+            
+        Returns:
+            Dict mapping question_id (int) to question_text (str)
+        """
+        try:
+            questions_map = {}
+            url = f"{self.base_url}/surveys/{survey_id}/questions"
+            next_url = None
+            
+            while True:
+                if next_url:
+                    if next_url.startswith('http'):
+                        request_url = next_url
+                    else:
+                        request_url = f"{self.base_url}{next_url}"
+                    params = {}
+                else:
+                    request_url = url
+                    params = {'items_per_page': 100}
+                
+                response = requests.get(request_url, headers=self.headers, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Extract questions from response
+                questions = data.get('data', [])
+                for question in questions:
+                    question_id = question.get('id')
+                    question_text = question.get('question', '')
+                    if question_id is not None and question_text:
+                        questions_map[question_id] = question_text
+                
+                # Check for more pages
+                pagination = data.get('pagination_data', {})
+                if pagination.get('has_more'):
+                    next_url = pagination.get('next_url')
+                else:
+                    break
+            
+            logger.info(f"Fetched {len(questions_map)} questions for survey {survey_id}")
+            return questions_map
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch survey questions: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.text[:500]
+                    logger.error(f"API error response body: {error_body}")
+                except:
+                    pass
+            raise
+    
     def get_responses(
         self,
         survey_id: str,

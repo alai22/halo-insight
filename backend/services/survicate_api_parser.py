@@ -15,8 +15,11 @@ logger = get_logger('survicate_api_parser')
 class SurvicateAPIParser:
     """Parser for Survicate API responses"""
     
-    @staticmethod
-    def parse_responses(api_responses: List[Dict[str, Any]]) -> List[SurveyResponse]:
+    def __init__(self):
+        """Initialize parser with optional questions map"""
+        self.questions_map = {}  # Maps question_id -> question_text
+    
+    def parse_responses(self, api_responses: List[Dict[str, Any]]) -> List[SurveyResponse]:
         """
         Parse API response objects into SurveyResponse objects
         
@@ -30,18 +33,17 @@ class SurvicateAPIParser:
         
         for api_response in api_responses:
             try:
-                survey_response = SurvicateAPIParser._parse_single_response(api_response)
+                survey_response = self._parse_single_response(api_response)
                 if survey_response:
                     parsed_responses.append(survey_response)
             except Exception as e:
-                logger.warning(f"Failed to parse response {api_response.get('id', 'unknown')}: {e}")
+                logger.warning(f"Failed to parse response {api_response.get('uuid', 'unknown')}: {e}")
                 continue
         
         logger.info(f"Parsed {len(parsed_responses)}/{len(api_responses)} responses")
         return parsed_responses
     
-    @staticmethod
-    def _parse_single_response(api_response: Dict[str, Any]) -> Optional[SurveyResponse]:
+    def _parse_single_response(self, api_response: Dict[str, Any]) -> Optional[SurveyResponse]:
         """
         Parse a single API response object according to Survicate API documentation
         
@@ -109,22 +111,29 @@ class SurvicateAPIParser:
         answers = {}
         questions = api_response.get('questions', []) or []
         
+        # Log if questions array is missing or empty
+        if not questions:
+            logger.warning(f"Response {response_uuid} has no questions array or empty questions array. Full response keys: {list(api_response.keys())}")
+        
         for question_obj in questions:
             question_id = question_obj.get('question_id')
             if question_id is None:
+                logger.warning(f"Question object missing question_id: {question_obj.keys()}")
                 continue
             
-            # Generate question key (Q1, Q2, etc.)
-            question_key = f"Q{question_id}"
+            # Generate question key (Q#1, Q#2, etc.) to match manual export format
+            question_key = f"Q#{question_id}"
             
             # Extract answer based on question type
-            answer_value, comment_value = SurvicateAPIParser._extract_answer_from_question(question_obj)
+            answer_value, comment_value = self._extract_answer_from_question(question_obj)
             
             if answer_value or comment_value:
                 answers[question_key] = {
                     'Answer': answer_value,
                     'Comment': comment_value
                 }
+            else:
+                logger.debug(f"Question {question_id} has no answer or comment")
         
         return SurveyResponse(
             response_uuid=response_uuid,
@@ -138,8 +147,7 @@ class SurvicateAPIParser:
             metadata=metadata
         )
     
-    @staticmethod
-    def _extract_answer_from_question(question_obj: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_answer_from_question(self, question_obj: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """
         Extract answer value and comment from question object (matching Survicate API structure)
         

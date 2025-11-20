@@ -141,8 +141,13 @@ class SurvicateS3CacheService:
             logger.error(f"Failed to load cache from S3: {e}")
             raise
     
-    def save_to_s3(self, responses: List[SurveyResponse]):
-        """Save survey responses to S3 cache as CSV"""
+    def save_to_s3(self, responses: List[SurveyResponse], questions_map: Optional[Dict[int, str]] = None):
+        """Save survey responses to S3 cache as CSV
+        
+        Args:
+            responses: List of SurveyResponse objects
+            questions_map: Optional dict mapping question_id (int) -> question_text (str)
+        """
         if not self.s3_client:
             raise ValueError("S3 client not available")
         
@@ -154,7 +159,7 @@ class SurvicateS3CacheService:
             logger.info(f"Saving {len(responses)} responses to S3 cache")
             
             # Convert to CSV format (matching manual export format)
-            csv_content = self._responses_to_csv(responses)
+            csv_content = self._responses_to_csv(responses, questions_map)
             
             # Upload to S3
             self.s3_client.put_object(
@@ -469,16 +474,30 @@ class SurvicateS3CacheService:
             logger.warning(f"Failed to check augmentation status: {e}")
             return None
     
-    def _responses_to_csv(self, responses: List[SurveyResponse]) -> str:
-        """Convert SurveyResponse objects to CSV format matching manual export"""
+    def _responses_to_csv(self, responses: List[SurveyResponse], questions_map: Optional[Dict[int, str]] = None) -> str:
+        """Convert SurveyResponse objects to CSV format matching manual export
+        
+        Args:
+            responses: List of SurveyResponse objects
+            questions_map: Optional dict mapping question_id (int) -> question_text (str)
+        """
         output = io.StringIO()
         
-        # Get all unique question keys
+        # Get all unique question keys and extract question IDs
         all_question_keys = set()
+        question_id_to_key = {}  # Maps question_id -> question_key
         for response in responses:
-            all_question_keys.update(response.answers.keys())
+            for q_key in response.answers.keys():
+                all_question_keys.add(q_key)
+                # Extract question ID from key (Q#1 -> 1, Q1 -> 1)
+                q_id_str = q_key.replace('Q#', '').replace('Q', '')
+                try:
+                    q_id = int(q_id_str)
+                    question_id_to_key[q_id] = q_key
+                except ValueError:
+                    pass
         
-        question_keys = sorted(all_question_keys, key=lambda k: int(k[1:]) if k[1:].isdigit() else 999)
+        question_keys = sorted(all_question_keys, key=lambda k: int(k.replace('Q#', '').replace('Q', '')) if k.replace('Q#', '').replace('Q', '').isdigit() else 999)
         
         # Build CSV headers
         headers = [
@@ -497,9 +516,30 @@ class SurvicateS3CacheService:
         ]
         
         # Add question columns (Answer and Comment for each)
+        # Format: Q#1: <question_text> (Answer) to match manual export format
         for q_key in question_keys:
-            headers.append(f'{q_key} (Answer)')
-            headers.append(f'{q_key} (Comment)')
+            # Extract question ID
+            q_id_str = q_key.replace('Q#', '').replace('Q', '')
+            try:
+                q_id = int(q_id_str)
+                # Get question text from map if available
+                question_text = questions_map.get(q_id, '') if questions_map else ''
+                
+                # Format header: Q#1: What was the main reason... (Answer)
+                if question_text:
+                    header_base = f'Q#{q_id}: {question_text}'
+                else:
+                    # Fallback to just Q#1 if no question text
+                    header_base = f'Q#{q_id}'
+                
+                headers.append(f'{header_base} (Answer)')
+                headers.append(f'{header_base} (Comment)')
+            except ValueError:
+                # Fallback for non-numeric question keys
+                if not q_key.startswith('Q#'):
+                    q_key = q_key.replace('Q', 'Q#', 1)
+                headers.append(f'{q_key} (Answer)')
+                headers.append(f'{q_key} (Comment)')
         
         writer = csv.DictWriter(output, fieldnames=headers)
         writer.writeheader()
@@ -523,13 +563,39 @@ class SurvicateS3CacheService:
             
             # Add question answers
             for q_key in question_keys:
-                answer_data = response.answers.get(q_key, {})
-                if isinstance(answer_data, dict):
-                    row[f'{q_key} (Answer)'] = answer_data.get('Answer', '') or ''
-                    row[f'{q_key} (Comment)'] = answer_data.get('Comment', '') or ''
-                else:
-                    row[f'{q_key} (Answer)'] = str(answer_data) if answer_data else ''
-                    row[f'{q_key} (Comment)'] = ''
+                # Extract question ID to match header format
+                q_id_str = q_key.replace('Q#', '').replace('Q', '')
+                try:
+                    q_id = int(q_id_str)
+                    # Get question text from map if available
+                    question_text = questions_map.get(q_id, '') if questions_map else ''
+                    
+                    # Format header key to match header format
+                    if question_text:
+                        header_base = f'Q#{q_id}: {question_text}'
+                    else:
+                        header_base = f'Q#{q_id}'
+                    
+                    # Try both original and normalized keys for answer data
+                    answer_data = response.answers.get(q_key, {}) or response.answers.get(f'Q#{q_id}', {})
+                    
+                    if isinstance(answer_data, dict):
+                        row[f'{header_base} (Answer)'] = answer_data.get('Answer', '') or ''
+                        row[f'{header_base} (Comment)'] = answer_data.get('Comment', '') or ''
+                    else:
+                        row[f'{header_base} (Answer)'] = str(answer_data) if answer_data else ''
+                        row[f'{header_base} (Comment)'] = ''
+                except ValueError:
+                    # Fallback for non-numeric question keys
+                    normalized_key = q_key if q_key.startswith('Q#') else q_key.replace('Q', 'Q#', 1)
+                    answer_data = response.answers.get(q_key, {}) or response.answers.get(normalized_key, {})
+                    
+                    if isinstance(answer_data, dict):
+                        row[f'{normalized_key} (Answer)'] = answer_data.get('Answer', '') or ''
+                        row[f'{normalized_key} (Comment)'] = answer_data.get('Comment', '') or ''
+                    else:
+                        row[f'{normalized_key} (Answer)'] = str(answer_data) if answer_data else ''
+                        row[f'{normalized_key} (Comment)'] = ''
             
             writer.writerow(row)
         

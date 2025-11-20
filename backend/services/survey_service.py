@@ -161,6 +161,19 @@ class SurveyService:
                 api_refresh_state['error'] = error_msg
                 return
             
+            # Fetch survey questions to get question text for CSV headers
+            logger.info(f"Fetching survey questions for survey {Config.SURVICATE_SURVEY_ID}...")
+            questions_map = {}
+            try:
+                questions_map = api_client.get_survey_questions(Config.SURVICATE_SURVEY_ID)
+                logger.info(f"Fetched {len(questions_map)} questions: {questions_map}")
+                # Store questions map in parser for use during CSV generation
+                parser.questions_map = questions_map
+            except Exception as e:
+                logger.warning(f"Failed to fetch survey questions: {e}. Will use question IDs only.")
+                parser.questions_map = {}
+                questions_map = {}
+            
             # Fetch all responses from API
             logger.info(f"Fetching responses from Survicate API for survey {Config.SURVICATE_SURVEY_ID}...")
             api_responses = api_client.get_all_responses(
@@ -168,12 +181,34 @@ class SurveyService:
             )
             logger.info(f"Successfully fetched {len(api_responses)} responses from API")
             
+            # Log sample response structure for debugging
+            if api_responses:
+                sample_response = api_responses[0]
+                logger.info(f"Sample API response keys: {list(sample_response.keys())}")
+                if 'questions' in sample_response:
+                    questions = sample_response.get('questions', [])
+                    logger.info(f"Sample response has {len(questions)} questions")
+                    if questions:
+                        logger.info(f"Sample question structure: {questions[0]}")
+                    else:
+                        logger.warning("Sample response has empty questions array!")
+                else:
+                    logger.warning("Sample response does not have 'questions' key!")
+            
             # Parse responses
             survey_responses = parser.parse_responses(api_responses)
             
-            # Save raw CSV to S3
+            # Log parsing results
+            if survey_responses:
+                sample_parsed = survey_responses[0]
+                logger.info(f"Sample parsed response has {len(sample_parsed.answers)} answers")
+                logger.info(f"Sample parsed answer keys: {list(sample_parsed.answers.keys())}")
+            else:
+                logger.warning("No responses were parsed from API data!")
+            
+            # Save raw CSV to S3 (with questions map for proper headers)
             try:
-                cache_service.save_to_s3(survey_responses)
+                cache_service.save_to_s3(survey_responses, questions_map=questions_map)
                 logger.info(f"Raw CSV saved to S3: {len(survey_responses)} responses")
             except Exception as s3_error:
                 error_msg = f"Failed to save raw CSV to S3: {s3_error}"
