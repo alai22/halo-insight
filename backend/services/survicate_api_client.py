@@ -33,17 +33,14 @@ class SurvicateAPIClient:
             raise ValueError("SURVICATE_API_KEY not configured")
         
         # Build authorization header
-        # According to Survicate Data Export API docs: Authorization: Basic {apiKey}
-        # Use Basic auth with API key only (no password/workspace key in Basic auth)
-        import base64
-        # Basic auth format: base64(apiKey:)
-        credentials = f"{self.api_key}:"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-        auth_header = f'Basic {encoded_credentials}'
+        # According to Postman testing: Authorization header with value "Basic <API_KEY>"
+        # Use the API key directly without base64 encoding
+        auth_header = f'Basic {self.api_key}'
         
         self.headers = {
             'Authorization': auth_header,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         }
         
         # Store auth method
