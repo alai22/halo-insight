@@ -8,6 +8,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     localStorage.getItem('survicate_data_source') || 'file'
   );
   const [cacheStatus, setCacheStatus] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Fetch download stats
   useEffect(() => {
@@ -28,6 +29,38 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
     const interval = setInterval(fetchStats, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  // Fetch cache status function
+  const fetchCacheStatus = async () => {
+    if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
+      try {
+        const response = await fetch('/api/survicate/cache-status');
+        const data = await response.json();
+        if (data.success) {
+          setCacheStatus(data.cache_status);
+          
+          // If API mode has errors and no cache exists, automatically switch to file mode
+          const cacheStatus = data.cache_status;
+          if (cacheStatus && !cacheStatus.s3_available && cacheStatus.error) {
+            console.warn('API mode not available, switching to file mode');
+            setDataSource('file');
+            localStorage.setItem('survicate_data_source', 'file');
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching cache status:', error);
+        setCacheStatus(null);
+        // If API mode fails completely, switch to file mode
+        if (dataSource === 'api') {
+          console.warn('API mode failed, switching to file mode');
+          setDataSource('file');
+          localStorage.setItem('survicate_data_source', 'file');
+        }
+      }
+    } else {
+      setCacheStatus(null);
+    }
+  };
 
   // Fetch survey stats when in survicate or churn-trends mode
   useEffect(() => {
@@ -64,37 +97,6 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
 
   // Fetch cache status when in API mode
   useEffect(() => {
-    const fetchCacheStatus = async () => {
-      if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
-        try {
-          const response = await fetch('/api/survicate/cache-status');
-          const data = await response.json();
-          if (data.success) {
-            setCacheStatus(data.cache_status);
-            
-            // If API mode has errors and no cache exists, automatically switch to file mode
-            const cacheStatus = data.cache_status;
-            if (cacheStatus && !cacheStatus.s3_available && cacheStatus.error) {
-              console.warn('API mode not available, switching to file mode');
-              setDataSource('file');
-              localStorage.setItem('survicate_data_source', 'file');
-            }
-          }
-        } catch (error) {
-          console.error('Error fetching cache status:', error);
-          setCacheStatus(null);
-          // If API mode fails completely, switch to file mode
-          if (dataSource === 'api') {
-            console.warn('API mode failed, switching to file mode');
-            setDataSource('file');
-            localStorage.setItem('survicate_data_source', 'file');
-          }
-        }
-      } else {
-        setCacheStatus(null);
-      }
-    };
-
     fetchCacheStatus();
     // Poll cache status every 10 seconds when in API mode
     if ((currentMode === 'survicate' || currentMode === 'churn-trends') && dataSource === 'api') {
@@ -118,6 +120,75 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       } catch (error) {
         console.error('Error refreshing survey stats:', error);
       }
+    }
+  };
+
+  const handleDownloadFromApi = async () => {
+    if (isRefreshing) return;
+    
+    setIsRefreshing(true);
+    try {
+      const response = await fetch('/api/survicate/refresh-api', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        // Refresh cache status and survey stats after a short delay
+        setTimeout(() => {
+          fetchCacheStatus();
+          // Also refresh survey stats to show updated data
+          fetch(`/api/survicate/summary?data_source=api`)
+            .then(res => res.json())
+            .then(data => {
+              if (data.success) {
+                setSurveyStats(data.summary);
+              }
+            })
+            .catch(err => console.error('Error refreshing survey stats:', err));
+        }, 1000);
+      } else {
+        alert(data.message || 'Failed to download from API');
+      }
+    } catch (error) {
+      console.error('Error downloading from API:', error);
+      alert('Failed to download from API');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleReloadCache = async () => {
+    try {
+      const response = await fetch('/api/survicate/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          data_source: 'api'
+        }),
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        // Refresh survey stats to show reloaded data
+        const summaryResponse = await fetch(`/api/survicate/summary?data_source=api`);
+        const summaryData = await summaryResponse.json();
+        if (summaryData.success) {
+          setSurveyStats(summaryData.summary);
+        }
+        // Also refresh cache status
+        fetchCacheStatus();
+      } else {
+        alert(data.error || 'Failed to reload cache');
+      }
+    } catch (error) {
+      console.error('Error reloading cache:', error);
+      alert('Failed to reload cache');
     }
   };
 
@@ -289,38 +360,64 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       )}
 
       {/* Cache Status - Show when in API mode */}
-      {cacheStatus && dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
+      {dataSource === 'api' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
         <div className="p-6 border-t border-gray-200">
           <div className="text-xs text-gray-500">
             <div className="mb-2">
               <strong>Cache Status:</strong>
             </div>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-gray-600">Status</span>
-                <span className={`font-semibold ${cacheStatus.is_fresh ? 'text-green-600' : 'text-yellow-600'}`}>
-                  {cacheStatus.is_fresh ? 'Fresh' : 'Stale'}
-                </span>
-              </div>
-              {cacheStatus.cache_age_hours !== null && (
+            {cacheStatus ? (
+              <div className="space-y-2">
                 <div className="flex justify-between items-center">
-                  <span className="text-gray-600">Age</span>
-                  <span className="font-semibold text-gray-700">
-                    {Math.round(cacheStatus.cache_age_hours)}h ago
+                  <span className="text-gray-600">Status</span>
+                  <span className={`font-semibold ${cacheStatus.is_fresh ? 'text-green-600' : 'text-yellow-600'}`}>
+                    {cacheStatus.is_fresh ? 'Fresh' : 'Stale'}
                   </span>
                 </div>
-              )}
-              {cacheStatus.refresh_in_progress && (
-                <div className="flex items-center text-blue-600 mt-2">
-                  <RefreshCw className="h-3 w-3 animate-spin mr-1" />
-                  <span className="text-xs">Refreshing from API...</span>
-                </div>
-              )}
-              {cacheStatus.refresh_error && (
-                <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
-                  Error: {cacheStatus.refresh_error}
-                </div>
-              )}
+                {cacheStatus.cache_age_hours !== null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Age</span>
+                    <span className="font-semibold text-gray-700">
+                      {Math.round(cacheStatus.cache_age_hours)}h ago
+                    </span>
+                  </div>
+                )}
+                {cacheStatus.refresh_in_progress && (
+                  <div className="flex items-center text-blue-600 mt-2">
+                    <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                    <span className="text-xs">Downloading from API...</span>
+                  </div>
+                )}
+                {cacheStatus.refresh_error && (
+                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                    Error: {cacheStatus.refresh_error}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-400 mb-2">Loading cache status...</div>
+            )}
+            
+            {/* Action Buttons */}
+            <div className="mt-3 space-y-2">
+              <button
+                onClick={handleDownloadFromApi}
+                disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                className="w-full px-3 py-2 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                title="Download fresh data from Survicate API and save to cache"
+              >
+                <Download className={`h-3 w-3 ${(isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)) ? 'animate-spin' : ''}`} />
+                <span>Download from API</span>
+              </button>
+              <button
+                onClick={handleReloadCache}
+                disabled={isRefreshing || (cacheStatus && cacheStatus.refresh_in_progress)}
+                className="w-full px-3 py-2 text-xs bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-1"
+                title="Reload data from existing cache (use already downloaded data)"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Reload Cache</span>
+              </button>
             </div>
           </div>
         </div>
