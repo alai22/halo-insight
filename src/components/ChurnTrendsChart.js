@@ -964,7 +964,8 @@ const ChurnTrendsChart = () => {
             {
               parentReason: 'Found Alternative Solution',
               questions: [
-                { id: 'Q7', text: 'Q#7: Which containment solution did you purchase?' }
+                { id: 'Q7', text: 'Q#7: Which containment solution did you purchase?' },
+                { id: 'Q8', text: 'Q#8: Which other GPS or wireless fence did you purchase?' }
               ]
             }
           ];
@@ -972,7 +973,6 @@ const ChurnTrendsChart = () => {
           // Other questions without parent reasons
           // Updated to reflect new question order after Q8 was added
           const otherQuestions = [
-            { id: 'Q8', text: 'Q#8: Which other GPS or wireless fence did you purchase?' },
             { id: 'Q9', text: 'Q#9: Did you engage with the Learn training curriculum?' },
             { id: 'Q10', text: 'Q#10: What was the main reason you didn\'t complete the Learn curriculum?' },
             { id: 'Q11', text: 'Q#11: Did you contact our Customer Service team via Dog Park?' },
