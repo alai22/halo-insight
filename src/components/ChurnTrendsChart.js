@@ -970,11 +970,13 @@ const ChurnTrendsChart = () => {
           ];
 
           // Other questions without parent reasons
+          // Updated to reflect new question order after Q8 was added
           const otherQuestions = [
-            { id: 'Q8', text: 'Q#8: Did you engage with the Learn training curriculum?' },
-            { id: 'Q9', text: 'Q#9: What was the main reason you didn\'t complete the Learn curriculum?' },
-            { id: 'Q10', text: 'Q#10: Did you contact our Customer Service team via Dog Park?' },
-            { id: 'Q11', text: 'Q#11: Would a free session with a trainer to help your dog use the collar effectively have helped you continue to use it?' }
+            { id: 'Q8', text: 'Q#8: Which other GPS or wireless fence did you purchase?' },
+            { id: 'Q9', text: 'Q#9: Did you engage with the Learn training curriculum?' },
+            { id: 'Q10', text: 'Q#10: What was the main reason you didn\'t complete the Learn curriculum?' },
+            { id: 'Q11', text: 'Q#11: Did you contact our Customer Service team via Dog Park?' },
+            { id: 'Q12', text: 'Q#12: Would a free session with a trainer to help your dog use the collar effectively have helped you continue to use it?' }
           ];
 
           return (

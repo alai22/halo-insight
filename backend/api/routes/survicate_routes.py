@@ -1213,10 +1213,12 @@ def get_question_trends():
             return jsonify({
                 'success': False,
                 'error': 'Question parameter required',
-                'details': 'Specify question as Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, or Q11'
+                'details': 'Specify question as Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, or Q12'
             }), 400
         
-        # Map question codes to search patterns (flexible matching)
+        # Map question codes to search patterns (flexible matching by TEXT CONTENT)
+        # Updated to match by question text content, not sequential number
+        # This makes it resilient to question number shifts when new questions are added
         question_patterns = {
             'Q2': ['location pin', 'not match', 'dog'],
             'Q3': ['pet location pin', 'grayed out', 'inaccurate'],
@@ -1224,10 +1226,11 @@ def get_question_trends():
             'Q5': ['screw in', 'contact tips', 'static feedback'],
             'Q6': ['battery life', 'charging', 'power issues'],
             'Q7': ['containment solution', 'purchase'],
-            'Q8': ['engage', 'Learn training curriculum'],
-            'Q9': ['main reason', 'didn\'t complete', 'Learn curriculum'],
-            'Q10': ['contact', 'Customer Service', 'Dog Park'],
-            'Q11': ['free session', 'trainer', 'collar effectively']
+            'Q8': ['other GPS', 'wireless fence', 'purchase'],  # NEW Q8 question
+            'Q9': ['engage', 'Learn training curriculum'],  # OLD Q8 -> now Q9
+            'Q10': ['main reason', 'didn\'t complete', 'Learn curriculum'],  # OLD Q9 -> now Q10
+            'Q11': ['contact', 'Customer Service', 'Dog Park'],  # OLD Q10 -> now Q11
+            'Q12': ['free session', 'trainer', 'collar effectively']  # OLD Q11 -> now Q12
         }
         
         if question not in question_patterns:
@@ -1237,28 +1240,37 @@ def get_question_trends():
                 'details': f'Valid questions: {", ".join(sorted(question_patterns.keys()))}'
             }), 400
         
-        # Find the column that matches the pattern
+        # Find the column that matches the pattern by TEXT CONTENT ONLY
+        # This approach is resilient to question number shifts
         pattern = question_patterns[question]
         column_name = None
         
-        # First try pattern matching
+        # First, try to match by text content (ignoring Q# number)
+        # This is the primary matching strategy - it works even if question numbers shift
         for col in df.columns:
             col_lower = str(col).lower()
+            
             # Check if all pattern words are in the column name
             if all(word.lower() in col_lower for word in pattern):
-                # Also check if it starts with the question number
-                if f'q#{question[1:]}' in col_lower or f'q{question[1:]}' in col_lower:
-                    column_name = col
-                    break
+                # Prefer (Answer) version for certain questions
+                if question in ['Q4', 'Q6', 'Q10']:
+                    if '(Answer)' in col:
+                        column_name = col
+                        break
+                else:
+                    # For other questions, take first match (Answer or Comment)
+                    if '(Answer)' in col or '(Comment)' in col:
+                        column_name = col
+                        break
         
-        # If pattern matching didn't work, try exact match
+        # Fallback: if text matching didn't work, try sequential number match
+        # This helps with edge cases or if question text changed significantly
         if not column_name:
-            # Look for columns that start with the question number
             for col in df.columns:
                 col_str = str(col)
                 if col_str.startswith(f'Q#{question[1:]}:') or col_str.startswith(f'Q{question[1:]}:'):
-                    # For Q4, Q6, Q9, prefer the (Answer) version
-                    if question in ['Q4', 'Q6', 'Q9']:
+                    # For Q4, Q6, Q10, prefer the (Answer) version
+                    if question in ['Q4', 'Q6', 'Q10']:
                         if '(Answer)' in col_str:
                             column_name = col
                             break
