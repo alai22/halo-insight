@@ -79,11 +79,14 @@ backend/
 
 ## 🔄 **Migration Notes**
 
-- **Original app.py** backed up as `app_original.py`
-- **New app.py** uses the modular structure
+- **Original app.py** archived to `docs/archive/app_original.py` (November 2025)
+- **Intermediate app_new.py** archived to `docs/archive/app_new.py` (November 2025)
+- **Current app.py** uses the modular structure with full production features
 - **serve.py** updated to work with new architecture
 - **All existing API endpoints** remain the same
 - **No breaking changes** to the frontend
+
+**Note**: Legacy files have been moved to `docs/archive/` for historical reference. See `docs/archive/ARCHIVE_README.md` for details.
 
 ## 🧪 **Testing the New Structure**
 
