@@ -394,9 +394,13 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
       {/* Header */}
       <div className="p-6 border-b border-gray-200">
         <div className="flex items-center space-x-3 mb-4">
-          <Database className="h-8 w-8 text-blue-600" />
+          <img 
+            src="/dog-spark.jpg" 
+            alt="Halo Insight Logo" 
+            className="h-10 w-10 rounded-full object-cover"
+          />
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Halo AI Insights</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Halo Insight</h2>
             <p className="text-sm text-gray-500">Customer Intelligence</p>
           </div>
         </div>

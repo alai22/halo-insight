@@ -133,7 +133,7 @@ function Login({ onLogin }) {
 
   if (emailSent) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-yellow-300 via-yellow-400 to-yellow-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
           <div className="flex items-center justify-center mb-6">
             <CheckCircle className="h-12 w-12 text-green-600" />
@@ -176,10 +176,17 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-yellow-300 via-yellow-400 to-yellow-500 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
+        <div className="flex items-center justify-center mb-4">
+          <img 
+            src="/dog-spark.jpg" 
+            alt="Halo Insight Logo" 
+            className="h-32 w-32 rounded-full object-cover shadow-md"
+          />
+        </div>
         <h1 className="text-2xl font-bold text-center text-gray-900 mb-4">
-          Halo Insights
+          Halo Insight
         </h1>
         
         <div className="text-sm text-gray-600 text-center mb-6 space-y-2">

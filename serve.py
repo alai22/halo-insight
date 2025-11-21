@@ -36,8 +36,8 @@ def before_request():
 
 # Copy only the API routes from api_app, excluding built-in Flask routes and root route
 for rule in api_app.url_map.iter_rules():
-    # Skip built-in Flask routes like 'static' and the root route '/'
-    if rule.endpoint not in ['static', 'index']:
+    # Skip built-in Flask routes like 'static', 'index', and static asset routes
+    if rule.endpoint not in ['static', 'index', 'favicon', 'robots']:
         app.add_url_rule(
             rule.rule,
             endpoint=rule.endpoint,

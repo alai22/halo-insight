@@ -58,18 +58,18 @@ def request_login():
             }), 500
         
         # Create email content
-        subject = "Your Halo Insights Login Link"
+        subject = "Your Halo Insight Login Link"
         html_body = f"""
         <html>
           <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <h2 style="color: #2563eb;">Halo Insights Login</h2>
-            <p>Click the button below to log in to Halo Insights:</p>
+            <h2 style="color: #2563eb;">Halo Insight Login</h2>
+            <p>Click the button below to log in to Halo Insight:</p>
             <p style="margin: 30px 0;">
               <a href="{magic_link}" 
                  style="background-color: #2563eb; color: white; padding: 12px 24px; 
                         text-decoration: none; border-radius: 6px; display: inline-block; 
                         font-weight: bold;">
-                Log In to Halo Insights
+                Log In to Halo Insight
               </a>
             </p>
             <p style="color: #666; font-size: 0.9em;">
@@ -86,9 +86,9 @@ def request_login():
         """
         
         text_body = f"""
-Halo Insights Login
+Halo Insight Login
 
-Click the link below to log in to Halo Insights:
+Click the link below to log in to Halo Insight:
 
 {magic_link}
 
