@@ -491,77 +491,53 @@ const ChurnTrendsChart = () => {
                   return totalB - totalA; // Descending order
                 });
                 
-                // Organize legend into columns - use 4-5 columns when there's space
-                // Determine number of columns based on screen width and item count
-                const screenWidth = window.innerWidth;
-                let numColumns = 3; // Default
-                if (screenWidth >= 1920) {
-                  numColumns = 5; // Large screens
-                } else if (screenWidth >= 1440) {
-                  numColumns = 4; // Medium-large screens
-                } else if (screenWidth >= 1024) {
-                  numColumns = 3; // Standard desktop
-                } else {
-                  numColumns = 2; // Smaller screens
-                }
-                
-                const itemsPerColumn = Math.ceil(sortedPayload.length / numColumns);
-                const columns = [];
-                for (let i = 0; i < sortedPayload.length; i += itemsPerColumn) {
-                  columns.push(sortedPayload.slice(i, i + itemsPerColumn));
-                }
+                // Use CSS Grid with auto-fit for fluid, responsive layout
+                // Calculate optimal min column width based on longest label
+                const maxLabelLength = Math.max(...sortedPayload.map(entry => entry.value.length));
+                // Estimate width: ~8px per character + icon + padding
+                const estimatedItemWidth = Math.max(200, maxLabelLength * 8 + 50);
                 
                 return (
                   <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'center', 
-                    gap: '40px',
+                    display: 'grid', 
+                    gridTemplateColumns: `repeat(auto-fit, minmax(${estimatedItemWidth}px, 1fr))`,
+                    gap: '20px 30px',
                     padding: '12px 20px 8px 20px',
-                    flexWrap: 'wrap',
                     backgroundColor: '#f9fafb',
                     borderRadius: '8px',
-                    marginTop: '10px'
+                    marginTop: '10px',
+                    width: '100%'
                   }}>
-                    {columns.map((column, colIndex) => (
-                      <div key={colIndex} style={{ 
-                        display: 'flex', 
-                        flexDirection: 'column', 
-                        gap: '10px', 
-                        minWidth: '220px',
-                        maxWidth: '280px'
-                      }}>
-                        {column.map((entry, index) => (
-                          <div 
-                            key={`legend-item-${index}`}
-                            style={{ 
-                              display: 'flex', 
-                              alignItems: 'flex-start', 
-                              gap: '10px',
-                              fontSize: '13px',
-                              lineHeight: '1.6',
-                              padding: '4px 0'
-                            }}
-                          >
-                            <div 
-                              style={{ 
-                                width: '16px', 
-                                height: '16px', 
-                                backgroundColor: entry.color,
-                                borderRadius: '3px',
-                                flexShrink: 0,
-                                marginTop: '2px',
-                                border: '1px solid rgba(0, 0, 0, 0.1)'
-                              }} 
-                            />
-                            <span style={{ 
-                              color: '#1f2937',
-                              fontWeight: '500',
-                              wordBreak: 'break-word'
-                            }}>
-                              {entry.value}
-                            </span>
-                          </div>
-                        ))}
+                    {sortedPayload.map((entry, index) => (
+                      <div 
+                        key={`legend-item-${index}`}
+                        style={{ 
+                          display: 'flex', 
+                          alignItems: 'flex-start', 
+                          gap: '10px',
+                          fontSize: '13px',
+                          lineHeight: '1.6',
+                          padding: '4px 0'
+                        }}
+                      >
+                        <div 
+                          style={{ 
+                            width: '16px', 
+                            height: '16px', 
+                            backgroundColor: entry.color,
+                            borderRadius: '3px',
+                            flexShrink: 0,
+                            marginTop: '2px',
+                            border: '1px solid rgba(0, 0, 0, 0.1)'
+                          }} 
+                        />
+                        <span style={{ 
+                          color: '#1f2937',
+                          fontWeight: '500',
+                          wordBreak: 'break-word'
+                        }}>
+                          {entry.value}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -827,75 +803,53 @@ const ChurnTrendsChart = () => {
                             return totalB - totalA;
                           });
                           
-                          const screenWidth = window.innerWidth;
-                          let numColumns = 3;
-                          if (screenWidth >= 1920) {
-                            numColumns = 5;
-                          } else if (screenWidth >= 1440) {
-                            numColumns = 4;
-                          } else if (screenWidth >= 1024) {
-                            numColumns = 3;
-                          } else {
-                            numColumns = 2;
-                          }
-                          
-                          const itemsPerColumn = Math.ceil(sortedPayload.length / numColumns);
-                          const columns = [];
-                          for (let i = 0; i < sortedPayload.length; i += itemsPerColumn) {
-                            columns.push(sortedPayload.slice(i, i + itemsPerColumn));
-                          }
+                          // Use CSS Grid with auto-fit for fluid, responsive layout
+                          // Calculate optimal min column width based on longest label
+                          const maxLabelLength = Math.max(...sortedPayload.map(entry => entry.value.length));
+                          // Estimate width: ~8px per character + icon + padding
+                          const estimatedItemWidth = Math.max(200, maxLabelLength * 8 + 50);
                           
                           return (
                             <div style={{ 
-                              display: 'flex', 
-                              justifyContent: 'center', 
-                              gap: '40px',
+                              display: 'grid', 
+                              gridTemplateColumns: `repeat(auto-fit, minmax(${estimatedItemWidth}px, 1fr))`,
+                              gap: '20px 30px',
                               padding: '12px 20px 8px 20px',
-                              flexWrap: 'wrap',
                               backgroundColor: '#f9fafb',
                               borderRadius: '8px',
-                              marginTop: '10px'
+                              marginTop: '10px',
+                              width: '100%'
                             }}>
-                              {columns.map((column, colIndex) => (
-                                <div key={colIndex} style={{ 
-                                  display: 'flex', 
-                                  flexDirection: 'column', 
-                                  gap: '10px', 
-                                  minWidth: '220px',
-                                  maxWidth: '280px'
-                                }}>
-                                  {column.map((entry, index) => (
-                                    <div 
-                                      key={`legend-item-${index}`}
-                                      style={{ 
-                                        display: 'flex', 
-                                        alignItems: 'flex-start', 
-                                        gap: '10px',
-                                        fontSize: '13px',
-                                        lineHeight: '1.6',
-                                        padding: '4px 0'
-                                      }}
-                                    >
-                                      <div 
-                                        style={{ 
-                                          width: '16px', 
-                                          height: '16px', 
-                                          backgroundColor: entry.color,
-                                          borderRadius: '3px',
-                                          flexShrink: 0,
-                                          marginTop: '2px',
-                                          border: '1px solid rgba(0, 0, 0, 0.1)'
-                                        }} 
-                                      />
-                                      <span style={{ 
-                                        color: '#1f2937',
-                                        fontWeight: '500',
-                                        wordBreak: 'break-word'
-                                      }}>
-                                        {entry.value}
-                                      </span>
-                                    </div>
-                                  ))}
+                              {sortedPayload.map((entry, index) => (
+                                <div 
+                                  key={`legend-item-${index}`}
+                                  style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'flex-start', 
+                                    gap: '10px',
+                                    fontSize: '13px',
+                                    lineHeight: '1.6',
+                                    padding: '4px 0'
+                                  }}
+                                >
+                                  <div 
+                                    style={{ 
+                                      width: '16px', 
+                                      height: '16px', 
+                                      backgroundColor: entry.color,
+                                      borderRadius: '3px',
+                                      flexShrink: 0,
+                                      marginTop: '2px',
+                                      border: '1px solid rgba(0, 0, 0, 0.1)'
+                                    }} 
+                                  />
+                                  <span style={{ 
+                                    color: '#1f2937',
+                                    fontWeight: '500',
+                                    wordBreak: 'break-word'
+                                  }}>
+                                    {entry.value}
+                                  </span>
                                 </div>
                               ))}
                             </div>

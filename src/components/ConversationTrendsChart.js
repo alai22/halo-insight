@@ -48,6 +48,7 @@ const ConversationTrendsChart = () => {
   const [timeSeriesStartDate, setTimeSeriesStartDate] = useState('2025-10-20');
   const [timeSeriesEndDate, setTimeSeriesEndDate] = useState('2025-10-25');
   const [timeSeriesMode, setTimeSeriesMode] = useState('percentage'); // 'count' or 'percentage'
+  const [timeSeriesGroupBy, setTimeSeriesGroupBy] = useState('daily'); // 'daily' or 'weekly'
 
   // Google Sheets style: Fixed hue sequence repeated at progressively lower saturation levels
   // Sequence: Blue, Red, Yellow, Green, Orange, Purple, Teal (repeated 3 times with decreasing saturation)
@@ -307,22 +308,106 @@ const ConversationTrendsChart = () => {
       return dateStr;
     }
   };
+
+  // Get week key for a date (week starting Monday)
+  const getWeekKey = (dateStr) => {
+    try {
+      const date = new Date(dateStr + 'T00:00:00');
+      // Get Monday of the week
+      const day = date.getDay();
+      const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+      const monday = new Date(date);
+      monday.setDate(diff);
+      return monday.toISOString().split('T')[0]; // Return Monday's date as key
+    } catch {
+      return dateStr;
+    }
+  };
+
+  // Format week label for display
+  const formatWeek = (weekKey) => {
+    try {
+      const date = new Date(weekKey + 'T00:00:00');
+      return `Week of ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+    } catch {
+      return weekKey;
+    }
+  };
+
+  // Group daily data by week
+  const groupByWeek = (dailyData) => {
+    if (!dailyData || dailyData.length === 0) return [];
+    
+    const weeklyMap = {};
+    
+    dailyData.forEach(day => {
+      // Skip 'Total' row if present
+      if (day.date === 'Total') return;
+      
+      const weekKey = getWeekKey(day.date);
+      
+      if (!weeklyMap[weekKey]) {
+        // Initialize week data structure
+        weeklyMap[weekKey] = {
+          date: weekKey,
+          weekStart: weekKey,
+          weekEnd: day.date,
+          total: 0
+        };
+        // Initialize all topic counts to 0
+        timeSeriesTopics.forEach(topic => {
+          weeklyMap[weekKey][topic] = 0;
+          weeklyMap[weekKey][`${topic}_percentage`] = 0;
+        });
+      }
+      
+      // Update week end date (keep the latest date in the week)
+      if (day.date > weeklyMap[weekKey].weekEnd) {
+        weeklyMap[weekKey].weekEnd = day.date;
+      }
+      
+      // Sum up topic counts for this week
+      timeSeriesTopics.forEach(topic => {
+        weeklyMap[weekKey][topic] += day[topic] || 0;
+      });
+      weeklyMap[weekKey].total += day.total || 0;
+    });
+    
+    // Calculate percentages for each week
+    Object.values(weeklyMap).forEach(week => {
+      timeSeriesTopics.forEach(topic => {
+        const count = week[topic] || 0;
+        const percentage = week.total > 0 ? (count / week.total * 100) : 0;
+        week[`${topic}_percentage`] = Math.round(percentage * 100) / 100;
+      });
+    });
+    
+    // Convert to array and sort by week start date
+    return Object.values(weeklyMap).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+  };
   
-  // Prepare chart data based on mode (count or percentage)
+  // Prepare chart data based on mode (count or percentage) and grouping (daily or weekly)
   const prepareChartData = () => {
+    let dataToUse = timeSeriesData;
+    
+    // Group by week if weekly view is selected
+    if (timeSeriesGroupBy === 'weekly') {
+      dataToUse = groupByWeek(timeSeriesData);
+    }
+    
     if (timeSeriesMode === 'percentage') {
-      return timeSeriesData.map(day => {
-        const newDay = { ...day };
+      return dataToUse.map(period => {
+        const newPeriod = { ...period };
         timeSeriesTopics.forEach(topic => {
           // Use percentage instead of count, cap at 100% to prevent overflow
-          const percentage = Math.min(day[`${topic}_percentage`] || 0, 100);
-          newDay[topic] = percentage;
+          const percentage = Math.min(period[`${topic}_percentage`] || 0, 100);
+          newPeriod[topic] = percentage;
         });
         // Keep total for reference but don't use it in the chart
-        return newDay;
+        return newPeriod;
       });
     }
-    return timeSeriesData;
+    return dataToUse;
   };
 
   if (statusLoading) {
@@ -516,6 +601,16 @@ const ConversationTrendsChart = () => {
             </div>
             <div className="flex items-end space-x-2">
               <button
+                onClick={() => setTimeSeriesGroupBy(timeSeriesGroupBy === 'daily' ? 'weekly' : 'daily')}
+                className={`px-4 py-2 text-sm rounded-lg transition-colors ${
+                  timeSeriesGroupBy === 'weekly'
+                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {timeSeriesGroupBy === 'daily' ? 'Daily' : 'Weekly'}
+              </button>
+              <button
                 onClick={() => setTimeSeriesMode(timeSeriesMode === 'count' ? 'percentage' : 'count')}
                 className={`px-4 py-2 text-sm rounded-lg transition-colors ${
                   timeSeriesMode === 'percentage'
@@ -582,7 +677,7 @@ const ConversationTrendsChart = () => {
                   textAnchor="end"
                   height={120}
                   tick={{ fontSize: 12 }}
-                  tickFormatter={(value) => formatDate(value)}
+                  tickFormatter={(value) => timeSeriesGroupBy === 'weekly' ? formatWeek(value) : formatDate(value)}
                 />
                 <YAxis 
                   label={{ 
@@ -611,7 +706,10 @@ const ConversationTrendsChart = () => {
                     }
                     
                     const dataPoint = payload[0].payload;
-                    const originalData = timeSeriesData.find(d => d.date === dataPoint.date);
+                    // For weekly view, use the prepared data directly; for daily, find original
+                    const originalData = timeSeriesGroupBy === 'weekly' 
+                      ? dataPoint 
+                      : timeSeriesData.find(d => d.date === dataPoint.date);
                     
                     // Filter out 'total' and prepare items with counts
                     const items = payload
@@ -636,6 +734,11 @@ const ConversationTrendsChart = () => {
                       .filter(item => item.count > 0) // Only show items with counts
                       .sort((a, b) => b.count - a.count); // Sort by count descending
                     
+                    // Format label based on grouping
+                    const displayLabel = timeSeriesGroupBy === 'weekly' 
+                      ? formatWeek(label) 
+                      : formatDate(label);
+                    
                     return (
                       <div style={{ 
                         backgroundColor: '#ffffff',
@@ -646,7 +749,7 @@ const ConversationTrendsChart = () => {
                         zIndex: 1000
                       }}>
                         <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '14px' }}>
-                          {label}
+                          {displayLabel}
                         </div>
                         <div style={{ fontSize: '12px' }}>
                           {items.map((item, index) => (
