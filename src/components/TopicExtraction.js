@@ -1,0 +1,464 @@
+import React, { useState, useEffect } from 'react';
+import { TrendingUp, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import axios from 'axios';
+
+const TopicExtraction = ({ compact = false }) => {
+  const [topicExtractionStatus, setTopicExtractionStatus] = useState({
+    isRunning: false,
+    progress: null,
+    error: null,
+    success: null
+  });
+  const [extractStartDate, setExtractStartDate] = useState('2025-10-20');
+  const [extractEndDate, setExtractEndDate] = useState('2025-10-20');
+  const [lastRunTime, setLastRunTime] = useState(null);
+
+  // Fetch last run time on component mount
+  useEffect(() => {
+    const fetchLastRunTime = async () => {
+      try {
+        const statusResponse = await axios.get('/api/conversations/extract-topics-status');
+        if (statusResponse.data.success && statusResponse.data.end_time) {
+          setLastRunTime(statusResponse.data.end_time);
+        }
+      } catch (err) {
+        // Silently fail - not critical
+        console.debug('Could not fetch last run time:', err);
+      }
+    };
+    fetchLastRunTime();
+  }, []);
+
+  const formatLastRunTime = (isoString) => {
+    if (!isoString) return null;
+    try {
+      const date = new Date(isoString);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+      if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+      if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+      
+      // For older dates, show formatted date
+      return date.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric', 
+        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+        hour: 'numeric',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const handleExtractTopics = async () => {
+    const startTime = Date.now();
+    let progressInterval = null;
+    const startDate = extractStartDate;
+    const endDate = extractEndDate;
+    
+    // Validate date range
+    if (!startDate || !endDate) {
+      setTopicExtractionStatus({
+        isRunning: false,
+        progress: null,
+        error: 'Please select both start and end dates',
+        success: null
+      });
+      return;
+    }
+    
+    if (startDate > endDate) {
+      setTopicExtractionStatus({
+        isRunning: false,
+        progress: null,
+        error: 'Start date must be before or equal to end date',
+        success: null
+      });
+      return;
+    }
+    
+    // Log start
+    const getTimestamp = () => new Date().toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit'
+    });
+    
+    const dateRangeStr = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+    console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Starting topic extraction for ${dateRangeStr}...`);
+    
+    setTopicExtractionStatus({
+      isRunning: true,
+      progress: 'Starting topic extraction... This may take several minutes for large batches. Progress is saved incrementally every 10 conversations.',
+      error: null,
+      success: null
+    });
+
+    // Get conversation count first for accurate progress tracking
+    let totalConversations = 0;
+    let toProcessCount = 0;
+    let alreadyExtractedCount = 0;
+    try {
+      const countResponse = await axios.get(`/api/conversations/conversation-count?start_date=${startDate}&end_date=${endDate}`);
+      if (countResponse.data.success) {
+        totalConversations = countResponse.data.count || 0;
+        alreadyExtractedCount = countResponse.data.already_extracted_count || 0;
+        toProcessCount = countResponse.data.to_process_count || totalConversations;
+        const estimatedBatches = Math.ceil(toProcessCount / 10);
+        const estimatedMinutes = Math.ceil((toProcessCount * 0.5) / 60);
+        console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Found ${totalConversations} conversations (${estimatedBatches} batches of 10)`);
+        if (alreadyExtractedCount > 0) {
+          console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] ${alreadyExtractedCount} already extracted, ${toProcessCount} to process`);
+        }
+        console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Estimated time: ~${estimatedMinutes} minutes (based on ${toProcessCount} conversations to process)`);
+      }
+    } catch (e) {
+      console.warn(`[${getTimestamp()}] [TOPIC EXTRACTION] Could not get conversation count, will estimate progress`);
+    }
+
+    // Set up progress logging interval (logs every 10 seconds, matching backend's 10-conversation batches)
+    // Backend processes ~1 conversation per second (0.5s delay + API time), so every 10 seconds = ~10 conversations
+    let lastLoggedBatch = 0;
+    progressInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const minutes = Math.floor(elapsed / 60);
+      const seconds = elapsed % 60;
+      const timeStr = `${minutes}m ${seconds}s`;
+      
+      // Estimate: ~1 conversation per second (0.5s delay + ~0.5s API call)
+      // Every 10 seconds = ~10 conversations processed (matching backend's batch logging)
+      const estimatedBatch = Math.floor(elapsed / 10); // Every 10 seconds = 1 batch of 10
+      const estimatedProcessed = estimatedBatch * 10;
+      
+      if (estimatedBatch > lastLoggedBatch) {
+        lastLoggedBatch = estimatedBatch;
+        if (totalConversations > 0) {
+          const estimatedPercent = Math.min(100, Math.floor((estimatedProcessed / totalConversations) * 100));
+          console.log(`[${getTimestamp()}] [TOPIC EXTRACTION PROGRESS] Batch ${estimatedBatch}: ~${estimatedProcessed}/${totalConversations} conversations (~${estimatedPercent}%) - Elapsed: ${timeStr}`);
+        } else {
+          console.log(`[${getTimestamp()}] [TOPIC EXTRACTION PROGRESS] Batch ${estimatedBatch}: ~${estimatedProcessed} conversations processed - Elapsed: ${timeStr}`);
+        }
+      }
+    }, 10000); // Check every 10 seconds (matches backend's 10-conversation batch interval)
+
+    try {
+      // Start extraction (returns immediately, runs in background)
+      const response = await axios.post('/api/conversations/extract-topics', {
+        start_date: startDate,
+        end_date: endDate
+      }, {
+        timeout: 10000 // 10 second timeout for starting the job
+      });
+
+      // Clear progress interval
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+
+      if (!response.data.success) {
+        setTopicExtractionStatus({
+          isRunning: false,
+          progress: null,
+          error: response.data.error || response.data.message || 'Failed to start extraction',
+          success: null
+        });
+        return;
+      }
+
+      // Poll for status
+      const statusInterval = setInterval(async () => {
+        try {
+          const statusResponse = await axios.get('/api/conversations/extract-topics-status');
+          if (statusResponse.data.success) {
+            const status = statusResponse.data;
+            
+            if (status.is_running) {
+              const progressMsg = `Processing: ${status.current}/${status.total} conversations (${status.progress_percentage.toFixed(1)}%)`;
+              const details = [];
+              if (status.processed_count > 0) details.push(`${status.processed_count} processed`);
+              if (status.skipped_count > 0) details.push(`${status.skipped_count} skipped`);
+              const detailsMsg = details.length > 0 ? ` (${details.join(', ')})` : '';
+              
+              setTopicExtractionStatus({
+                isRunning: true,
+                progress: progressMsg + detailsMsg,
+                error: null,
+                success: null
+              });
+              
+              // Log progress every 10 conversations
+              if (status.current % 10 === 0 || status.current === status.total) {
+                const elapsed = status.elapsed_time ? Math.floor(status.elapsed_time) : 0;
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                console.log(`[${getTimestamp()}] [TOPIC EXTRACTION PROGRESS] ${status.current}/${status.total} (${status.progress_percentage.toFixed(1)}%) - Elapsed: ${minutes}m ${seconds}s`);
+              }
+            } else {
+              // Completed
+              clearInterval(statusInterval);
+              const elapsed = status.elapsed_time ? Math.floor(status.elapsed_time) : 0;
+              const minutes = Math.floor(elapsed / 60);
+              const seconds = elapsed % 60;
+              const elapsedTimeStr = `${minutes}m ${seconds}s`;
+              
+              if (status.error) {
+                console.error(`[${getTimestamp()}] [TOPIC EXTRACTION] ❌ Failed: ${status.error}`);
+                setTopicExtractionStatus({
+                  isRunning: false,
+                  progress: null,
+                  error: status.error,
+                  success: null
+                });
+              } else {
+                let successMsg = `Successfully extracted topics for ${status.processed_count || 0} conversations`;
+                if (status.skipped_count > 0) {
+                  successMsg += `. Skipped ${status.skipped_count} already-extracted conversations.`;
+                }
+                
+                console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] ✅ Completed!`);
+                console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Processed: ${status.processed_count}, Skipped: ${status.skipped_count}`);
+                console.log(`[${getTimestamp()}] [TOPIC EXTRACTION] Time elapsed: ${elapsedTimeStr}`);
+                
+                // Update last run time
+                if (status.end_time) {
+                  setLastRunTime(status.end_time);
+                }
+                
+                setTopicExtractionStatus({
+                  isRunning: false,
+                  progress: null,
+                  error: null,
+                  success: successMsg
+                });
+              }
+            }
+          }
+        } catch (statusErr) {
+          console.error('Error polling extraction status:', statusErr);
+        }
+      }, 2000); // Poll every 2 seconds
+    } catch (err) {
+      // Clear progress interval
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+      
+      let errorMessage = 'Failed to start extraction';
+      let errorDetails = '';
+      
+      if (err.response) {
+        const status = err.response.status;
+        const data = err.response.data || {};
+        
+        if (status === 400 && data.error === 'Extraction already running') {
+          errorMessage = 'Extraction Already Running';
+          errorDetails = 'Topic extraction is already in progress. Please wait for it to complete.';
+        } else {
+          errorMessage = data.error || `Server error (${status})`;
+          errorDetails = data.details || data.message || err.message;
+        }
+      } else {
+        errorDetails = err.message || 'Unable to connect to server. Please check your connection.';
+      }
+      
+      const timestamp = getTimestamp();
+      console.error(`[${timestamp}] [TOPIC EXTRACTION] ❌ Failed to start: ${errorMessage}`);
+      
+      setTopicExtractionStatus({
+        isRunning: false,
+        progress: null,
+        error: `${errorMessage}: ${errorDetails}`,
+        success: null
+      });
+    }
+  };
+
+  if (compact) {
+    // Compact version for Download Manager workflow step
+    return (
+      <div className={`p-4 border-2 rounded-lg ${
+        topicExtractionStatus.isRunning
+          ? 'border-blue-500 bg-blue-50'
+          : lastRunTime
+            ? 'border-green-200 bg-green-50'
+            : 'border-gray-200 bg-gray-50'
+      }`}>
+        <div className="flex items-center space-x-3 mb-2">
+          <TrendingUp className="h-5 w-5 text-gray-600" />
+          <h4 className="font-medium text-gray-900">
+            Extract Conversation Topics
+          </h4>
+        </div>
+        <p className="text-xs text-gray-600 mb-3">
+          Pre-process conversations to extract topics for trend analysis. This uses Claude AI to analyze conversation transcripts.
+        </p>
+        {lastRunTime && (
+          <p className="text-xs text-gray-500 mb-3 italic">
+            Last run: {formatLastRunTime(lastRunTime)}
+          </p>
+        )}
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
+            <input
+              type="date"
+              value={extractStartDate}
+              onChange={(e) => setExtractStartDate(e.target.value)}
+              disabled={topicExtractionStatus.isRunning}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">End Date</label>
+            <input
+              type="date"
+              value={extractEndDate}
+              onChange={(e) => setExtractEndDate(e.target.value)}
+              disabled={topicExtractionStatus.isRunning}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+            />
+          </div>
+        </div>
+        <button
+          onClick={handleExtractTopics}
+          disabled={topicExtractionStatus.isRunning}
+          className={`px-4 py-2 text-sm rounded-lg transition-colors flex items-center space-x-2 ${
+            topicExtractionStatus.isRunning
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              : 'bg-blue-600 text-white hover:bg-blue-700'
+          }`}
+        >
+          {topicExtractionStatus.isRunning ? (
+            <>
+              <RefreshCw className="h-4 w-4 animate-spin" />
+              <span>Processing...</span>
+            </>
+          ) : (
+            <>
+              <TrendingUp className="h-4 w-4" />
+              <span>Extract Topics</span>
+            </>
+          )}
+        </button>
+        {topicExtractionStatus.progress && (
+          <p className="text-xs text-blue-600 mt-2">{topicExtractionStatus.progress}</p>
+        )}
+        {topicExtractionStatus.error && (
+          <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded">
+            <div className="flex items-start space-x-2">
+              <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-900 mb-1">Error</p>
+                <p className="text-xs text-red-700 whitespace-pre-wrap">{topicExtractionStatus.error}</p>
+              </div>
+            </div>
+          </div>
+        )}
+        {topicExtractionStatus.success && (
+          <div className="mt-2 flex items-start space-x-2">
+            <CheckCircle className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-green-600">{topicExtractionStatus.success}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Full version for Settings Panel
+  return (
+    <div className={`p-4 border-2 rounded-lg ${
+      topicExtractionStatus.isRunning
+        ? 'border-blue-500 bg-blue-50'
+        : 'border-gray-200 bg-gray-50'
+    }`}>
+      <div className="flex items-center space-x-3 mb-2">
+        <TrendingUp className="h-5 w-5 text-gray-600" />
+        <h4 className="font-medium text-gray-900">
+          Extract Conversation Topics
+        </h4>
+      </div>
+      <p className="text-xs text-gray-600 mb-3">
+        Pre-process conversations to extract topics for trend analysis. This uses Claude AI to analyze conversation transcripts.
+      </p>
+      {lastRunTime && (
+        <p className="text-xs text-gray-500 mb-3 italic">
+          Last run: {formatLastRunTime(lastRunTime)}
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
+          <input
+            type="date"
+            value={extractStartDate}
+            onChange={(e) => setExtractStartDate(e.target.value)}
+            disabled={topicExtractionStatus.isRunning}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">End Date</label>
+          <input
+            type="date"
+            value={extractEndDate}
+            onChange={(e) => setExtractEndDate(e.target.value)}
+            disabled={topicExtractionStatus.isRunning}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+          />
+        </div>
+      </div>
+      <button
+        onClick={handleExtractTopics}
+        disabled={topicExtractionStatus.isRunning}
+        className={`px-4 py-2 text-sm rounded-lg transition-colors flex items-center space-x-2 ${
+          topicExtractionStatus.isRunning
+            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            : 'bg-blue-600 text-white hover:bg-blue-700'
+        }`}
+      >
+        {topicExtractionStatus.isRunning ? (
+          <>
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            <span>Processing...</span>
+          </>
+        ) : (
+          <>
+            <TrendingUp className="h-4 w-4" />
+            <span>Extract Topics</span>
+          </>
+        )}
+      </button>
+      {topicExtractionStatus.progress && (
+        <p className="text-xs text-blue-600 mt-2">{topicExtractionStatus.progress}</p>
+      )}
+      {topicExtractionStatus.error && (
+        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded">
+          <div className="flex items-start space-x-2">
+            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-900 mb-1">Error</p>
+              <p className="text-xs text-red-700 whitespace-pre-wrap">{topicExtractionStatus.error}</p>
+            </div>
+          </div>
+        </div>
+      )}
+      {topicExtractionStatus.success && (
+        <div className="mt-2 flex items-start space-x-2">
+          <CheckCircle className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+          <p className="text-xs text-green-600">{topicExtractionStatus.success}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default TopicExtraction;
+

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import TopicExtraction from './TopicExtraction';
 
 const DownloadManager = () => {
   const [downloadStatus, setDownloadStatus] = useState(null);
@@ -15,6 +16,7 @@ const DownloadManager = () => {
   const [csvDateRange, setCsvDateRange] = useState(null);
   const [csvDateBreakdown, setCsvDateBreakdown] = useState(null);
   const [aggregationError, setAggregationError] = useState(null);
+  const [topicExtractionStatus, setTopicExtractionStatus] = useState(null);
 
   // Fetch download status
   const fetchDownloadStatus = async () => {
@@ -107,6 +109,19 @@ const DownloadManager = () => {
       }
     } catch (error) {
       console.error('Error fetching CSV date breakdown:', error);
+    }
+  };
+
+  // Fetch topic extraction status
+  const fetchTopicExtractionStatus = async () => {
+    try {
+      const response = await fetch('/api/conversations/extract-topics-status');
+      const data = await response.json();
+      if (data.success) {
+        setTopicExtractionStatus(data);
+      }
+    } catch (error) {
+      console.error('Error fetching topic extraction status:', error);
     }
   };
 
@@ -303,7 +318,19 @@ const DownloadManager = () => {
     fetchAggregationStatus();
     fetchCsvDateRange();
     fetchCsvDateBreakdown();
+    fetchTopicExtractionStatus();
   }, []);
+
+  // Poll topic extraction status when running
+  useEffect(() => {
+    if (!topicExtractionStatus?.is_running) return;
+    
+    const interval = setInterval(() => {
+      fetchTopicExtractionStatus();
+    }, 2000); // Poll every 2 seconds when running
+
+    return () => clearInterval(interval);
+  }, [topicExtractionStatus?.is_running]);
 
   // Refresh breakdown when stats change
   useEffect(() => {
@@ -427,6 +454,36 @@ const DownloadManager = () => {
                 </div>
                 <p className="text-sm text-gray-600 ml-11">
                   After downloading, aggregate conversations to enable RAG chatbot analysis.
+                </p>
+              </div>
+              
+              <div className="flex items-center justify-center text-gray-400 text-2xl">
+                →
+              </div>
+              
+              <div className={`flex-1 p-4 rounded-lg border-2 ${
+                topicExtractionStatus && topicExtractionStatus.end_time && !topicExtractionStatus.is_running
+                  ? 'bg-green-50 border-green-300'
+                  : (aggregationStatus && aggregationStatus.exists
+                      ? 'bg-white border-gray-300'
+                      : 'bg-gray-50 border-gray-200 opacity-50')
+              }`}>
+                <div className="flex items-center mb-2">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm mr-3 ${
+                    topicExtractionStatus && topicExtractionStatus.end_time && !topicExtractionStatus.is_running
+                      ? 'bg-green-500 text-white'
+                      : (topicExtractionStatus && topicExtractionStatus.is_running
+                          ? 'bg-blue-500 text-white'
+                          : (aggregationStatus && aggregationStatus.exists
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-gray-300 text-gray-600'))
+                  }`}>
+                    3
+                  </div>
+                  <h3 className="font-semibold text-gray-900">Extract Topics</h3>
+                </div>
+                <p className="text-sm text-gray-600 ml-11">
+                  Extract conversation topics for trend analysis using Claude AI.
                 </p>
               </div>
             </div>
@@ -805,6 +862,101 @@ const DownloadManager = () => {
                 '🔄 Aggregate Conversations for RAG'
               )}
             </button>
+          </div>
+
+          {/* Topic Extraction - Step 3 */}
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+              Step 3: Extract Conversation Topics
+              {(!downloadStats || downloadStats.total_downloaded === 0) && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  (Download conversations first)
+                </span>
+              )}
+              {downloadStats && downloadStats.total_downloaded > 0 && (!aggregationStatus || !aggregationStatus.exists) && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  (Aggregate conversations first)
+                </span>
+              )}
+            </h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Extract topics from downloaded conversations to enable trend analysis and visualization. This uses Claude AI to analyze conversation transcripts.
+            </p>
+            
+            {topicExtractionStatus && (
+              <div className="mb-4">
+                {topicExtractionStatus.end_time && !topicExtractionStatus.is_running ? (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <svg className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                      <div className="ml-3">
+                        <h3 className="text-sm font-medium text-green-800">
+                          Topics Extracted
+                        </h3>
+                        <div className="mt-2 text-sm text-green-700">
+                          <p>Last extracted: {new Date(topicExtractionStatus.end_time).toLocaleString()}</p>
+                          {topicExtractionStatus.processed_count > 0 && (
+                            <p>Processed: {topicExtractionStatus.processed_count} conversations</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : topicExtractionStatus.is_running ? (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <svg className="animate-spin h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      </div>
+                      <div className="ml-3 flex-1">
+                        <h3 className="text-sm font-medium text-blue-800">
+                          Extracting Topics...
+                        </h3>
+                        <div className="mt-2 text-sm text-blue-700">
+                          {topicExtractionStatus.progress_percentage > 0 && (
+                            <p>Progress: {topicExtractionStatus.current}/{topicExtractionStatus.total} ({topicExtractionStatus.progress_percentage.toFixed(1)}%)</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                      <div className="ml-3">
+                        <h3 className="text-sm font-medium text-yellow-800">
+                          No Topics Extracted Yet
+                        </h3>
+                        <div className="mt-2 text-sm text-yellow-700">
+                          <p>
+                            {(!downloadStats || downloadStats.total_downloaded === 0)
+                              ? 'Download conversations first, then extract topics for trend analysis.'
+                              : (!aggregationStatus || !aggregationStatus.exists)
+                                ? 'Aggregate conversations first, then extract topics.'
+                                : 'Extract topics from downloaded conversations to enable trend analysis.'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <TopicExtraction compact={true} />
+          </div>
             
             {/* Migration Button - only show if no conversations tracked */}
             {downloadStats && downloadStats.total_downloaded === 0 && (
