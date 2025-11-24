@@ -111,3 +111,73 @@ def health_check():
             'storage_type': Config.STORAGE_TYPE,
             'storage_available': False
         }), 200  # Always return 200, let status field indicate health
+
+
+@health_bp.route('/cache/stats')
+def cache_stats():
+    """Get cache statistics"""
+    try:
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            return jsonify({
+                'success': False,
+                'error': 'Service container not available'
+            }), 200
+        
+        cache_service = service_container.get_cache_service()
+        if not cache_service:
+            return jsonify({
+                'success': True,
+                'cache_enabled': False,
+                'message': 'Caching is disabled'
+            }), 200
+        
+        # Get cache statistics
+        stats = cache_service.get_stats()
+        
+        return jsonify({
+            'success': True,
+            'cache_enabled': True,
+            'stats': stats
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Cache stats error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 200
+
+
+@health_bp.route('/cache/clear', methods=['POST'])
+def cache_clear():
+    """Clear all cache entries"""
+    try:
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            return jsonify({
+                'success': False,
+                'error': 'Service container not available'
+            }), 200
+        
+        cache_service = service_container.get_cache_service()
+        if not cache_service:
+            return jsonify({
+                'success': True,
+                'message': 'Caching is disabled, nothing to clear'
+            }), 200
+        
+        # Clear cache
+        cache_service.clear()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Cache cleared successfully'
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Cache clear error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 200

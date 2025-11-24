@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from ..services.gladly_download_service import GladlyDownloadService
     from ..services.survey_service import SurveyService
     from ..services.survicate_rag_service import SurvicateRAGService
+    from ..services.cache_service import InMemoryCacheService
+    from ..core.interfaces import ICacheService
 
 from ..utils.logging import get_logger
 
@@ -33,6 +35,7 @@ class ServiceContainer:
     def __init__(self):
         """Initialize the service container"""
         # Core services - using 'Any' type to avoid circular imports
+        self._cache_service: Optional['ICacheService'] = None
         self._storage_service: Optional['StorageService'] = None
         self._claude_service: Optional['ClaudeService'] = None
         self._conversation_service: Optional['ConversationService'] = None
@@ -45,6 +48,42 @@ class ServiceContainer:
         self._overrides: dict = {}
         
         logger.debug("Service container initialized")
+    
+    # Cache Service
+    def get_cache_service(self, override: Optional['ICacheService'] = None) -> Optional['ICacheService']:
+        """
+        Get or create the CacheService instance.
+        
+        Args:
+            override: Optional service instance to use instead (for testing)
+            
+        Returns:
+            CacheService instance or None if caching is disabled
+        """
+        from ..utils.config import Config
+        
+        if not Config.CACHE_ENABLED:
+            return None
+        
+        if override is not None:
+            self._overrides['cache_service'] = override
+            self._cache_service = override
+            return override
+        
+        if 'cache_service' in self._overrides:
+            return self._overrides.get('cache_service')
+        
+        if self._cache_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.cache_service import InMemoryCacheService
+            logger.debug("Creating InMemoryCacheService instance")
+            self._cache_service = InMemoryCacheService(
+                default_ttl=Config.CACHE_DEFAULT_TTL,
+                max_size=Config.CACHE_MAX_SIZE
+            )
+            logger.info("Cache service initialized")
+        
+        return self._cache_service
     
     # Storage Service
     def get_storage_service(self, override: Optional['StorageService'] = None) -> 'StorageService':
@@ -102,7 +141,8 @@ class ServiceContainer:
                 logger.debug(f"Attempting ClaudeService initialization - API key status: {api_key_status}")
                 
                 logger.debug("Creating ClaudeService instance")
-                self._claude_service = ClaudeService()
+                cache_service = self.get_cache_service()
+                self._claude_service = ClaudeService(cache_service=cache_service)
                 logger.debug("ClaudeService initialized")
             except ValueError as e:
                 # ValueError means API key is missing - this is expected in some environments
@@ -139,7 +179,11 @@ class ServiceContainer:
             from ..services.conversation_service import ConversationService
             logger.debug("Creating ConversationService instance")
             storage_service = self.get_storage_service()
-            self._conversation_service = ConversationService(storage_service=storage_service)
+            cache_service = self.get_cache_service()
+            self._conversation_service = ConversationService(
+                storage_service=storage_service,
+                cache_service=cache_service
+            )
         
         return self._conversation_service
     
@@ -278,6 +322,7 @@ class ServiceContainer:
     
     def reset(self):
         """Reset all services (for testing)"""
+        self._cache_service = None
         self._storage_service = None
         self._claude_service = None
         self._conversation_service = None

@@ -140,6 +140,23 @@ class Config:
     # Enable name detection (may have false positives) - set to 'true' to enable
     PII_ENABLE_NAME_DETECTION: bool = os.getenv('PII_ENABLE_NAME_DETECTION', 'false').lower() in ('true', '1', 'yes')
     
+    # Cache Configuration
+    # Enable caching (set to 'false' to disable)
+    CACHE_ENABLED: bool = os.getenv('CACHE_ENABLED', 'true').lower() in ('true', '1', 'yes')
+    # Default TTL for cache entries in seconds (default: 1 hour)
+    CACHE_DEFAULT_TTL: int = int(os.getenv('CACHE_DEFAULT_TTL', '3600'))
+    # Maximum number of cache entries (None = unlimited)
+    CACHE_MAX_SIZE: Optional[int] = int(os.getenv('CACHE_MAX_SIZE')) if os.getenv('CACHE_MAX_SIZE') else None
+    # TTL for Claude API responses in seconds (default: 24 hours - Claude responses are expensive)
+    CACHE_CLAUDE_TTL: int = int(os.getenv('CACHE_CLAUDE_TTL', '86400'))
+    # TTL for conversation summaries in seconds (default: 1 hour)
+    CACHE_SUMMARY_TTL: int = int(os.getenv('CACHE_SUMMARY_TTL', '3600'))
+    # TTL for conversation search results in seconds (default: 30 minutes)
+    CACHE_SEARCH_TTL: int = int(os.getenv('CACHE_SEARCH_TTL', '1800'))
+    # Redis configuration (for future distributed caching)
+    REDIS_HOST: Optional[str] = os.getenv('REDIS_HOST')
+    REDIS_PORT: int = int(os.getenv('REDIS_PORT', '6379'))
+    
     @classmethod
     def get_pii_config(cls) -> dict:
         """Get PII protection configuration"""

@@ -3,12 +3,13 @@ Claude API service
 """
 
 import json
+import hashlib
 import requests
 from typing import Optional, Dict, Any, Generator
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.response import ClaudeResponse
-from ..core.interfaces import IClaudeService
+from ..core.interfaces import IClaudeService, ICacheService
 
 logger = get_logger('claude_service')
 
@@ -16,7 +17,7 @@ logger = get_logger('claude_service')
 class ClaudeService(IClaudeService):
     """Service for interacting with Claude API"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, cache_service: Optional[ICacheService] = None):
         """Initialize Claude service"""
         self.api_key = api_key or Config.ANTHROPIC_API_KEY
         if not self.api_key:
@@ -28,16 +29,51 @@ class ClaudeService(IClaudeService):
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
+        
+        # Cache service (optional - only used if caching is enabled)
+        self.cache_service = cache_service if Config.CACHE_ENABLED and cache_service else None
+        if self.cache_service:
+            logger.info("ClaudeService: Caching enabled")
+        else:
+            logger.info("ClaudeService: Caching disabled")
+    
+    def _generate_cache_key(self, message: str, model: str, max_tokens: int, system_prompt: Optional[str] = None) -> str:
+        """Generate a cache key for Claude API request"""
+        # Create deterministic key from request parameters
+        key_data = {
+            'message': message,
+            'model': model,
+            'max_tokens': max_tokens,
+            'system_prompt': system_prompt or ''
+        }
+        key_string = json.dumps(key_data, sort_keys=True)
+        key_hash = hashlib.md5(key_string.encode()).hexdigest()
+        return f"claude:response:{key_hash}"
     
     def send_message(self, 
                     message: str, 
                     model: str = None,
                     max_tokens: int = 1000,
                     system_prompt: Optional[str] = None) -> ClaudeResponse:
-        """Send a message to Claude API with automatic model fallback"""
+        """Send a message to Claude API with automatic model fallback and caching"""
         # Resolve model through aliases and fallbacks
         requested_model = model or Config.CLAUDE_MODEL
         model = Config.resolve_model(requested_model)
+        
+        # Check cache first (if caching is enabled)
+        if self.cache_service:
+            cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt)
+            cached_response = self.cache_service.get(cache_key)
+            if cached_response:
+                logger.info(f"Cache HIT for Claude API request: {cache_key[:32]}...")
+                # Reconstruct ClaudeResponse from cached dict
+                return ClaudeResponse(
+                    content=cached_response['content'],
+                    model=cached_response['model'],
+                    tokens_used=cached_response['tokens_used'],
+                    streamed=cached_response.get('streamed', False)
+                )
+            logger.debug(f"Cache MISS for Claude API request: {cache_key[:32]}...")
         
         payload = {
             "model": model,
@@ -67,7 +103,22 @@ class ClaudeService(IClaudeService):
             response_data = response.json()
             logger.info(f"Claude response received: tokens_used={response_data.get('usage', {}).get('output_tokens', 0)}")
             
-            return ClaudeResponse.from_api_response(response_data, model)
+            claude_response = ClaudeResponse.from_api_response(response_data, model)
+            
+            # Cache the response (if caching is enabled)
+            if self.cache_service:
+                cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt)
+                # Store as dict for caching (dataclass is not directly JSON-serializable)
+                cache_value = {
+                    'content': claude_response.content,
+                    'model': claude_response.model,
+                    'tokens_used': claude_response.tokens_used,
+                    'streamed': claude_response.streamed
+                }
+                self.cache_service.set(cache_key, cache_value, ttl=Config.CACHE_CLAUDE_TTL)
+                logger.debug(f"Cached Claude API response: {cache_key[:32]}... (ttl={Config.CACHE_CLAUDE_TTL}s)")
+            
+            return claude_response
         
         except requests.exceptions.Timeout as e:
             logger.error(f"Claude API request timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The request may be too complex or the API is slow.")
@@ -96,7 +147,22 @@ class ClaudeService(IClaudeService):
                             response.raise_for_status()
                             response_data = response.json()
                             logger.info(f"Claude response received with fallback model '{fallback_model}': tokens_used={response_data.get('usage', {}).get('output_tokens', 0)}")
-                            return ClaudeResponse.from_api_response(response_data, fallback_model)
+                            
+                            claude_response = ClaudeResponse.from_api_response(response_data, fallback_model)
+                            
+                            # Cache the response (if caching is enabled)
+                            if self.cache_service:
+                                cache_key = self._generate_cache_key(message, fallback_model, max_tokens, system_prompt)
+                                cache_value = {
+                                    'content': claude_response.content,
+                                    'model': claude_response.model,
+                                    'tokens_used': claude_response.tokens_used,
+                                    'streamed': claude_response.streamed
+                                }
+                                self.cache_service.set(cache_key, cache_value, ttl=Config.CACHE_CLAUDE_TTL)
+                                logger.debug(f"Cached Claude API response (fallback): {cache_key[:32]}...")
+                            
+                            return claude_response
                         except requests.exceptions.RequestException as fallback_error:
                             # Try next fallback model
                             logger.warning(f"Fallback model '{fallback_model}' also failed: {str(fallback_error)}")

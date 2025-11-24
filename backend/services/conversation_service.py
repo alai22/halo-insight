@@ -2,11 +2,12 @@
 Conversation data service
 """
 
+import hashlib
 from typing import List, Dict, Optional, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.conversation import ConversationItem, ConversationSummary
-from ..core.interfaces import IConversationService, IStorageService
+from ..core.interfaces import IConversationService, IStorageService, ICacheService
 from .storage_service import StorageService
 
 logger = get_logger('conversation_service')
@@ -15,10 +16,18 @@ logger = get_logger('conversation_service')
 class ConversationService(IConversationService):
     """Service for managing conversation data"""
     
-    def __init__(self, storage_service: Optional[IStorageService] = None):
+    def __init__(self, storage_service: Optional[IStorageService] = None, cache_service: Optional[ICacheService] = None):
         """Initialize conversation service"""
         self.storage_service = storage_service or StorageService()
         self.conversations: List[ConversationItem] = []
+        
+        # Cache service (optional - only used if caching is enabled)
+        self.cache_service = cache_service if Config.CACHE_ENABLED and cache_service else None
+        if self.cache_service:
+            logger.info("ConversationService: Caching enabled")
+        else:
+            logger.info("ConversationService: Caching disabled")
+        
         self.load_conversations()
     
     def load_conversations(self):
@@ -34,78 +43,135 @@ class ConversationService(IConversationService):
             self.conversations = []
     
     def get_summary(self) -> ConversationSummary:
-        """Get conversation data summary"""
+        """Get conversation data summary with caching"""
+        # Check cache first (if caching is enabled)
+        if self.cache_service:
+            cache_key = "conversation:summary"
+            cached_summary = self.cache_service.get(cache_key)
+            if cached_summary:
+                logger.info("Cache HIT for conversation summary")
+                # Reconstruct ConversationSummary from cached dict
+                return ConversationSummary(
+                    total_items=cached_summary['total_items'],
+                    unique_customers=cached_summary['unique_customers'],
+                    unique_conversations=cached_summary['unique_conversations'],
+                    date_range=cached_summary['date_range'],
+                    content_types=cached_summary['content_types'],
+                    message_types=cached_summary.get('message_types')
+                )
+            logger.debug("Cache MISS for conversation summary")
+        
         if not self.conversations:
-            return ConversationSummary(
+            summary = ConversationSummary(
                 total_items=0,
                 unique_customers=0,
                 unique_conversations=0,
                 date_range={'start': 'Unknown', 'end': 'Unknown'},
                 content_types={}
             )
-        
-        # Count by content type
-        content_types = {}
-        message_types = {}
-        customer_ids = set()
-        conversation_ids = set()
-        timestamps = []
-        
-        for item in self.conversations:
-            # Content types
-            content_type = item.content_type
-            content_types[content_type] = content_types.get(content_type, 0) + 1
+        else:
+            # Count by content type
+            content_types = {}
+            message_types = {}
+            customer_ids = set()
+            conversation_ids = set()
+            timestamps = []
             
-            # Message types for chat messages
-            if content_type == 'CHAT_MESSAGE':
-                msg_type = item.content.get('messageType', 'UNKNOWN')
-                message_types[msg_type] = message_types.get(msg_type, 0) + 1
+            for item in self.conversations:
+                # Content types
+                content_type = item.content_type
+                content_types[content_type] = content_types.get(content_type, 0) + 1
+                
+                # Message types for chat messages
+                if content_type == 'CHAT_MESSAGE':
+                    msg_type = item.content.get('messageType', 'UNKNOWN')
+                    message_types[msg_type] = message_types.get(msg_type, 0) + 1
+                
+                # Customer and conversation IDs
+                if item.customer_id:
+                    customer_ids.add(item.customer_id)
+                if item.conversation_id:
+                    conversation_ids.add(item.conversation_id)
+                
+                # Timestamps
+                if item.timestamp:
+                    timestamps.append(item.timestamp)
             
-            # Customer and conversation IDs
-            if item.customer_id:
-                customer_ids.add(item.customer_id)
-            if item.conversation_id:
-                conversation_ids.add(item.conversation_id)
+            # Sort dates
+            timestamps.sort()
+            date_range = {
+                'start': timestamps[0] if timestamps else 'Unknown',
+                'end': timestamps[-1] if timestamps else 'Unknown'
+            }
             
-            # Timestamps
-            if item.timestamp:
-                timestamps.append(item.timestamp)
+            summary = ConversationSummary(
+                total_items=len(self.conversations),
+                unique_customers=len(customer_ids),
+                unique_conversations=len(conversation_ids),
+                date_range=date_range,
+                content_types=content_types,
+                message_types=message_types if message_types else None
+            )
         
-        # Sort dates
-        timestamps.sort()
-        date_range = {
-            'start': timestamps[0] if timestamps else 'Unknown',
-            'end': timestamps[-1] if timestamps else 'Unknown'
-        }
+        # Cache the summary (if caching is enabled)
+        if self.cache_service:
+            cache_key = "conversation:summary"
+            cache_value = {
+                'total_items': summary.total_items,
+                'unique_customers': summary.unique_customers,
+                'unique_conversations': summary.unique_conversations,
+                'date_range': summary.date_range,
+                'content_types': summary.content_types,
+                'message_types': summary.message_types
+            }
+            self.cache_service.set(cache_key, cache_value, ttl=Config.CACHE_SUMMARY_TTL)
+            logger.debug(f"Cached conversation summary (ttl={Config.CACHE_SUMMARY_TTL}s)")
         
-        return ConversationSummary(
-            total_items=len(self.conversations),
-            unique_customers=len(customer_ids),
-            unique_conversations=len(conversation_ids),
-            date_range=date_range,
-            content_types=content_types,
-            message_types=message_types if message_types else None
-        )
+        return summary
     
     def search_conversations(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search conversations for specific content"""
+        """Search conversations for specific content with caching"""
+        # Check cache first (if caching is enabled)
+        if self.cache_service:
+            cache_key = f"conversation:search:{hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()}"
+            cached_results = self.cache_service.get(cache_key)
+            if cached_results is not None:
+                logger.info(f"Cache HIT for conversation search: query='{query}'")
+                return cached_results
+            logger.debug(f"Cache MISS for conversation search: query='{query}'")
+        
         if not self.conversations:
-            return []
+            results = []
+        else:
+            query_lower = query.lower()
+            results = []
+            
+            for item in self.conversations:
+                if query_lower in item.searchable_text:
+                    results.append(item.to_dict())
+                    if len(results) >= limit:
+                        break
         
-        query_lower = query.lower()
-        results = []
-        
-        for item in self.conversations:
-            if query_lower in item.searchable_text:
-                results.append(item.to_dict())
-                if len(results) >= limit:
-                    break
+        # Cache the results (if caching is enabled)
+        if self.cache_service:
+            cache_key = f"conversation:search:{hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()}"
+            self.cache_service.set(cache_key, results, ttl=Config.CACHE_SEARCH_TTL)
+            logger.debug(f"Cached conversation search results (ttl={Config.CACHE_SEARCH_TTL}s)")
         
         logger.info(f"Search completed: query={query}, results_count={len(results)}")
         return results
     
     def semantic_search_conversations(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Enhanced semantic search with concept mappings"""
+        """Enhanced semantic search with concept mappings and caching"""
+        # Check cache first (if caching is enabled)
+        if self.cache_service:
+            cache_key = f"conversation:semantic_search:{hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()}"
+            cached_results = self.cache_service.get(cache_key)
+            if cached_results is not None:
+                logger.info(f"Cache HIT for semantic search: query='{query}'")
+                return cached_results
+            logger.debug(f"Cache MISS for semantic search: query='{query}'")
+        
         if not self.conversations:
             logger.warning(f"Semantic search called but no conversations available (total: {len(self.conversations)})")
             return []
@@ -190,6 +256,12 @@ class ConversationService(IConversationService):
             logger.warning(f"Semantic search returned 0 results for '{query}'. "
                           f"Checked {items_checked} items, {items_with_searchable_text} had searchable text. "
                           f"Sample searchable text length: {len(self.conversations[0].searchable_text) if self.conversations else 0}")
+        
+        # Cache the results (if caching is enabled)
+        if self.cache_service:
+            cache_key = f"conversation:semantic_search:{hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()}"
+            self.cache_service.set(cache_key, results, ttl=Config.CACHE_SEARCH_TTL)
+            logger.debug(f"Cached semantic search results (ttl={Config.CACHE_SEARCH_TTL}s)")
         
         return results
     
@@ -298,6 +370,13 @@ class ConversationService(IConversationService):
         """Refresh conversations from storage (useful after aggregation)"""
         logger.info("Refreshing conversations from storage")
         self.load_conversations()
+        
+        # Clear cache when conversations are refreshed
+        if self.cache_service:
+            # Clear summary and search caches
+            self.cache_service.delete("conversation:summary")
+            logger.info("Cleared conversation summary cache")
+        
         logger.info(f"Conversations refreshed: {len(self.conversations)}")
     
     def is_available(self) -> bool:

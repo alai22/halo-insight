@@ -65,4 +65,33 @@ class IConversationService(ABC):
         pass
 
 
+class ICacheService(ABC):
+    """Interface for cache services"""
+    
+    @abstractmethod
+    def get(self, key: str) -> Optional[Any]:
+        """Get a value from cache"""
+        pass
+    
+    @abstractmethod
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Set a value in cache with optional TTL (time to live in seconds)"""
+        pass
+    
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Delete a key from cache"""
+        pass
+    
+    @abstractmethod
+    def clear(self) -> None:
+        """Clear all cache entries"""
+        pass
+    
+    @abstractmethod
+    def exists(self, key: str) -> bool:
+        """Check if a key exists in cache"""
+        pass
+
+
 
