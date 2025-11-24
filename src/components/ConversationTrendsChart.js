@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { RefreshCw, AlertCircle, Info, CheckCircle } from 'lucide-react';
 import axios from 'axios';
@@ -286,17 +286,10 @@ const ConversationTrendsChart = () => {
     setCustomerSentimentTimeSeriesEndDate(sentimentTimeSeriesEndDate);
   }, [sentimentTimeSeriesStartDate, sentimentTimeSeriesEndDate]);
   
-  // Memoized sentiment chart data preparation
-  const prepareSentimentChartData = useCallback((data, sentiments, mode) => {
-    // Limit data points for performance (max 100)
-    // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
-    let dataToUse = data.length > 100 ? data.slice(-100) : data;
-    if (data.length > 100) {
-      console.warn(`Large sentiment dataset detected (${data.length} points). Showing most recent 100 points for performance.`);
-    }
-    
+  // Prepare sentiment chart data based on mode (count or percentage)
+  const prepareSentimentChartData = (data, sentiments, mode) => {
     if (mode === 'percentage') {
-      return dataToUse.map(day => {
+      return data.map(day => {
         const newDay = { ...day };
         sentiments.forEach(sentiment => {
           // Use percentage instead of count
@@ -306,24 +299,8 @@ const ConversationTrendsChart = () => {
         return newDay;
       });
     }
-    return dataToUse;
-  }, []);
-  
-  // Memoize sentiment chart data
-  // Remove prepareSentimentChartData from dependencies - it's a useCallback with empty deps, so it's stable
-  const sentimentChartData = useMemo(() => {
-    if (!sentimentTimeSeriesData || !Array.isArray(sentimentTimeSeriesData) || sentimentTimeSeriesData.length === 0) {
-      return [];
-    }
-    return prepareSentimentChartData(sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode);
-  }, [sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode]);
-  
-  const customerSentimentChartData = useMemo(() => {
-    if (!customerSentimentTimeSeriesData || !Array.isArray(customerSentimentTimeSeriesData) || customerSentimentTimeSeriesData.length === 0) {
-      return [];
-    }
-    return prepareSentimentChartData(customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode);
-  }, [customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode]);
+    return data;
+  };
 
   const formatDate = (dateStr) => {
     try {
@@ -360,8 +337,8 @@ const ConversationTrendsChart = () => {
     }
   };
 
-  // Group daily data by week - pass topics as parameter to avoid closure issues
-  const groupByWeek = useCallback((dailyData, topics) => {
+  // Group daily data by week
+  const groupByWeek = (dailyData) => {
     if (!dailyData || dailyData.length === 0) return [];
     
     const weeklyMap = {};
@@ -381,7 +358,7 @@ const ConversationTrendsChart = () => {
           total: 0
         };
         // Initialize all topic counts to 0
-        topics.forEach(topic => {
+        timeSeriesTopics.forEach(topic => {
           weeklyMap[weekKey][topic] = 0;
           weeklyMap[weekKey][`${topic}_percentage`] = 0;
         });
@@ -393,7 +370,7 @@ const ConversationTrendsChart = () => {
       }
       
       // Sum up topic counts for this week
-      topics.forEach(topic => {
+      timeSeriesTopics.forEach(topic => {
         weeklyMap[weekKey][topic] += day[topic] || 0;
       });
       weeklyMap[weekKey].total += day.total || 0;
@@ -401,7 +378,7 @@ const ConversationTrendsChart = () => {
     
     // Calculate percentages for each week
     Object.values(weeklyMap).forEach(week => {
-      topics.forEach(topic => {
+      timeSeriesTopics.forEach(topic => {
         const count = week[topic] || 0;
         const percentage = week.total > 0 ? (count / week.total * 100) : 0;
         week[`${topic}_percentage`] = Math.round(percentage * 100) / 100;
@@ -410,63 +387,19 @@ const ConversationTrendsChart = () => {
     
     // Convert to array and sort by week start date
     return Object.values(weeklyMap).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
-  }, []);
+  };
   
-  // Memoize groupByWeek to prevent recalculation on every render
-  // Use JSON.stringify for topics array comparison to avoid reference issues
-  const topicsKey = useMemo(() => JSON.stringify(timeSeriesTopics), [timeSeriesTopics]);
-  const groupedWeeklyData = useMemo(() => {
-    if (timeSeriesGroupBy === 'weekly' && timeSeriesData.length > 0 && timeSeriesTopics.length > 0) {
-      return groupByWeek(timeSeriesData, timeSeriesTopics);
-    }
-    return null;
-  }, [timeSeriesGroupBy, timeSeriesData, topicsKey, groupByWeek]);
-
-  // Calculate truncation info separately to avoid infinite loops
-  // Use primitive values in dependency arrays to prevent object reference issues
-  // Don't depend on groupedWeeklyData to avoid circular dependency - just use timeSeriesData length
-  const originalDataLength = useMemo(() => {
-    if (!timeSeriesData || !Array.isArray(timeSeriesData)) {
-      return 0;
-    }
-    return timeSeriesData.length;
-  }, [timeSeriesData]);
-
-  // Track if data was truncated for user notification (computed, not state)
-  const isDataTruncated = originalDataLength > 100;
-  const originalDataCount = originalDataLength;
-
   // Prepare chart data based on mode (count or percentage) and grouping (daily or weekly)
-  // Memoized to prevent expensive recalculations on every render
-  const prepareChartData = useMemo(() => {
-    // Safety check
-    if (!timeSeriesData || !Array.isArray(timeSeriesData)) {
-      return [];
+  const prepareChartData = () => {
+    let dataToUse = timeSeriesData;
+    
+    // Group by week if weekly view is selected
+    if (timeSeriesGroupBy === 'weekly') {
+      dataToUse = groupByWeek(timeSeriesData);
     }
     
-    let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
-      ? groupedWeeklyData 
-      : timeSeriesData;
-    
-    // Safety check for empty data
-    if (!dataToUse || dataToUse.length === 0) {
-      return [];
-    }
-    
-    // Limit data points for performance (max 100 data points)
-    // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
-    // Skip 'Total' row when limiting (it should always be included)
-    if (dataToUse.length > 100) {
-      const totalRow = dataToUse.find(d => d.date === 'Total');
-      const dataWithoutTotal = dataToUse.filter(d => d.date !== 'Total');
-      const recentData = dataWithoutTotal.slice(-100); // Most recent 100 points
-      dataToUse = totalRow ? [...recentData, totalRow] : recentData;
-      console.warn(`Large dataset detected (${originalDataLength} points). Showing most recent 100 points for performance.`);
-    }
-    
-    // Process data based on mode
-    if (timeSeriesMode === 'percentage' && timeSeriesTopics && timeSeriesTopics.length > 0) {
-      dataToUse = dataToUse.map(period => {
+    if (timeSeriesMode === 'percentage') {
+      return dataToUse.map(period => {
         const newPeriod = { ...period };
         timeSeriesTopics.forEach(topic => {
           // Use percentage instead of count, cap at 100% to prevent overflow
@@ -477,9 +410,8 @@ const ConversationTrendsChart = () => {
         return newPeriod;
       });
     }
-    
     return dataToUse;
-  }, [timeSeriesData, timeSeriesGroupBy, timeSeriesMode, timeSeriesTopics, groupedWeeklyData, originalDataLength]);
+  };
 
   // Show loading state until extraction status is loaded AND dates are initialized
   const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
@@ -598,29 +530,18 @@ const ConversationTrendsChart = () => {
     );
   }
 
-  // Memoize chart data preparation to prevent recalculation on every render
-  // Add safety check to prevent errors if data is undefined
-  const chartData = useMemo(() => {
-    if (!data || !Array.isArray(data) || data.length === 0) {
-      return [];
-    }
-    return data.map(item => ({
-      topic: item.topic,
-      count: item.count,
-      percentage: item.percentage
-    }));
-  }, [data]);
+  // Prepare data for charts
+  const chartData = data.map(item => ({
+    topic: item.topic,
+    count: item.count,
+    percentage: item.percentage
+  }));
 
-  // Memoize pie chart data
-  const pieData = useMemo(() => {
-    if (!chartData || chartData.length === 0) {
-      return [];
-    }
-    return chartData.map(item => ({
-      name: item.topic,
-      value: item.percentage
-    }));
-  }, [chartData]);
+  // For pie chart, we need the data in the right format
+  const pieData = chartData.map(item => ({
+    name: item.topic,
+    value: item.percentage
+  }));
 
   return (
     <div className="flex flex-col p-4 bg-white" style={{ minHeight: '100vh' }}>
@@ -717,22 +638,6 @@ const ConversationTrendsChart = () => {
           </div>
         </div>
 
-        {/* Data truncation warning */}
-        {isDataTruncated && originalDataCount > 0 && (
-          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <div className="flex items-start">
-              <Info className="h-5 w-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="text-sm text-yellow-800">
-                  <strong>Performance Notice:</strong> Large dataset detected ({originalDataCount} data points). 
-                  Showing the most recent 100 points for optimal performance. 
-                  To see all data, reduce the date range or use weekly grouping.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
         {timeSeriesLoading ? (
           <div className="flex items-center justify-center h-96 border border-gray-200 rounded-lg bg-gray-50">
             <div className="text-center">
@@ -767,10 +672,10 @@ const ConversationTrendsChart = () => {
         ) : (
           <div style={{ height: '600px', flexShrink: 0 }}>
             <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={prepareChartData}
-                        margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
-                      >
+              <BarChart
+                data={prepareChartData()}
+                margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis 
                   dataKey="date" 
@@ -1194,7 +1099,7 @@ const ConversationTrendsChart = () => {
                   <div style={{ height: '500px' }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
-                        data={sentimentChartData}
+                        data={prepareSentimentChartData(sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode)}
                         margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -1320,7 +1225,7 @@ const ConversationTrendsChart = () => {
                   <div style={{ height: '500px' }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
-                        data={customerSentimentChartData}
+                        data={prepareSentimentChartData(customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode)}
                         margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
