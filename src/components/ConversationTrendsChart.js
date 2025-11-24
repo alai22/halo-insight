@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { RefreshCw, AlertCircle, Info, CheckCircle } from 'lucide-react';
 import axios from 'axios';
@@ -286,10 +286,17 @@ const ConversationTrendsChart = () => {
     setCustomerSentimentTimeSeriesEndDate(sentimentTimeSeriesEndDate);
   }, [sentimentTimeSeriesStartDate, sentimentTimeSeriesEndDate]);
   
-  // Prepare sentiment chart data based on mode (count or percentage)
-  const prepareSentimentChartData = (data, sentiments, mode) => {
+  // Memoized sentiment chart data preparation
+  const prepareSentimentChartData = useCallback((data, sentiments, mode) => {
+    // Limit data points for performance (max 100)
+    // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
+    let dataToUse = data.length > 100 ? data.slice(-100) : data;
+    if (data.length > 100) {
+      console.warn(`Large sentiment dataset detected (${data.length} points). Showing most recent 100 points for performance.`);
+    }
+    
     if (mode === 'percentage') {
-      return data.map(day => {
+      return dataToUse.map(day => {
         const newDay = { ...day };
         sentiments.forEach(sentiment => {
           // Use percentage instead of count
@@ -299,8 +306,17 @@ const ConversationTrendsChart = () => {
         return newDay;
       });
     }
-    return data;
-  };
+    return dataToUse;
+  }, []);
+  
+  // Memoize sentiment chart data
+  const sentimentChartData = useMemo(() => {
+    return prepareSentimentChartData(sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode);
+  }, [sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode, prepareSentimentChartData]);
+  
+  const customerSentimentChartData = useMemo(() => {
+    return prepareSentimentChartData(customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode);
+  }, [customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode, prepareSentimentChartData]);
 
   const formatDate = (dateStr) => {
     try {
@@ -389,17 +405,41 @@ const ConversationTrendsChart = () => {
     return Object.values(weeklyMap).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
   };
   
+  // Memoize groupByWeek to prevent recalculation on every render
+  const groupedWeeklyData = useMemo(() => {
+    if (timeSeriesGroupBy === 'weekly' && timeSeriesData.length > 0) {
+      return groupByWeek(timeSeriesData);
+    }
+    return null;
+  }, [timeSeriesGroupBy, timeSeriesData, timeSeriesTopics]);
+
+  // Track if data was truncated for user notification
+  const [isDataTruncated, setIsDataTruncated] = useState(false);
+  const [originalDataCount, setOriginalDataCount] = useState(0);
+
   // Prepare chart data based on mode (count or percentage) and grouping (daily or weekly)
-  const prepareChartData = () => {
-    let dataToUse = timeSeriesData;
+  // Memoized to prevent expensive recalculations on every render
+  const prepareChartData = useMemo(() => {
+    let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
+      ? groupedWeeklyData 
+      : timeSeriesData;
     
-    // Group by week if weekly view is selected
-    if (timeSeriesGroupBy === 'weekly') {
-      dataToUse = groupByWeek(timeSeriesData);
+    const originalLength = dataToUse.length;
+    
+    // Limit data points for performance (max 100 data points)
+    // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
+    // Skip 'Total' row when limiting (it should always be included)
+    if (dataToUse.length > 100) {
+      const totalRow = dataToUse.find(d => d.date === 'Total');
+      const dataWithoutTotal = dataToUse.filter(d => d.date !== 'Total');
+      const recentData = dataWithoutTotal.slice(-100); // Most recent 100 points
+      dataToUse = totalRow ? [...recentData, totalRow] : recentData;
+      console.warn(`Large dataset detected (${originalLength} points). Showing most recent 100 points for performance.`);
     }
     
+    // Process data based on mode
     if (timeSeriesMode === 'percentage') {
-      return dataToUse.map(period => {
+      dataToUse = dataToUse.map(period => {
         const newPeriod = { ...period };
         timeSeriesTopics.forEach(topic => {
           // Use percentage instead of count, cap at 100% to prevent overflow
@@ -410,8 +450,15 @@ const ConversationTrendsChart = () => {
         return newPeriod;
       });
     }
-    return dataToUse;
-  };
+    
+    return { data: dataToUse, originalLength, wasTruncated: originalLength > 100 };
+  }, [timeSeriesData, timeSeriesGroupBy, timeSeriesMode, timeSeriesTopics, groupedWeeklyData]);
+
+  // Update truncation state when data changes
+  useEffect(() => {
+    setIsDataTruncated(prepareChartData.wasTruncated);
+    setOriginalDataCount(prepareChartData.originalLength);
+  }, [prepareChartData]);
 
   // Show loading state until extraction status is loaded AND dates are initialized
   const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
@@ -530,18 +577,22 @@ const ConversationTrendsChart = () => {
     );
   }
 
-  // Prepare data for charts
-  const chartData = data.map(item => ({
-    topic: item.topic,
-    count: item.count,
-    percentage: item.percentage
-  }));
+  // Memoize chart data preparation to prevent recalculation on every render
+  const chartData = useMemo(() => {
+    return data.map(item => ({
+      topic: item.topic,
+      count: item.count,
+      percentage: item.percentage
+    }));
+  }, [data]);
 
-  // For pie chart, we need the data in the right format
-  const pieData = chartData.map(item => ({
-    name: item.topic,
-    value: item.percentage
-  }));
+  // Memoize pie chart data
+  const pieData = useMemo(() => {
+    return chartData.map(item => ({
+      name: item.topic,
+      value: item.percentage
+    }));
+  }, [chartData]);
 
   return (
     <div className="flex flex-col p-4 bg-white" style={{ minHeight: '100vh' }}>
@@ -638,6 +689,22 @@ const ConversationTrendsChart = () => {
           </div>
         </div>
 
+        {/* Data truncation warning */}
+        {isDataTruncated && originalDataCount > 0 && (
+          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <div className="flex items-start">
+              <Info className="h-5 w-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-yellow-800">
+                  <strong>Performance Notice:</strong> Large dataset detected ({originalDataCount} data points). 
+                  Showing the most recent 100 points for optimal performance. 
+                  To see all data, reduce the date range or use weekly grouping.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {timeSeriesLoading ? (
           <div className="flex items-center justify-center h-96 border border-gray-200 rounded-lg bg-gray-50">
             <div className="text-center">
@@ -672,10 +739,10 @@ const ConversationTrendsChart = () => {
         ) : (
           <div style={{ height: '600px', flexShrink: 0 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={prepareChartData()}
-                margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
-              >
+                      <BarChart
+                        data={prepareChartData.data}
+                        margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
+                      >
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis 
                   dataKey="date" 
@@ -1099,7 +1166,7 @@ const ConversationTrendsChart = () => {
                   <div style={{ height: '500px' }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
-                        data={prepareSentimentChartData(sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode)}
+                        data={sentimentChartData}
                         margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -1225,7 +1292,7 @@ const ConversationTrendsChart = () => {
                   <div style={{ height: '500px' }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
-                        data={prepareSentimentChartData(customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode)}
+                        data={customerSentimentChartData}
                         margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
