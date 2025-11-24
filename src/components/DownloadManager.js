@@ -363,6 +363,7 @@ const DownloadManager = () => {
   };
 
   return (
+    <>
     <div className="max-w-6xl mx-auto p-6">
       <div className="bg-white rounded-lg shadow-lg">
         <div className="px-6 py-4 border-b border-gray-200">
@@ -1148,7 +1149,8 @@ const DownloadManager = () => {
         </div>
       )}
     </div>
-    );
+    </>
+  );
   };
   
   export default DownloadManager;
