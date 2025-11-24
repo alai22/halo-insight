@@ -413,9 +413,18 @@ const ConversationTrendsChart = () => {
     return null;
   }, [timeSeriesGroupBy, timeSeriesData, timeSeriesTopics]);
 
-  // Track if data was truncated for user notification
-  const [isDataTruncated, setIsDataTruncated] = useState(false);
-  const [originalDataCount, setOriginalDataCount] = useState(0);
+  // Calculate truncation info separately to avoid infinite loops
+  // Use primitive values in dependency arrays to prevent object reference issues
+  const originalDataLength = useMemo(() => {
+    let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
+      ? groupedWeeklyData 
+      : timeSeriesData;
+    return dataToUse.length;
+  }, [timeSeriesData, timeSeriesGroupBy, groupedWeeklyData]);
+
+  // Track if data was truncated for user notification (computed, not state)
+  const isDataTruncated = originalDataLength > 100;
+  const originalDataCount = originalDataLength;
 
   // Prepare chart data based on mode (count or percentage) and grouping (daily or weekly)
   // Memoized to prevent expensive recalculations on every render
@@ -423,8 +432,6 @@ const ConversationTrendsChart = () => {
     let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
       ? groupedWeeklyData 
       : timeSeriesData;
-    
-    const originalLength = dataToUse.length;
     
     // Limit data points for performance (max 100 data points)
     // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
@@ -434,7 +441,7 @@ const ConversationTrendsChart = () => {
       const dataWithoutTotal = dataToUse.filter(d => d.date !== 'Total');
       const recentData = dataWithoutTotal.slice(-100); // Most recent 100 points
       dataToUse = totalRow ? [...recentData, totalRow] : recentData;
-      console.warn(`Large dataset detected (${originalLength} points). Showing most recent 100 points for performance.`);
+      console.warn(`Large dataset detected (${originalDataLength} points). Showing most recent 100 points for performance.`);
     }
     
     // Process data based on mode
@@ -451,14 +458,8 @@ const ConversationTrendsChart = () => {
       });
     }
     
-    return { data: dataToUse, originalLength, wasTruncated: originalLength > 100 };
-  }, [timeSeriesData, timeSeriesGroupBy, timeSeriesMode, timeSeriesTopics, groupedWeeklyData]);
-
-  // Update truncation state when data changes
-  useEffect(() => {
-    setIsDataTruncated(prepareChartData.wasTruncated);
-    setOriginalDataCount(prepareChartData.originalLength);
-  }, [prepareChartData]);
+    return dataToUse;
+  }, [timeSeriesData, timeSeriesGroupBy, timeSeriesMode, timeSeriesTopics, groupedWeeklyData, originalDataLength]);
 
   // Show loading state until extraction status is loaded AND dates are initialized
   const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
@@ -740,7 +741,7 @@ const ConversationTrendsChart = () => {
           <div style={{ height: '600px', flexShrink: 0 }}>
             <ResponsiveContainer width="100%" height="100%">
                       <BarChart
-                        data={prepareChartData.data}
+                        data={prepareChartData}
                         margin={{ top: 10, right: 30, left: 20, bottom: 100 }}
                       >
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
