@@ -798,12 +798,30 @@ const ConversationTrendsChart = () => {
                   content={({ payload }) => {
                     if (!payload || payload.length === 0) return null;
                     
-                    // Sort payload by total count (highest to lowest) to match bar chart order
-                    const sortedPayload = [...payload].sort((a, b) => {
-                      const totalA = topicTotals[a.dataKey] || 0;
-                      const totalB = topicTotals[b.dataKey] || 0;
-                      return totalB - totalA; // Descending order
+                    // Create a map of payload items by dataKey for quick lookup
+                    const payloadMap = {};
+                    payload.forEach(entry => {
+                      payloadMap[entry.dataKey] = entry;
                     });
+                    
+                    // Sort payload by the order in timeSeriesTopics (which is already sorted by total count descending)
+                    // This ensures the legend matches the bar chart order exactly
+                    const sortedPayload = timeSeriesTopics
+                      .filter(topic => payloadMap[topic]) // Only include topics that exist in payload
+                      .map(topic => payloadMap[topic]);
+                    
+                    // If there are any payload items not in timeSeriesTopics, add them at the end
+                    const remainingPayload = payload.filter(entry => !timeSeriesTopics.includes(entry.dataKey));
+                    if (remainingPayload.length > 0) {
+                      // Sort remaining items by total count descending as fallback
+                      const totalsToUse = Object.keys(topicTotals).length > 0 ? topicTotals : {};
+                      remainingPayload.sort((a, b) => {
+                        const totalA = totalsToUse[a.dataKey] || 0;
+                        const totalB = totalsToUse[b.dataKey] || 0;
+                        return totalB - totalA;
+                      });
+                      sortedPayload.push(...remainingPayload);
+                    }
                     
                     // Use CSS Grid with auto-fit for fluid, responsive layout
                     // Calculate optimal min column width based on longest label
