@@ -50,6 +50,7 @@ const ConversationTrendsChart = () => {
   const [timeSeriesMode, setTimeSeriesMode] = useState('percentage'); // 'count' or 'percentage'
   const [timeSeriesGroupBy, setTimeSeriesGroupBy] = useState('daily'); // 'daily' or 'weekly'
   const [topicTotals, setTopicTotals] = useState({});
+  const [datesInitialized, setDatesInitialized] = useState(false);
 
   // Google Sheets style: Fixed hue sequence repeated at progressively lower saturation levels
   // Sequence: Blue, Red, Yellow, Green, Orange, Purple, Teal (repeated 3 times with decreasing saturation)
@@ -139,40 +140,37 @@ const ConversationTrendsChart = () => {
   }, []);
 
   // Set default date range when extraction status is loaded
+  // Set ALL dates in one batch to prevent race conditions
   useEffect(() => {
     const statusEntries = Object.keys(extractionStatus).sort();
-    if (statusEntries.length > 0) {
+    if (statusEntries.length > 0 && !datesInitialized) {
       const firstDate = statusEntries[0];
       const lastDate = statusEntries[statusEntries.length - 1];
       
-      // Set topics time-series default dates
-      if (timeSeriesStartDate === '2025-10-20' && timeSeriesEndDate === '2025-10-25') {
-        setTimeSeriesStartDate(firstDate);
-        setTimeSeriesEndDate(lastDate);
-      }
-      
-      // Set sentiment time-series default dates
-      if (!sentimentTimeSeriesStartDate || !sentimentTimeSeriesEndDate) {
-        setSentimentTimeSeriesStartDate(firstDate);
-        setSentimentTimeSeriesEndDate(lastDate);
-      }
-      
-      // Set customer sentiment time-series default dates
-      if (!customerSentimentTimeSeriesStartDate || !customerSentimentTimeSeriesEndDate) {
-        setCustomerSentimentTimeSeriesStartDate(firstDate);
-        setCustomerSentimentTimeSeriesEndDate(lastDate);
-      }
+      // Set ALL dates in one batch to prevent multiple re-renders and race conditions
+      setTimeSeriesStartDate(firstDate);
+      setTimeSeriesEndDate(lastDate);
+      setSentimentTimeSeriesStartDate(firstDate);
+      setSentimentTimeSeriesEndDate(lastDate);
+      setCustomerSentimentTimeSeriesStartDate(firstDate);
+      setCustomerSentimentTimeSeriesEndDate(lastDate);
       
       // Also set the single date picker to the first available date
       if (date === '2025-10-20') {
         setDate(firstDate);
       }
+      
+      // Mark dates as initialized to prevent re-running this effect
+      setDatesInitialized(true);
     }
-  }, [extractionStatus]);
+  }, [extractionStatus, datesInitialized, date]);
 
   useEffect(() => {
-    fetchTopicTrends();
-  }, [date]);
+    // Only fetch if dates have been initialized (prevents race condition on initial load)
+    if (datesInitialized && date) {
+      fetchTopicTrends();
+    }
+  }, [date, datesInitialized]);
 
   const fetchTopicTrendsOverTime = async () => {
     setTimeSeriesLoading(true);
@@ -239,10 +237,11 @@ const ConversationTrendsChart = () => {
   };
 
   useEffect(() => {
-    if (timeSeriesStartDate && timeSeriesEndDate && timeSeriesStartDate <= timeSeriesEndDate) {
+    // Only fetch if dates have been initialized (prevents race condition on initial load)
+    if (datesInitialized && timeSeriesStartDate && timeSeriesEndDate && timeSeriesStartDate <= timeSeriesEndDate) {
       fetchTopicTrendsOverTime();
     }
-  }, [timeSeriesStartDate, timeSeriesEndDate]);
+  }, [timeSeriesStartDate, timeSeriesEndDate, datesInitialized]);
 
   const fetchSentimentTrendsOverTime = async () => {
     setSentimentTimeSeriesLoading(true);
@@ -275,10 +274,11 @@ const ConversationTrendsChart = () => {
   };
 
   useEffect(() => {
-    if (sentimentTimeSeriesStartDate && sentimentTimeSeriesEndDate && sentimentTimeSeriesStartDate <= sentimentTimeSeriesEndDate) {
+    // Only fetch if dates have been initialized (prevents race condition on initial load)
+    if (datesInitialized && sentimentTimeSeriesStartDate && sentimentTimeSeriesEndDate && sentimentTimeSeriesStartDate <= sentimentTimeSeriesEndDate) {
       fetchSentimentTrendsOverTime();
     }
-  }, [sentimentTimeSeriesStartDate, sentimentTimeSeriesEndDate]);
+  }, [sentimentTimeSeriesStartDate, sentimentTimeSeriesEndDate, datesInitialized]);
   
   // Sync customer sentiment dates with overall sentiment dates
   useEffect(() => {
@@ -413,12 +413,15 @@ const ConversationTrendsChart = () => {
     return dataToUse;
   };
 
-  if (statusLoading) {
+  // Show loading state until extraction status is loaded AND dates are initialized
+  const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
+  
+  if (isInitialLoading) {
     return (
       <div className="flex items-center justify-center h-full p-8">
         <div className="text-center">
           <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading extraction status...</p>
+          <p className="text-gray-600">Loading conversation trends...</p>
         </div>
       </div>
     );
