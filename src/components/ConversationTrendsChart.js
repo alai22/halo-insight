@@ -413,6 +413,37 @@ const ConversationTrendsChart = () => {
     return dataToUse;
   };
 
+  // Calculate dynamic y-axis domain for percentage mode based on actual data range
+  const getPercentageDomain = () => {
+    if (timeSeriesMode !== 'percentage') {
+      return [0, 'auto'];
+    }
+    
+    const chartData = prepareChartData();
+    if (!chartData || chartData.length === 0) {
+      return [0, 100];
+    }
+    
+    // Find the maximum percentage value across all topics and all periods
+    let maxPercentage = 0;
+    chartData.forEach(period => {
+      if (period.date === 'Total') return; // Skip total row
+      timeSeriesTopics.forEach(topic => {
+        const value = period[topic] || 0;
+        if (value > maxPercentage) {
+          maxPercentage = value;
+        }
+      });
+    });
+    
+    // Add 10% padding, but cap at 100%
+    const paddedMax = Math.min(maxPercentage * 1.1, 100);
+    // Ensure minimum domain of [0, 5] for visibility even with very small values
+    const domainMax = Math.max(paddedMax, 5);
+    
+    return [0, domainMax];
+  };
+
   // Show loading state until extraction status is loaded AND dates are initialized
   const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
   
@@ -692,8 +723,8 @@ const ConversationTrendsChart = () => {
                     position: 'insideLeft' 
                   }}
                   tick={{ fontSize: 12 }}
-                  domain={timeSeriesMode === 'percentage' ? [0, 100] : [0, 'auto']}
-                  tickFormatter={timeSeriesMode === 'percentage' ? (value) => `${value}%` : undefined}
+                  domain={getPercentageDomain()}
+                  tickFormatter={timeSeriesMode === 'percentage' ? (value) => `${value.toFixed(1)}%` : undefined}
                   allowDataOverflow={false}
                 />
                 <Tooltip 
