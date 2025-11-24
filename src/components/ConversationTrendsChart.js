@@ -413,36 +413,6 @@ const ConversationTrendsChart = () => {
     return dataToUse;
   };
 
-  // Calculate dynamic y-axis domain for percentage mode based on actual data range
-  const getPercentageDomain = () => {
-    if (timeSeriesMode !== 'percentage') {
-      return [0, 'auto'];
-    }
-    
-    const chartData = prepareChartData();
-    if (!chartData || chartData.length === 0) {
-      return [0, 100];
-    }
-    
-    // Find the maximum percentage value across all topics and all periods
-    let maxPercentage = 0;
-    chartData.forEach(period => {
-      if (period.date === 'Total') return; // Skip total row
-      timeSeriesTopics.forEach(topic => {
-        const value = period[topic] || 0;
-        if (value > maxPercentage) {
-          maxPercentage = value;
-        }
-      });
-    });
-    
-    // Add 10% padding, but cap at 100%
-    const paddedMax = Math.min(maxPercentage * 1.1, 100);
-    // Ensure minimum domain of [0, 5] for visibility even with very small values
-    const domainMax = Math.max(paddedMax, 5);
-    
-    return [0, domainMax];
-  };
 
   // Show loading state until extraction status is loaded AND dates are initialized
   const isInitialLoading = statusLoading || (Object.keys(extractionStatus).length > 0 && !datesInitialized);
@@ -701,7 +671,7 @@ const ConversationTrendsChart = () => {
             </div>
           </div>
         ) : (
-          <div style={{ height: '600px', flexShrink: 0 }}>
+          <div style={{ height: '900px', flexShrink: 0 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
                 data={prepareChartData()}
@@ -723,8 +693,8 @@ const ConversationTrendsChart = () => {
                     position: 'insideLeft' 
                   }}
                   tick={{ fontSize: 12 }}
-                  domain={getPercentageDomain()}
-                  tickFormatter={timeSeriesMode === 'percentage' ? (value) => `${value.toFixed(1)}%` : undefined}
+                  domain={timeSeriesMode === 'percentage' ? [0, 100] : [0, 'auto']}
+                  tickFormatter={timeSeriesMode === 'percentage' ? (value) => `${value}%` : undefined}
                   allowDataOverflow={false}
                 />
                 <Tooltip 
@@ -926,7 +896,7 @@ const ConversationTrendsChart = () => {
       </div>
 
       {/* Chart */}
-      <div style={{ height: '600px', flexShrink: 0 }}>
+      <div style={{ height: '900px', flexShrink: 0 }}>
         <ResponsiveContainer width="100%" height="100%">
           {chartType === 'bar' ? (
             <BarChart
