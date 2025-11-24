@@ -310,13 +310,20 @@ const ConversationTrendsChart = () => {
   }, []);
   
   // Memoize sentiment chart data
+  // Remove prepareSentimentChartData from dependencies - it's a useCallback with empty deps, so it's stable
   const sentimentChartData = useMemo(() => {
+    if (!sentimentTimeSeriesData || !Array.isArray(sentimentTimeSeriesData) || sentimentTimeSeriesData.length === 0) {
+      return [];
+    }
     return prepareSentimentChartData(sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode);
-  }, [sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode, prepareSentimentChartData]);
+  }, [sentimentTimeSeriesData, sentimentTimeSeriesSentiments, sentimentTimeSeriesMode]);
   
   const customerSentimentChartData = useMemo(() => {
+    if (!customerSentimentTimeSeriesData || !Array.isArray(customerSentimentTimeSeriesData) || customerSentimentTimeSeriesData.length === 0) {
+      return [];
+    }
     return prepareSentimentChartData(customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode);
-  }, [customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode, prepareSentimentChartData]);
+  }, [customerSentimentTimeSeriesData, customerSentimentTimeSeriesSentiments, customerSentimentTimeSeriesMode]);
 
   const formatDate = (dateStr) => {
     try {
@@ -353,8 +360,8 @@ const ConversationTrendsChart = () => {
     }
   };
 
-  // Group daily data by week
-  const groupByWeek = (dailyData) => {
+  // Group daily data by week - pass topics as parameter to avoid closure issues
+  const groupByWeek = useCallback((dailyData, topics) => {
     if (!dailyData || dailyData.length === 0) return [];
     
     const weeklyMap = {};
@@ -374,7 +381,7 @@ const ConversationTrendsChart = () => {
           total: 0
         };
         // Initialize all topic counts to 0
-        timeSeriesTopics.forEach(topic => {
+        topics.forEach(topic => {
           weeklyMap[weekKey][topic] = 0;
           weeklyMap[weekKey][`${topic}_percentage`] = 0;
         });
@@ -386,7 +393,7 @@ const ConversationTrendsChart = () => {
       }
       
       // Sum up topic counts for this week
-      timeSeriesTopics.forEach(topic => {
+      topics.forEach(topic => {
         weeklyMap[weekKey][topic] += day[topic] || 0;
       });
       weeklyMap[weekKey].total += day.total || 0;
@@ -394,7 +401,7 @@ const ConversationTrendsChart = () => {
     
     // Calculate percentages for each week
     Object.values(weeklyMap).forEach(week => {
-      timeSeriesTopics.forEach(topic => {
+      topics.forEach(topic => {
         const count = week[topic] || 0;
         const percentage = week.total > 0 ? (count / week.total * 100) : 0;
         week[`${topic}_percentage`] = Math.round(percentage * 100) / 100;
@@ -403,24 +410,27 @@ const ConversationTrendsChart = () => {
     
     // Convert to array and sort by week start date
     return Object.values(weeklyMap).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
-  };
+  }, []);
   
   // Memoize groupByWeek to prevent recalculation on every render
+  // Use JSON.stringify for topics array comparison to avoid reference issues
+  const topicsKey = useMemo(() => JSON.stringify(timeSeriesTopics), [timeSeriesTopics]);
   const groupedWeeklyData = useMemo(() => {
-    if (timeSeriesGroupBy === 'weekly' && timeSeriesData.length > 0) {
-      return groupByWeek(timeSeriesData);
+    if (timeSeriesGroupBy === 'weekly' && timeSeriesData.length > 0 && timeSeriesTopics.length > 0) {
+      return groupByWeek(timeSeriesData, timeSeriesTopics);
     }
     return null;
-  }, [timeSeriesGroupBy, timeSeriesData, timeSeriesTopics]);
+  }, [timeSeriesGroupBy, timeSeriesData, topicsKey, groupByWeek]);
 
   // Calculate truncation info separately to avoid infinite loops
   // Use primitive values in dependency arrays to prevent object reference issues
+  // Don't depend on groupedWeeklyData to avoid circular dependency - just use timeSeriesData length
   const originalDataLength = useMemo(() => {
-    let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
-      ? groupedWeeklyData 
-      : timeSeriesData;
-    return dataToUse.length;
-  }, [timeSeriesData, timeSeriesGroupBy, groupedWeeklyData]);
+    if (!timeSeriesData || !Array.isArray(timeSeriesData)) {
+      return 0;
+    }
+    return timeSeriesData.length;
+  }, [timeSeriesData]);
 
   // Track if data was truncated for user notification (computed, not state)
   const isDataTruncated = originalDataLength > 100;
@@ -429,9 +439,19 @@ const ConversationTrendsChart = () => {
   // Prepare chart data based on mode (count or percentage) and grouping (daily or weekly)
   // Memoized to prevent expensive recalculations on every render
   const prepareChartData = useMemo(() => {
+    // Safety check
+    if (!timeSeriesData || !Array.isArray(timeSeriesData)) {
+      return [];
+    }
+    
     let dataToUse = timeSeriesGroupBy === 'weekly' && groupedWeeklyData 
       ? groupedWeeklyData 
       : timeSeriesData;
+    
+    // Safety check for empty data
+    if (!dataToUse || dataToUse.length === 0) {
+      return [];
+    }
     
     // Limit data points for performance (max 100 data points)
     // Use MOST RECENT 100 points (slice(-100)) to preserve latest data
@@ -445,7 +465,7 @@ const ConversationTrendsChart = () => {
     }
     
     // Process data based on mode
-    if (timeSeriesMode === 'percentage') {
+    if (timeSeriesMode === 'percentage' && timeSeriesTopics && timeSeriesTopics.length > 0) {
       dataToUse = dataToUse.map(period => {
         const newPeriod = { ...period };
         timeSeriesTopics.forEach(topic => {
@@ -579,7 +599,11 @@ const ConversationTrendsChart = () => {
   }
 
   // Memoize chart data preparation to prevent recalculation on every render
+  // Add safety check to prevent errors if data is undefined
   const chartData = useMemo(() => {
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return [];
+    }
     return data.map(item => ({
       topic: item.topic,
       count: item.count,
@@ -589,6 +613,9 @@ const ConversationTrendsChart = () => {
 
   // Memoize pie chart data
   const pieData = useMemo(() => {
+    if (!chartData || chartData.length === 0) {
+      return [];
+    }
     return chartData.map(item => ({
       name: item.topic,
       value: item.percentage
