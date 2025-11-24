@@ -49,6 +49,7 @@ const ConversationTrendsChart = () => {
   const [timeSeriesEndDate, setTimeSeriesEndDate] = useState('2025-10-25');
   const [timeSeriesMode, setTimeSeriesMode] = useState('percentage'); // 'count' or 'percentage'
   const [timeSeriesGroupBy, setTimeSeriesGroupBy] = useState('daily'); // 'daily' or 'weekly'
+  const [topicTotals, setTopicTotals] = useState({});
 
   // Google Sheets style: Fixed hue sequence repeated at progressively lower saturation levels
   // Sequence: Blue, Red, Yellow, Green, Orange, Purple, Teal (repeated 3 times with decreasing saturation)
@@ -217,8 +218,10 @@ const ConversationTrendsChart = () => {
           });
           
           setTimeSeriesTopics(sortedTopics);
+          setTopicTotals(topicTotals);
         } else {
           setTimeSeriesTopics(topics);
+          setTopicTotals({});
         }
         
         setTimeSeriesData(chartData);
@@ -789,7 +792,70 @@ const ConversationTrendsChart = () => {
                   iconType="rect"
                   iconSize={14}
                   formatter={(value) => {
-                    return value.length > 30 ? value.substring(0, 27) + '...' : value;
+                    // Truncate long labels but keep them readable
+                    return value.length > 35 ? value.substring(0, 32) + '...' : value;
+                  }}
+                  content={({ payload }) => {
+                    if (!payload || payload.length === 0) return null;
+                    
+                    // Sort payload by total count (highest to lowest) to match bar chart order
+                    const sortedPayload = [...payload].sort((a, b) => {
+                      const totalA = topicTotals[a.dataKey] || 0;
+                      const totalB = topicTotals[b.dataKey] || 0;
+                      return totalB - totalA; // Descending order
+                    });
+                    
+                    // Use CSS Grid with auto-fit for fluid, responsive layout
+                    // Calculate optimal min column width based on longest label
+                    const maxLabelLength = Math.max(...sortedPayload.map(entry => entry.value.length));
+                    // Estimate width: ~8px per character + icon + padding
+                    const estimatedItemWidth = Math.max(200, maxLabelLength * 8 + 50);
+                    
+                    return (
+                      <div style={{ 
+                        display: 'grid', 
+                        gridTemplateColumns: `repeat(auto-fit, minmax(${estimatedItemWidth}px, 1fr))`,
+                        gap: '20px 30px',
+                        padding: '12px 20px 8px 20px',
+                        backgroundColor: '#f9fafb',
+                        borderRadius: '8px',
+                        marginTop: '10px',
+                        width: '100%'
+                      }}>
+                        {sortedPayload.map((entry, index) => (
+                          <div 
+                            key={`legend-item-${index}`}
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'flex-start', 
+                              gap: '10px',
+                              fontSize: '13px',
+                              lineHeight: '1.6',
+                              padding: '4px 0'
+                            }}
+                          >
+                            <div 
+                              style={{ 
+                                width: '16px', 
+                                height: '16px', 
+                                backgroundColor: entry.color,
+                                borderRadius: '3px',
+                                flexShrink: 0,
+                                marginTop: '2px',
+                                border: '1px solid rgba(0, 0, 0, 0.1)'
+                              }} 
+                            />
+                            <span style={{ 
+                              color: '#1f2937',
+                              fontWeight: '500',
+                              wordBreak: 'break-word'
+                            }}>
+                              {entry.value}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    );
                   }}
                 />
                 {timeSeriesTopics.map((topic, index) => (
