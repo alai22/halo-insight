@@ -1148,7 +1148,6 @@ const DownloadManager = () => {
           </div>
         </div>
       )}
-    </div>
     </>
   );
   };
