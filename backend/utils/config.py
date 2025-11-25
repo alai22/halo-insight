@@ -84,6 +84,11 @@ class Config:
     GLADLY_API_KEY: Optional[str] = os.getenv('GLADLY_API_KEY')
     GLADLY_AGENT_EMAIL: Optional[str] = os.getenv('GLADLY_AGENT_EMAIL')
     
+    # Zoom API Configuration
+    ZOOM_ACCOUNT_ID: Optional[str] = os.getenv('ZOOM_ACCOUNT_ID')
+    ZOOM_CLIENT_ID: Optional[str] = os.getenv('ZOOM_CLIENT_ID')
+    ZOOM_CLIENT_SECRET: Optional[str] = os.getenv('ZOOM_CLIENT_SECRET')
+    
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')
     S3_BUCKET_NAME: Optional[str] = os.getenv('S3_BUCKET_NAME')

@@ -266,3 +266,19 @@ class IAuthService(ABC):
         pass
 
 
+class IZoomDownloadService(ABC):
+    """Interface for Zoom download service"""
+    
+    @abstractmethod
+    def download_chat_messages(self, start_date: str, end_date: str, 
+                               progress_callback: Optional[Callable] = None,
+                               max_duration_minutes: int = 30) -> None:
+        """Download chat messages for a date range"""
+        pass
+    
+    @abstractmethod
+    def get_download_statistics(self) -> Dict:
+        """Get download statistics"""
+        pass
+
+

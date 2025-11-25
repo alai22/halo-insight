@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..core.interfaces import (
         ICacheService, IStorageService, IClaudeService, IConversationService,
         IRAGService, ISurvicateRAGService, ISurveyService, IGladlyDownloadService,
-        ITopicExtractionService, ITopicStorageService, IAuthService
+        IZoomDownloadService, ITopicExtractionService, ITopicStorageService, IAuthService
     )
 
 from ..utils.logging import get_logger
@@ -37,6 +37,7 @@ class ServiceContainer:
         self._conversation_service: Optional['IConversationService'] = None
         self._rag_service: Optional['IRAGService'] = None
         self._gladly_download_service: Optional['IGladlyDownloadService'] = None
+        self._zoom_download_service: Optional['IZoomDownloadService'] = None
         self._survey_service: Optional['ISurveyService'] = None
         self._survicate_rag_service: Optional['ISurvicateRAGService'] = None
         
@@ -249,6 +250,37 @@ class ServiceContainer:
         
         return self._gladly_download_service
     
+    # Zoom Download Service
+    def get_zoom_download_service(self, override: Optional['IZoomDownloadService'] = None) -> Optional['IZoomDownloadService']:
+        """
+        Get or create the ZoomDownloadService instance.
+        
+        Args:
+            override: Optional service instance to use instead (for testing)
+            
+        Returns:
+            ZoomDownloadService instance or None if initialization fails
+        """
+        if override is not None:
+            self._overrides['zoom_download_service'] = override
+            self._zoom_download_service = override
+            return override
+        
+        if 'zoom_download_service' in self._overrides:
+            return self._overrides.get('zoom_download_service')
+        
+        if self._zoom_download_service is None:
+            try:
+                # Lazy import to avoid circular dependencies
+                from ..services.zoom_download_service import ZoomDownloadService
+                logger.debug("Creating ZoomDownloadService instance")
+                self._zoom_download_service = ZoomDownloadService()
+            except Exception as e:
+                logger.error(f"Failed to initialize ZoomDownloadService: {str(e)}")
+                self._zoom_download_service = None
+        
+        return self._zoom_download_service
+    
     # Survey Service
     def get_survey_service(self, override: Optional['ISurveyService'] = None) -> 'ISurveyService':
         """
@@ -324,6 +356,7 @@ class ServiceContainer:
         self._conversation_service = None
         self._rag_service = None
         self._gladly_download_service = None
+        self._zoom_download_service = None
         self._survey_service = None
         self._survicate_rag_service = None
         self._overrides.clear()

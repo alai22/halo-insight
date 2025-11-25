@@ -7,6 +7,7 @@ import SettingsPanel from './components/SettingsPanel';
 import Login from './components/Login';
 import TabNavigation from './components/TabNavigation';
 import DownloadManager from './components/DownloadManager';
+import ZoomDownloadManager from './components/ZoomDownloadManager';
 import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import ApiDataManager from './components/ApiDataManager';
@@ -39,6 +40,7 @@ function App() {
     conversations: [],
     ask: [],
     download: [],
+    zoom: [],
     survicate: [],
     'churn-trends': [],
     'conversation-trends': [],
@@ -610,10 +612,12 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || currentMode === 'zoom' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {/* Show actual tool components when active */}
           {currentMode === 'api-data-manager' ? (
             <ApiDataManager />
+          ) : currentMode === 'zoom' ? (
+            <ZoomDownloadManager />
           ) : adminMode === 'download' ? (
             <DownloadManager />
           ) : adminMode === 'claude' ? (
@@ -643,7 +647,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && (
           <div className="bg-white border-t border-gray-200 p-6">
             <PromptInput
               onSendMessage={handleSendMessage}
