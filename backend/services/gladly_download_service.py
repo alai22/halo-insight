@@ -16,6 +16,7 @@ import logging
 from dotenv import load_dotenv
 
 from backend.utils.config import Config
+from backend.core.interfaces import IGladlyDownloadService, IStorageService
 from backend.services.storage_service import StorageService
 from backend.services.conversation_tracker import ConversationTracker
 
@@ -24,7 +25,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-class GladlyDownloadService:
+class GladlyDownloadService(IGladlyDownloadService):
     """Service for downloading Gladly conversation data"""
     
     def __init__(self):
@@ -45,7 +46,8 @@ class GladlyDownloadService:
         })
         
         # Initialize storage service
-        self.storage_service = StorageService()
+        # Note: Using concrete class here as fallback, but ideally should be injected via service container
+        self.storage_service: IStorageService = StorageService()
         
         # Initialize conversation tracker
         self.conversation_tracker = ConversationTracker()

@@ -6,16 +6,17 @@ from typing import Dict, Any, List
 from ..utils.logging import get_logger
 from ..utils.helpers import extract_json_from_text
 from ..models.response import RAGProcess, RAGStep
+from ..core.interfaces import ISurvicateRAGService, IClaudeService, ISurveyService
 from .claude_service import ClaudeService
 from .survey_service import SurveyService
 
 logger = get_logger('survicate_rag_service')
 
 
-class SurvicateRAGService:
+class SurvicateRAGService(ISurvicateRAGService):
     """Service for RAG-powered survey analysis"""
     
-    def __init__(self, claude_service: ClaudeService, survey_service: SurveyService):
+    def __init__(self, claude_service: IClaudeService, survey_service: ISurveyService):
         """Initialize Survicate RAG service"""
         self.claude_service = claude_service
         self.survey_service = survey_service

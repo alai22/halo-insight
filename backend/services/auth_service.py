@@ -7,11 +7,12 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 import logging
+from backend.core.interfaces import IAuthService
 
 logger = logging.getLogger(__name__)
 
 
-class AuthService:
+class AuthService(IAuthService):
     """Service for managing authentication tokens and magic links"""
     
     # In-memory token storage (in production, consider using Redis)

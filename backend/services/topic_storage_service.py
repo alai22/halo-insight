@@ -12,11 +12,12 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, List, Any, Union
 from ..utils.config import Config
 from ..utils.logging import get_logger
+from ..core.interfaces import ITopicStorageService
 
 logger = get_logger('topic_storage_service')
 
 
-class TopicStorageService:
+class TopicStorageService(ITopicStorageService):
     """Service for storing and retrieving extracted conversation topics"""
     
     def __init__(self, storage_file: str = "data/extracted_topics.json"):

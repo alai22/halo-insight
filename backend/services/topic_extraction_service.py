@@ -11,6 +11,7 @@ from requests.exceptions import RequestException, HTTPError
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..utils.pii_protection import create_pii_protector
+from ..core.interfaces import ITopicExtractionService, IClaudeService
 from .claude_service import ClaudeService
 
 logger = get_logger('topic_extraction_service')
@@ -44,10 +45,10 @@ CONVERSATION_TOPICS = [
 ]
 
 
-class TopicExtractionService:
+class TopicExtractionService(ITopicExtractionService):
     """Service for extracting topics from conversations using Claude API"""
     
-    def __init__(self, claude_service: Optional[ClaudeService] = None):
+    def __init__(self, claude_service: Optional[IClaudeService] = None):
         """Initialize topic extraction service"""
         self.claude_service = claude_service
         if not self.claude_service:

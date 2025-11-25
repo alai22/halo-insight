@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.survey import SurveyResponse, SurveySummary
+from ..core.interfaces import ISurveyService
 from .survey_parser_service import SurveyParserService
 
 logger = get_logger('survey_service')
@@ -20,7 +21,7 @@ api_refresh_state = {
 }
 
 
-class SurveyService:
+class SurveyService(ISurveyService):
     """Service for managing survey data"""
     
     def __init__(self, csv_path: Optional[str] = None):

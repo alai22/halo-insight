@@ -6,16 +6,17 @@ from typing import Dict, Any, List
 from ..utils.logging import get_logger
 from ..utils.helpers import extract_json_from_text, format_conversation_for_claude, create_rag_system_prompt
 from ..models.response import RAGProcess, RAGStep
+from ..core.interfaces import IRAGService, IClaudeService, IConversationService
 from .claude_service import ClaudeService
 from .conversation_service import ConversationService
 
 logger = get_logger('rag_service')
 
 
-class RAGService:
+class RAGService(IRAGService):
     """Service for RAG-powered conversation analysis"""
     
-    def __init__(self, claude_service: ClaudeService, conversation_service: ConversationService):
+    def __init__(self, claude_service: IClaudeService, conversation_service: IConversationService):
         """Initialize RAG service"""
         self.claude_service = claude_service
         self.conversation_service = conversation_service
