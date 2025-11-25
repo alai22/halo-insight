@@ -17,6 +17,7 @@ import logging
 from dotenv import load_dotenv
 
 from backend.services.zoom_download_service import ZoomDownloadService
+from backend.services.zoom_api_client import ZoomAPIClient
 from backend.utils.config import Config
 from backend.utils.email_service import EmailService
 
@@ -232,6 +233,60 @@ def get_download_history():
     except Exception as e:
         logger.error(f"Error getting download history: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@zoom_bp.route('/status', methods=['GET'])
+def get_zoom_status():
+    """Get Zoom API credentials status (without exposing actual values)"""
+    try:
+        from backend.utils.config import Config
+        
+        # Check if credentials are configured (without exposing values)
+        account_id_configured = bool(Config.ZOOM_ACCOUNT_ID and Config.ZOOM_ACCOUNT_ID.strip())
+        client_id_configured = bool(Config.ZOOM_CLIENT_ID and Config.ZOOM_CLIENT_ID.strip())
+        client_secret_configured = bool(Config.ZOOM_CLIENT_SECRET and Config.ZOOM_CLIENT_SECRET.strip())
+        
+        all_configured = account_id_configured and client_id_configured and client_secret_configured
+        
+        # Try to initialize the service to verify credentials work
+        credentials_valid = False
+        error_message = None
+        
+        if all_configured:
+            try:
+                test_client = ZoomAPIClient()
+                # Try to get a token (this will fail if credentials are invalid)
+                test_client.get_access_token()
+                credentials_valid = True
+            except Exception as e:
+                error_message = str(e)
+                logger.warning(f"Zoom credentials check failed: {e}")
+        
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'configured': all_configured,
+                'credentials_valid': credentials_valid,
+                'account_id_configured': account_id_configured,
+                'client_id_configured': client_id_configured,
+                'client_secret_configured': client_secret_configured,
+                'error': error_message
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error checking Zoom status: {e}")
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'configured': False,
+                'credentials_valid': False,
+                'account_id_configured': False,
+                'client_id_configured': False,
+                'client_secret_configured': False,
+                'error': str(e)
+            }
+        }), 200
 
 
 def _update_progress(current: int, total: int, downloaded: int, failed: int):

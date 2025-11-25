@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
 const ZoomDownloadManager = () => {
   const [downloadStatus, setDownloadStatus] = useState(null);
@@ -8,6 +9,7 @@ const ZoomDownloadManager = () => {
   const [maxDuration, setMaxDuration] = useState(30);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [zoomStatus, setZoomStatus] = useState(null);
 
   // Fetch download status
   const fetchDownloadStatus = async () => {
@@ -160,16 +162,108 @@ const ZoomDownloadManager = () => {
     return () => clearInterval(interval);
   }, [downloadStatus?.is_running]);
 
+  // Fetch Zoom credentials status
+  const fetchZoomStatus = async () => {
+    try {
+      const response = await fetch('/api/zoom/status');
+      const data = await response.json();
+      if (data.status === 'success') {
+        setZoomStatus(data.data);
+      } else {
+        setZoomStatus({
+          configured: false,
+          credentials_valid: false,
+          error: data.message || 'Failed to check Zoom credentials'
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching Zoom status:', error);
+      setZoomStatus({
+        configured: false,
+        credentials_valid: false,
+        error: `Network error: ${error.message}`
+      });
+    }
+  };
+
   // Initial data fetch
   useEffect(() => {
     fetchDownloadStatus();
     fetchDownloadStats();
     fetchDownloadHistory();
+    fetchZoomStatus();
   }, []);
+
+  // Get status indicator
+  const getStatusIndicator = () => {
+    if (!zoomStatus) {
+      return (
+        <div className="flex items-center space-x-2 text-gray-500">
+          <AlertCircle className="h-4 w-4" />
+          <span className="text-sm">Checking credentials...</span>
+        </div>
+      );
+    }
+
+    if (zoomStatus.credentials_valid) {
+      return (
+        <div className="flex items-center space-x-2 text-green-600">
+          <CheckCircle className="h-4 w-4" />
+          <span className="text-sm font-medium">Zoom credentials configured and valid</span>
+        </div>
+      );
+    }
+
+    if (zoomStatus.configured) {
+      return (
+        <div className="flex items-center space-x-2 text-yellow-600">
+          <AlertCircle className="h-4 w-4" />
+          <span className="text-sm font-medium">Zoom credentials configured but invalid</span>
+          {zoomStatus.error && (
+            <span className="text-xs text-gray-500">({zoomStatus.error})</span>
+          )}
+        </div>
+      );
+    }
+
+    // Not configured - show what's missing
+    const missing = [];
+    if (!zoomStatus.account_id_configured) missing.push('Account ID');
+    if (!zoomStatus.client_id_configured) missing.push('Client ID');
+    if (!zoomStatus.client_secret_configured) missing.push('Client Secret');
+
+    return (
+      <div className="flex items-center space-x-2 text-red-600">
+        <XCircle className="h-4 w-4" />
+        <span className="text-sm font-medium">
+          Zoom credentials not configured
+          {missing.length > 0 && (
+            <span className="text-xs text-gray-500 ml-1">(Missing: {missing.join(', ')})</span>
+          )}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <h1 className="text-3xl font-bold text-gray-900 mb-6">Zoom Chat Download Manager</h1>
+      
+      {/* Credentials Status */}
+      <div className="bg-white rounded-lg shadow-md p-4 mb-6 border-l-4 border-blue-500">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 mb-1">Zoom API Credentials</h2>
+            {getStatusIndicator()}
+          </div>
+          <button
+            onClick={fetchZoomStatus}
+            className="px-3 py-1 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
+          >
+            Refresh Status
+          </button>
+        </div>
+      </div>
       
       {/* Download Controls */}
       <div className="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -221,14 +315,16 @@ const ZoomDownloadManager = () => {
         <div className="flex gap-4">
           <button
             onClick={startDownload}
-            disabled={isLoading || downloadStatus?.is_running || !startDate || !endDate}
+            disabled={isLoading || downloadStatus?.is_running || !startDate || !endDate || !zoomStatus?.credentials_valid}
             className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-              isLoading || downloadStatus?.is_running || !startDate || !endDate
+              isLoading || downloadStatus?.is_running || !startDate || !endDate || !zoomStatus?.credentials_valid
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 : 'bg-blue-600 text-white hover:bg-blue-700'
             }`}
           >
-            {downloadStatus?.is_running ? 'Download Running...' : 'Start Download'}
+            {downloadStatus?.is_running ? 'Download Running...' : 
+             !zoomStatus?.credentials_valid ? 'Configure Zoom Credentials First' : 
+             'Start Download'}
           </button>
           
           {downloadStatus?.is_running && (
