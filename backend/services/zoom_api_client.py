@@ -60,14 +60,20 @@ class ZoomAPIClient:
         credentials = f"{self.client_id}:{self.client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         
-        url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={self.account_id}"
+        url = "https://zoom.us/oauth/token"
         headers = {
             'Authorization': f'Basic {encoded_credentials}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         
+        # Parameters should be in the POST body, not query string
+        data = {
+            'grant_type': 'account_credentials',
+            'account_id': self.account_id
+        }
+        
         try:
-            response = requests.post(url, headers=headers, timeout=30)
+            response = requests.post(url, headers=headers, data=data, timeout=30)
             response.raise_for_status()
             
             data = response.json()
