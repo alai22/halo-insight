@@ -416,11 +416,19 @@ function App() {
       // Get data source from localStorage (set by Sidebar)
       const dataSource = localStorage.getItem('survicate_data_source') || 'file';
       
+      // Build conversation history from previous survicate conversations
+      const survicateConversations = conversations.survicate || [];
+      const conversationHistory = survicateConversations.flatMap(conv => [
+        { role: 'user', content: conv.userMessage },
+        { role: 'assistant', content: conv.response }
+      ]);
+      
       const response = await axios.post('/api/survicate/ask', {
         question,
         model: settings.model,
         max_tokens: settings.maxTokens,
-        data_source: dataSource
+        data_source: dataSource,
+        conversation_history: conversationHistory.length > 0 ? conversationHistory : undefined
       }, {
         timeout: 120000 // 2 minutes timeout for RAG requests
       });
@@ -451,6 +459,15 @@ function App() {
       setError(errorDetails ? `${errorMessage}\n\n${errorDetails}` : errorMessage);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const clearSurvicateConversations = () => {
+    if (window.confirm('Are you sure you want to clear the conversation history? This will start a fresh conversation.')) {
+      setConversations(prev => ({
+        ...prev,
+        survicate: []
+      }));
     }
   };
 
@@ -649,6 +666,21 @@ function App() {
         {/* Prompt Input */}
         {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && (
           <div className="bg-white border-t border-gray-200 p-6">
+            {/* Clear Conversation Button for Survicate Mode */}
+            {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (
+              <div className="mb-4 flex justify-end">
+                <button
+                  onClick={clearSurvicateConversations}
+                  className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-300"
+                  title="Clear conversation history and start fresh"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  <span>Clear Conversation</span>
+                </button>
+              </div>
+            )}
             <PromptInput
               onSendMessage={handleSendMessage}
               isLoading={isLoading}

@@ -31,11 +31,22 @@ def survicate_ask():
         model = data.get('model', Config.CLAUDE_MODEL)
         max_tokens = data.get('max_tokens', 2000)
         data_source = data.get('data_source', 'file')  # Get data source
+        conversation_history = data.get('conversation_history')  # Optional conversation history
         
         if not question:
             return jsonify({'error': 'Question is required'}), 400
         
-        logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}, data_source={data_source}")
+        # Validate conversation_history format if provided
+        if conversation_history is not None:
+            if not isinstance(conversation_history, list):
+                return jsonify({'error': 'conversation_history must be a list'}), 400
+            for msg in conversation_history:
+                if not isinstance(msg, dict) or 'role' not in msg or 'content' not in msg:
+                    return jsonify({'error': 'Each message in conversation_history must have "role" and "content" fields'}), 400
+                if msg['role'] not in ['user', 'assistant']:
+                    return jsonify({'error': 'Message role must be "user" or "assistant"'}), 400
+        
+        logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}, data_source={data_source}, has_history={bool(conversation_history)}")
         
         # Reload surveys with specified data source before processing query
         survey_service = service_container.get_survey_service()
@@ -50,7 +61,7 @@ def survicate_ask():
                 'details': 'ANTHROPIC_API_KEY environment variable is not set or invalid. Please configure it in your .env file or environment.'
             }), 503
         
-        result = survicate_rag_service.process_query(question, model, max_tokens)
+        result = survicate_rag_service.process_query(question, model, max_tokens, conversation_history)
         result['data_source'] = data_source  # Include data source in response
         
         return jsonify(result)

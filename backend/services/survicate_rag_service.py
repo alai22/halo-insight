@@ -2,7 +2,7 @@
 Survicate RAG (Retrieval-Augmented Generation) service for survey analysis
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from ..utils.logging import get_logger
 from ..utils.helpers import extract_json_from_text
 from ..models.response import RAGProcess, RAGStep
@@ -21,9 +21,18 @@ class SurvicateRAGService(ISurvicateRAGService):
         self.claude_service = claude_service
         self.survey_service = survey_service
     
-    def process_query(self, question: str, model: str = None, max_tokens: int = 2000) -> Dict[str, Any]:
-        """Process a RAG query about surveys"""
+    def process_query(self, question: str, model: str = None, max_tokens: int = 2000, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        """Process a RAG query about surveys
+        
+        Args:
+            question: The current question
+            model: Claude model to use
+            max_tokens: Maximum tokens for response
+            conversation_history: Optional list of previous messages in format [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+        """
         logger.info(f"Starting Survicate RAG query processing: {question[:100]}")
+        if conversation_history:
+            logger.info(f"Using conversation history with {len(conversation_history)} previous messages")
         
         # Check if surveys are loaded, and if not, try to refresh
         if not self.survey_service.is_available():
@@ -44,7 +53,7 @@ class SurvicateRAGService(ISurvicateRAGService):
         relevant_data = self._retrieve_data(plan, rag_process)
         
         # Step 3: Data Analysis
-        response = self._analyze_data(question, relevant_data, plan, model, max_tokens, rag_process)
+        response = self._analyze_data(question, relevant_data, plan, model, max_tokens, rag_process, conversation_history)
         
         logger.info(f"Survicate RAG query processing completed: data_retrieved={len(relevant_data)}, tokens_used={response.tokens_used}")
         
@@ -286,7 +295,7 @@ Respond with valid JSON only."""
     
     def _analyze_data(self, question: str, relevant_data: List[Dict[str, Any]], 
                      plan: Dict[str, Any], model: str, max_tokens: int, 
-                     rag_process: RAGProcess):
+                     rag_process: RAGProcess, conversation_history: Optional[List[Dict[str, str]]] = None):
         """Step 3: Data Analysis"""
         rag_process.add_step(3, 'Analysis', 'Claude analyzes the retrieved survey data to answer your question')
         
@@ -305,7 +314,8 @@ Respond with valid JSON only."""
             message=question,
             model=model,
             max_tokens=max_tokens,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            conversation_history=conversation_history
         )
         
         rag_process.update_step(3, 'completed', {

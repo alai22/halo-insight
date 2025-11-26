@@ -5,7 +5,7 @@ Claude API service
 import json
 import hashlib
 import requests
-from typing import Optional, Dict, Any, Generator
+from typing import Optional, Dict, Any, Generator, List
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.response import ClaudeResponse
@@ -37,14 +37,15 @@ class ClaudeService(IClaudeService):
         else:
             logger.info("ClaudeService: Caching disabled")
     
-    def _generate_cache_key(self, message: str, model: str, max_tokens: int, system_prompt: Optional[str] = None) -> str:
+    def _generate_cache_key(self, message: str, model: str, max_tokens: int, system_prompt: Optional[str] = None, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Generate a cache key for Claude API request"""
         # Create deterministic key from request parameters
         key_data = {
             'message': message,
             'model': model,
             'max_tokens': max_tokens,
-            'system_prompt': system_prompt or ''
+            'system_prompt': system_prompt or '',
+            'conversation_history': conversation_history or []
         }
         key_string = json.dumps(key_data, sort_keys=True)
         key_hash = hashlib.md5(key_string.encode()).hexdigest()
@@ -54,15 +55,25 @@ class ClaudeService(IClaudeService):
                     message: str, 
                     model: str = None,
                     max_tokens: int = 1000,
-                    system_prompt: Optional[str] = None) -> ClaudeResponse:
-        """Send a message to Claude API with automatic model fallback and caching"""
+                    system_prompt: Optional[str] = None,
+                    conversation_history: Optional[List[Dict[str, str]]] = None) -> ClaudeResponse:
+        """Send a message to Claude API with automatic model fallback and caching
+        
+        Args:
+            message: The current user message
+            model: Claude model to use
+            max_tokens: Maximum tokens for response
+            system_prompt: Optional system prompt
+            conversation_history: Optional list of previous messages in format [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+        """
         # Resolve model through aliases and fallbacks
         requested_model = model or Config.CLAUDE_MODEL
         model = Config.resolve_model(requested_model)
         
-        # Check cache first (if caching is enabled)
-        if self.cache_service:
-            cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt)
+        # Check cache first (if caching is enabled and no conversation history)
+        # Note: We skip caching when conversation_history is provided to ensure fresh responses
+        if self.cache_service and not conversation_history:
+            cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt, conversation_history)
             cached_response = self.cache_service.get(cache_key)
             if cached_response:
                 logger.info(f"Cache HIT for Claude API request: {cache_key[:32]}...")
@@ -75,15 +86,20 @@ class ClaudeService(IClaudeService):
                 )
             logger.debug(f"Cache MISS for Claude API request: {cache_key[:32]}...")
         
+        # Build messages array - include conversation history if provided
+        messages = []
+        if conversation_history:
+            messages.extend(conversation_history)
+        # Add current message
+        messages.append({
+            "role": "user",
+            "content": message
+        })
+        
         payload = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ]
+            "messages": messages
         }
         
         if system_prompt:
@@ -105,9 +121,10 @@ class ClaudeService(IClaudeService):
             
             claude_response = ClaudeResponse.from_api_response(response_data, model)
             
-            # Cache the response (if caching is enabled)
-            if self.cache_service:
-                cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt)
+            # Cache the response (if caching is enabled and no conversation history)
+            # Note: We skip caching when conversation_history is provided to ensure fresh responses
+            if self.cache_service and not conversation_history:
+                cache_key = self._generate_cache_key(message, model, max_tokens, system_prompt, conversation_history)
                 # Store as dict for caching (dataclass is not directly JSON-serializable)
                 cache_value = {
                     'content': claude_response.content,
@@ -150,9 +167,9 @@ class ClaudeService(IClaudeService):
                             
                             claude_response = ClaudeResponse.from_api_response(response_data, fallback_model)
                             
-                            # Cache the response (if caching is enabled)
-                            if self.cache_service:
-                                cache_key = self._generate_cache_key(message, fallback_model, max_tokens, system_prompt)
+                            # Cache the response (if caching is enabled and no conversation history)
+                            if self.cache_service and not conversation_history:
+                                cache_key = self._generate_cache_key(message, fallback_model, max_tokens, system_prompt, conversation_history)
                                 cache_value = {
                                     'content': claude_response.content,
                                     'model': claude_response.model,
