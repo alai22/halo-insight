@@ -85,6 +85,20 @@ class ZoomAPIClient:
             logger.info(f"Successfully obtained Zoom access token (expires in {expires_in}s)")
             return self._access_token
             
+        except requests.exceptions.HTTPError as e:
+            # Capture detailed error response from Zoom
+            error_details = "Unknown error"
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    error_details = error_json.get('error_description', error_json.get('error', e.response.text))
+                    logger.error(f"Zoom API error response: {error_json}")
+                except:
+                    error_details = e.response.text
+                    logger.error(f"Zoom API error response (non-JSON): {error_details}")
+            logger.error(f"Failed to obtain Zoom access token: {e}")
+            logger.error(f"Zoom API error details: {error_details}")
+            raise Exception(f"Zoom OAuth failed: {error_details}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to obtain Zoom access token: {e}")
             if hasattr(e, 'response') and e.response is not None:

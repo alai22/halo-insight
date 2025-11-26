@@ -261,6 +261,17 @@ def get_zoom_status():
             except Exception as e:
                 error_message = str(e)
                 logger.warning(f"Zoom credentials check failed: {e}")
+                # Try to extract more details from the error if it's an HTTPError
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_json = e.response.json()
+                        detailed_error = error_json.get('error_description', error_json.get('error', error_message))
+                        if detailed_error != error_message:
+                            error_message = f"{error_message} - {detailed_error}"
+                    except:
+                        # If response is not JSON, use the text
+                        if e.response.text:
+                            error_message = f"{error_message} - {e.response.text[:200]}"
         
         return jsonify({
             'status': 'success',
