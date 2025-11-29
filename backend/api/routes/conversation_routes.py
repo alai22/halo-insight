@@ -114,38 +114,37 @@ def conversations_summary():
 @conversation_bp.route('/search', methods=['POST'])
 def conversations_search():
     """Search conversations"""
-    try:
-        # Get service from container (injected via Flask's g)
-        service_container = _get_service_container()
-        conversation_service = service_container.get_conversation_service()
-        
-        data = request.get_json() or {}
-        query = data.get('query')
-        limit = data.get('limit', 10)
-        
-        if not query:
-            raise ValidationError(
-                "Query is required",
-                details={'field': 'query', 'suggestion': 'Provide a search query in the request body'}
-            )
-        
-        logger.info(f"Conversation search request: query={query}, limit={limit}")
-        
-        results = conversation_service.semantic_search_conversations(query, limit)
-        
-        search_result = SearchResult(
-            items=results,
-            count=len(results),
-            query=query,
-            search_type='semantic'
-        )
-        
-        return jsonify({
-            'success': True,
-            'results': results,
-            'count': len(results)
-        })
+    # Get service from container (injected via Flask's g)
+    service_container = _get_service_container()
+    conversation_service = service_container.get_conversation_service()
     
+    data = request.get_json() or {}
+    query = data.get('query')
+    limit = data.get('limit', 10)
+    
+    if not query:
+        raise ValidationError(
+            "Query is required",
+            details={'field': 'query', 'suggestion': 'Provide a search query in the request body'}
+        )
+    
+    logger.info(f"Conversation search request: query={query}, limit={limit}")
+    
+    results = conversation_service.semantic_search_conversations(query, limit)
+    
+    search_result = SearchResult(
+        items=results,
+        count=len(results),
+        query=query,
+        search_type='semantic'
+    )
+    
+    return jsonify({
+        'success': True,
+        'results': results,
+        'count': len(results)
+    })
+
 
 
 @conversation_bp.route('/<conversation_id>', methods=['GET'])
