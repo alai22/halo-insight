@@ -7,6 +7,7 @@ from ..utils.logging import get_logger
 from ..utils.helpers import extract_json_from_text, format_conversation_for_claude, create_rag_system_prompt
 from ..models.response import RAGProcess, RAGStep
 from ..core.interfaces import IRAGService, IClaudeService, IConversationService
+from ..core.exceptions import ClaudeAPIError
 from .claude_service import ClaudeService
 from .conversation_service import ConversationService
 
@@ -112,7 +113,10 @@ Respond with valid JSON only."""
             # Extract JSON from response
             plan = extract_json_from_text(planning_response.content)
             if not plan:
-                raise ValueError("Could not extract JSON from planning response")
+                raise ClaudeAPIError(
+                    "Could not extract JSON from planning response",
+                    details={'response_preview': response.content[:200] if response.content else 'No content'}
+                )
             
             rag_process.plan = plan
             rag_process.update_step(1, 'completed', {

@@ -5,6 +5,8 @@ API routes for Survicate survey analysis
 from flask import Blueprint, request, jsonify, g
 from ...utils.logging import get_logger
 from ...utils.config import Config
+from ...core.exceptions import ValidationError, ServiceUnavailableError
+from ...utils.error_helpers import validate_required_fields, validate_message_format, validate_list_items
 
 logger = get_logger('survicate_routes')
 
@@ -15,191 +17,153 @@ survicate_bp = Blueprint('survicate', __name__, url_prefix='/api/survicate')
 @survicate_bp.route('/ask', methods=['POST'])
 def survicate_ask():
     """Ask Claude about survey data with detailed RAG process information"""
-    try:
-        # Get services from container (injected via Flask's g)
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        claude_service = service_container.get_claude_service()
-        survicate_rag_service = service_container.get_survicate_rag_service()
-        
-        data = request.get_json()
-        question = data.get('question')
-        # Default to configured model (falls back to working model via fallback system if needed)
-        model = data.get('model', Config.CLAUDE_MODEL)
-        max_tokens = data.get('max_tokens', 2000)
-        data_source = data.get('data_source', 'file')  # Get data source
-        conversation_history = data.get('conversation_history')  # Optional conversation history
-        
-        if not question:
-            return jsonify({'error': 'Question is required'}), 400
-        
-        # Validate conversation_history format if provided
-        if conversation_history is not None:
-            if not isinstance(conversation_history, list):
-                return jsonify({'error': 'conversation_history must be a list'}), 400
-            for msg in conversation_history:
-                if not isinstance(msg, dict) or 'role' not in msg or 'content' not in msg:
-                    return jsonify({'error': 'Each message in conversation_history must have "role" and "content" fields'}), 400
-                if msg['role'] not in ['user', 'assistant']:
-                    return jsonify({'error': 'Message role must be "user" or "assistant"'}), 400
-        
-        logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}, data_source={data_source}, has_history={bool(conversation_history)}")
-        
-        # Reload surveys with specified data source before processing query
-        survey_service = service_container.get_survey_service()
-        survey_service.load_surveys(data_source=data_source)
-        
-        # Check if Claude service is initialized
-        if claude_service is None or survicate_rag_service is None:
-            error_msg = "Claude API service is not initialized. Please check ANTHROPIC_API_KEY configuration."
-            logger.error(error_msg)
-            return jsonify({
-                'error': error_msg, 
-                'details': 'ANTHROPIC_API_KEY environment variable is not set or invalid. Please configure it in your .env file or environment.'
-            }), 503
-        
-        result = survicate_rag_service.process_query(question, model, max_tokens, conversation_history)
-        result['data_source'] = data_source  # Include data source in response
-        
-        return jsonify(result)
+    # Get services from container (injected via Flask's g)
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except TimeoutError as e:
-        error_msg = str(e) if str(e) else "Request to Claude API timed out. The query may be too complex."
-        logger.error(f"Survicate RAG query timeout: {error_msg}")
-        return jsonify({
-            'error': 'Request timeout',
-            'details': error_msg,
-            'type': 'TimeoutError',
-            'suggestion': 'Try simplifying your query or increasing CLAUDE_API_TIMEOUT if needed.'
-        }), 504
+    claude_service = service_container.get_claude_service()
+    survicate_rag_service = service_container.get_survicate_rag_service()
     
-    except ValueError as e:
-        error_msg = f"Configuration error: {str(e)}"
+    data = request.get_json() or {}
+    question = data.get('question')
+    # Default to configured model (falls back to working model via fallback system if needed)
+    model = data.get('model', Config.CLAUDE_MODEL)
+    max_tokens = data.get('max_tokens', 2000)
+    data_source = data.get('data_source', 'file')  # Get data source
+    conversation_history = data.get('conversation_history')  # Optional conversation history
+    
+    # Validate required fields
+    if not question:
+        raise ValidationError(
+            "Question is required",
+            details={'field': 'question', 'suggestion': 'Provide a question in the request body'}
+        )
+    
+    # Validate conversation_history format if provided
+    if conversation_history is not None:
+        validate_list_items(conversation_history, validate_message_format, 'conversation_history')
+    
+    logger.info(f"Survicate RAG query request: question={question[:100]}, model={model}, max_tokens={max_tokens}, data_source={data_source}, has_history={bool(conversation_history)}")
+    
+    # Reload surveys with specified data source before processing query
+    survey_service = service_container.get_survey_service()
+    survey_service.load_surveys(data_source=data_source)
+    
+    # Check if Claude service is initialized
+    if claude_service is None or survicate_rag_service is None:
+        error_msg = "Claude API service is not initialized. Please check ANTHROPIC_API_KEY configuration."
         logger.error(error_msg)
-        return jsonify({'error': error_msg, 'details': 'Please check your API configuration (ANTHROPIC_API_KEY)'}), 500
-    except Exception as e:
-        import traceback
-        logger.error(f"Survicate RAG query error: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        error_details = str(e)
-        if hasattr(e, 'response') and hasattr(e.response, 'text'):
-            error_details = f"{str(e)} - Response: {e.response.text}"
-        
-        return jsonify({
-            'error': str(e),
-            'details': error_details,
-            'type': type(e).__name__
-        }), 500
+        raise ServiceUnavailableError(
+            error_msg,
+            details={
+                'service': 'Claude API',
+                'suggestion': 'ANTHROPIC_API_KEY environment variable is not set or invalid. Please configure it in your .env file or environment.'
+            }
+        )
+    
+    result = survicate_rag_service.process_query(question, model, max_tokens, conversation_history)
+    result['data_source'] = data_source  # Include data source in response
+    
+    return jsonify(result)
 
 
 @survicate_bp.route('/refresh', methods=['POST'])
 def refresh_surveys():
     """Refresh survey data from specified source (file or api)"""
-    try:
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        data = request.get_json() or {}
-        data_source = data.get('data_source', 'file')  # Default to 'file' for backward compatibility
-        
-        survey_service = service_container.get_survey_service()
-        survey_service.refresh_surveys(data_source=data_source)
-        
-        summary = survey_service.get_summary()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Surveys refreshed from {data_source}: {len(survey_service.surveys)} responses loaded',
-            'data_source': data_source,
-            'summary': {
-                'total_responses': summary.total_responses,
-                'date_range': summary.date_range
-            }
-        })
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except Exception as e:
-        logger.error(f"Failed to refresh surveys: {str(e)}")
-        return jsonify({
-            'error': str(e),
-            'details': 'Failed to refresh survey data'
-        }), 500
+    data = request.get_json() or {}
+    data_source = data.get('data_source', 'file')  # Default to 'file' for backward compatibility
+    
+    survey_service = service_container.get_survey_service()
+    survey_service.refresh_surveys(data_source=data_source)
+    
+    summary = survey_service.get_summary()
+    
+    return jsonify({
+        'success': True,
+        'message': f'Surveys refreshed from {data_source}: {len(survey_service.surveys)} responses loaded',
+        'data_source': data_source,
+        'summary': {
+            'total_responses': summary.total_responses,
+            'date_range': summary.date_range
+        }
+    })
 
 
 @survicate_bp.route('/summary', methods=['GET'])
 def get_survey_summary():
     """Get survey statistics"""
-    try:
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        # Get data source from query parameter
-        data_source = request.args.get('data_source', 'file')
-        
-        # Reload surveys with specified data source
-        survey_service = service_container.get_survey_service()
-        survey_service.load_surveys(data_source=data_source)
-        
-        summary = survey_service.get_summary()
-        
-        return jsonify({
-            'success': True,
-            'data_source': data_source,
-            'summary': {
-                'total_responses': summary.total_responses,
-                'date_range': summary.date_range,
-                'question_stats': summary.question_stats,
-                'response_rate_by_question': summary.response_rate_by_question
-            }
-        })
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except Exception as e:
-        logger.error(f"Failed to get survey summary: {str(e)}")
-        return jsonify({
-            'error': str(e),
-            'details': 'Failed to get survey summary'
-        }), 500
+    # Get data source from query parameter
+    data_source = request.args.get('data_source', 'file')
+    
+    # Reload surveys with specified data source
+    survey_service = service_container.get_survey_service()
+    survey_service.load_surveys(data_source=data_source)
+    
+    summary = survey_service.get_summary()
+    
+    return jsonify({
+        'success': True,
+        'data_source': data_source,
+        'summary': {
+            'total_responses': summary.total_responses,
+            'date_range': summary.date_range,
+            'question_stats': summary.question_stats,
+            'response_rate_by_question': summary.response_rate_by_question
+        }
+    })
 
 
 @survicate_bp.route('/search', methods=['POST'])
 def search_surveys():
     """Search survey responses"""
-    try:
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        survey_service = service_container.get_survey_service()
-        
-        data = request.get_json()
-        query = data.get('query')
-        limit = data.get('limit', 10)
-        
-        if not query:
-            return jsonify({'error': 'Query is required'}), 400
-        
-        results = survey_service.semantic_search_surveys(query, limit=limit)
-        
-        return jsonify({
-            'success': True,
-            'results': results,
-            'count': len(results)
-        })
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except Exception as e:
-        logger.error(f"Failed to search surveys: {str(e)}")
-        return jsonify({
-            'error': str(e),
-            'details': 'Failed to search survey data'
-        }), 500
+    survey_service = service_container.get_survey_service()
+    
+    data = request.get_json() or {}
+    query = data.get('query')
+    limit = data.get('limit', 10)
+    
+    if not query:
+        raise ValidationError(
+            "Query is required",
+            details={'field': 'query', 'suggestion': 'Provide a search query in the request body'}
+        )
+    
+    results = survey_service.semantic_search_surveys(query, limit=limit)
+    
+    return jsonify({
+        'success': True,
+        'results': results,
+        'count': len(results)
+    })
 
 
 @survicate_bp.route('/raw-files/download', methods=['GET'])

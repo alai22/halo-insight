@@ -10,6 +10,7 @@ from typing import List, Dict, Any
 from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..core.interfaces import IStorageService
+from ..core.exceptions import StorageError
 
 logger = get_logger('storage_service')
 
@@ -77,9 +78,20 @@ class StorageService(IStorageService):
                 return self._load_from_azure()
             else:
                 return self._load_from_local()
+        except StorageError:
+            # Re-raise StorageError as-is
+            raise
         except Exception as e:
             logger.error(f"Failed to load conversations from storage (type={self.storage_type}): {str(e)}")
-            return []
+            raise StorageError(
+                f"Failed to load conversations from storage (type={self.storage_type}): {str(e)}",
+                details={
+                    'storage_type': self.storage_type,
+                    'bucket_name': self.bucket_name if self.storage_type == "s3" else None,
+                    'file_key': self.file_key if self.storage_type == "s3" else None,
+                    'local_file': self.local_file if self.storage_type == "local" else None
+                }
+            ) from e
     
     def _load_from_s3(self) -> List[Dict[str, Any]]:
         """Load conversations from S3"""
@@ -97,30 +109,70 @@ class StorageService(IStorageService):
         except Exception as e:
             logger.warning(f"Public S3 access failed, trying authenticated access: {str(e)}")
             
-            # Fallback to authenticated S3 access
-            response = self.s3_client.get_object(
-                Bucket=self.bucket_name,
-                Key=self.file_key
-            )
-            
-            content = response['Body'].read().decode('utf-8')
-            return self._parse_content(content)
+            try:
+                # Fallback to authenticated S3 access
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket_name,
+                    Key=self.file_key
+                )
+                
+                content = response['Body'].read().decode('utf-8')
+                return self._parse_content(content)
+            except Exception as auth_error:
+                raise StorageError(
+                    f"Failed to load conversations from S3 (both public and authenticated access failed): {str(auth_error)}",
+                    details={
+                        'storage_type': 's3',
+                        'bucket_name': self.bucket_name,
+                        'file_key': self.file_key,
+                        'public_access_error': str(e),
+                        'authenticated_access_error': str(auth_error)
+                    }
+                ) from auth_error
     
     def _load_from_azure(self) -> List[Dict[str, Any]]:
         """Load conversations from Azure Blob Storage"""
-        blob_client = self.blob_client.get_blob_client(
-            container=self.container_name,
-            blob=self.blob_name
-        )
-        
-        content = blob_client.download_blob().readall().decode('utf-8')
-        return self._parse_content(content)
+        try:
+            blob_client = self.blob_client.get_blob_client(
+                container=self.container_name,
+                blob=self.blob_name
+            )
+            
+            content = blob_client.download_blob().readall().decode('utf-8')
+            return self._parse_content(content)
+        except Exception as e:
+            raise StorageError(
+                f"Failed to load conversations from Azure Blob Storage: {str(e)}",
+                details={
+                    'storage_type': 'azure',
+                    'container_name': self.container_name,
+                    'blob_name': self.blob_name
+                }
+            ) from e
     
     def _load_from_local(self) -> List[Dict[str, Any]]:
         """Load conversations from local file"""
-        with open(self.local_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-            return self._parse_content(content)
+        try:
+            with open(self.local_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                return self._parse_content(content)
+        except FileNotFoundError as e:
+            raise StorageError(
+                f"Local file not found: {self.local_file}",
+                details={
+                    'storage_type': 'local',
+                    'file_path': self.local_file,
+                    'suggestion': 'Ensure the file exists and the path is correct'
+                }
+            ) from e
+        except Exception as e:
+            raise StorageError(
+                f"Failed to load conversations from local file: {str(e)}",
+                details={
+                    'storage_type': 'local',
+                    'file_path': self.local_file
+                }
+            ) from e
     
     def _parse_content(self, content: str) -> List[Dict[str, Any]]:
         """Parse content from storage"""

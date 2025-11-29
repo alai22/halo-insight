@@ -9,6 +9,7 @@ from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.survey import SurveyResponse, SurveySummary
 from ..core.interfaces import ISurveyService
+from ..core.exceptions import StorageError, ConfigurationError, ServiceUnavailableError
 from .survey_parser_service import SurveyParserService
 
 logger = get_logger('survey_service')
@@ -328,13 +329,19 @@ class SurveyService(ISurveyService):
                     # Load from local file
                     cache_file = cache_service.local_cache_dir / cache_service.cache_key.split('/')[-1]
                     if not cache_file.exists():
-                        raise FileNotFoundError(f"Cache file not found: {cache_file}")
+                        raise StorageError(
+                            f"Cache file not found: {cache_file}",
+                            details={'file_path': cache_file, 'suggestion': 'Ensure the cache file exists'}
+                        )
                     raw_csv_content = cache_file.read_text(encoding='utf-8')
                     logger.info(f"Loaded raw CSV from local file: {cache_file}")
                 else:
                     # Load from S3
                     if not cache_service.s3_client:
-                        raise ValueError("S3 client not available")
+                        raise ConfigurationError(
+                            "S3 client not available",
+                            details={'suggestion': 'Check AWS credentials and S3_BUCKET_NAME configuration'}
+                        )
                     response = cache_service.s3_client.get_object(
                         Bucket=cache_service.bucket_name,
                         Key=cache_service.cache_key

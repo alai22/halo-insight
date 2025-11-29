@@ -10,6 +10,7 @@ from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..models.response import ClaudeResponse
 from ..core.interfaces import IClaudeService, ICacheService
+from ..core.exceptions import ConfigurationError, ClaudeAPIError, RateLimitError, TimeoutError
 
 logger = get_logger('claude_service')
 
@@ -21,7 +22,10 @@ class ClaudeService(IClaudeService):
         """Initialize Claude service"""
         self.api_key = api_key or Config.ANTHROPIC_API_KEY
         if not self.api_key:
-            raise ValueError("API key not provided. Set ANTHROPIC_API_KEY in config or environment variable")
+            raise ConfigurationError(
+                "API key not provided. Set ANTHROPIC_API_KEY in config or environment variable",
+                details={'config_key': 'ANTHROPIC_API_KEY'}
+            )
         
         self.base_url = "https://api.anthropic.com/v1"
         self.headers = {
@@ -139,11 +143,30 @@ class ClaudeService(IClaudeService):
         
         except requests.exceptions.Timeout as e:
             logger.error(f"Claude API request timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The request may be too complex or the API is slow.")
-            raise TimeoutError(f"Request to Claude API timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The query may be too complex or there may be network issues. Please try again or simplify your query.") from e
+            raise TimeoutError(
+                f"Request to Claude API timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The query may be too complex or there may be network issues. Please try again or simplify your query.",
+                details={
+                    'timeout_seconds': Config.CLAUDE_API_TIMEOUT,
+                    'model': model,
+                    'suggestion': 'Try simplifying your query or increasing CLAUDE_API_TIMEOUT if needed.'
+                }
+            ) from e
         
         except requests.exceptions.RequestException as e:
-            # If model not found error, try fallback models
+            # Check for rate limit (429)
             if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 429:
+                    logger.error(f"Claude API rate limit exceeded (429)")
+                    raise RateLimitError(
+                        "Claude API rate limit exceeded. Please wait before making another request.",
+                        details={
+                            'status_code': 429,
+                            'model': model,
+                            'suggestion': 'Wait a few moments before retrying your request.'
+                        }
+                    ) from e
+                
+                # If model not found error, try fallback models
                 error_data = e.response.json() if e.response.headers.get('content-type', '').startswith('application/json') else {}
                 error_type = error_data.get('error', {}).get('type', '')
                 
@@ -185,13 +208,31 @@ class ClaudeService(IClaudeService):
                             logger.warning(f"Fallback model '{fallback_model}' also failed: {str(fallback_error)}")
                             continue
                     
-                    # If all fallbacks failed, raise the original error
+                    # If all fallbacks failed, raise ClaudeAPIError
                     logger.error(f"All model fallbacks failed. Original model: '{model}', tried: {models_to_try}")
+                    raise ClaudeAPIError(
+                        f"Model '{model}' not found and all fallback models failed",
+                        details={
+                            'requested_model': model,
+                            'fallback_models_tried': models_to_try,
+                            'error_type': error_type
+                        }
+                    ) from e
+            
+            # Generic Claude API error
+            error_details = {'model': model}
+            if hasattr(e, 'response') and e.response is not None:
+                error_details['status_code'] = e.response.status_code
+                try:
+                    error_details['response_text'] = e.response.text[:500]  # Limit response text
+                except:
+                    pass
             
             logger.error(f"Claude API request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response details: {e.response.text}")
-            raise
+            raise ClaudeAPIError(
+                f"Claude API request failed: {str(e)}",
+                details=error_details
+            ) from e
     
     def stream_message(self, 
                       message: str, 
@@ -245,11 +286,34 @@ class ClaudeService(IClaudeService):
         
         except requests.exceptions.Timeout as e:
             logger.error(f"Claude API streaming request timed out after {Config.CLAUDE_API_TIMEOUT} seconds.")
-            raise TimeoutError(f"Streaming request to Claude API timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The query may be too complex or there may be network issues.") from e
+            raise TimeoutError(
+                f"Streaming request to Claude API timed out after {Config.CLAUDE_API_TIMEOUT} seconds. The query may be too complex or there may be network issues.",
+                details={
+                    'timeout_seconds': Config.CLAUDE_API_TIMEOUT,
+                    'model': model,
+                    'suggestion': 'Try simplifying your query or increasing CLAUDE_API_TIMEOUT if needed.'
+                }
+            ) from e
         
         except requests.exceptions.RequestException as e:
+            error_details = {'model': model}
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 429:
+                    raise RateLimitError(
+                        "Claude API rate limit exceeded during streaming. Please wait before making another request.",
+                        details={
+                            'status_code': 429,
+                            'model': model,
+                            'suggestion': 'Wait a few moments before retrying your request.'
+                        }
+                    ) from e
+                error_details['status_code'] = e.response.status_code
+            
             logger.error(f"Claude streaming request failed: {str(e)}")
-            raise
+            raise ClaudeAPIError(
+                f"Claude streaming request failed: {str(e)}",
+                details=error_details
+            ) from e
     
     def is_available(self) -> bool:
         """Check if Claude service is available, trying fallback models if needed"""

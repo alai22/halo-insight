@@ -12,6 +12,7 @@ from ..utils.config import Config
 from ..utils.logging import get_logger
 from ..utils.pii_protection import create_pii_protector
 from ..core.interfaces import ITopicExtractionService, IClaudeService
+from ..core.exceptions import ConfigurationError, ClaudeAPIError, RateLimitError
 from .claude_service import ClaudeService
 
 logger = get_logger('topic_extraction_service')
@@ -54,7 +55,10 @@ class TopicExtractionService(ITopicExtractionService):
         if not self.claude_service:
             # Try to get from service container if available
             # For now, we'll require it to be passed in
-            raise ValueError("ClaudeService is required for TopicExtractionService")
+            raise ConfigurationError(
+                "ClaudeService is required for TopicExtractionService",
+                details={'service': 'TopicExtractionService', 'required_dependency': 'ClaudeService'}
+            )
     
     def extract_conversation_metadata(self, conversation_items: List[Dict], max_retries: int = 3) -> Dict[str, any]:
         """
@@ -237,7 +241,15 @@ RESPONSE FORMAT (JSON only, no other text):
                         continue
                     else:
                         logger.error(f"Rate limit error after {max_retries} attempts: {error_msg}")
-                        raise Exception(f"Rate limit exceeded. Claude API is rate limiting requests. Please wait 1-2 minutes and try again. Details: {error_msg}")
+                        raise RateLimitError(
+                            f"Rate limit exceeded. Claude API is rate limiting requests. Please wait 1-2 minutes and try again.",
+                            details={
+                                'status_code': status_code,
+                                'attempts': max_retries,
+                                'error_message': error_msg,
+                                'suggestion': 'Wait 1-2 minutes before retrying'
+                            }
+                        )
                 else:
                     # Other HTTP errors
                     logger.error(f"HTTP error extracting metadata (status={status_code}): {error_msg}")
@@ -245,7 +257,17 @@ RESPONSE FORMAT (JSON only, no other text):
                         wait_time = min(2 ** attempt, 10)
                         time.sleep(wait_time)
                         continue
-                    raise Exception(f"HTTP error ({status_code}): {error_msg}")
+                    raise ClaudeAPIError(
+                        f"HTTP error ({status_code}): {error_msg}",
+                        details={
+                            'status_code': status_code,
+                            'attempts': attempt + 1,
+                            'max_retries': max_retries
+                        }
+                    )
+            except (RateLimitError, ClaudeAPIError):
+                # Re-raise custom exceptions as-is
+                raise
             except Exception as e:
                 error_msg = str(e)
                 # Check if it's a rate limit error in the message
@@ -257,14 +279,27 @@ RESPONSE FORMAT (JSON only, no other text):
                         continue
                     else:
                         logger.error(f"Rate limit error after {max_retries} attempts: {error_msg}")
-                        raise Exception(f"Rate limit exceeded. Claude API is rate limiting requests. Please wait a minute and try again. Details: {error_msg}")
+                        raise RateLimitError(
+                            f"Rate limit exceeded. Claude API is rate limiting requests. Please wait a minute and try again.",
+                            details={
+                                'attempts': max_retries,
+                                'error_message': error_msg,
+                                'suggestion': 'Wait 1-2 minutes before retrying'
+                            }
+                        )
                 else:
                     logger.error(f"Error extracting metadata: {error_msg}")
                     if attempt < max_retries - 1:
                         wait_time = min(2 ** attempt, 5)
                         time.sleep(wait_time)
                         continue
-                    raise Exception(f"Failed to extract metadata after {max_retries} attempts: {error_msg}")
+                    raise ClaudeAPIError(
+                        f"Failed to extract metadata after {max_retries} attempts: {error_msg}",
+                        details={
+                            'attempts': max_retries,
+                            'error_message': error_msg
+                        }
+                    )
         
         # Final fallback if all retries failed
         extracted_at = datetime.now(timezone.utc).isoformat()
@@ -583,13 +618,21 @@ Return ONLY the category name, nothing else."""
                 logger.error(f"Error extracting metadata for conversation {conversation_id} ({idx}/{total}): {error_msg}")
                 
                 # If it's a rate limit error, we should stop and let the user know
-                if '429' in error_msg or 'rate_limit' in error_msg.lower() or 'Too Many Requests' in error_msg:
+                if isinstance(e, RateLimitError) or '429' in error_msg or 'rate_limit' in error_msg.lower() or 'Too Many Requests' in error_msg:
                     logger.error(f"Rate limit exceeded. Stopping batch extraction. Processed {success_count}/{total} conversations.")
                     # Save what we have so far
                     if incremental_save_callback:
                         logger.info(f"Saving {success_count} extracted topics before stopping...")
-                    raise Exception(f"Rate limit exceeded after processing {success_count} of {total} conversations. "
-                                  f"Please wait 1-2 minutes and try again. Partial progress has been saved. Error: {error_msg}")
+                    raise RateLimitError(
+                        f"Rate limit exceeded after processing {success_count} of {total} conversations. Please wait 1-2 minutes and try again.",
+                        details={
+                            'processed': success_count,
+                            'total': total,
+                            'failed': failed_count,
+                            'error_message': error_msg,
+                            'suggestion': 'Partial progress has been saved. Wait 1-2 minutes before retrying.'
+                        }
+                    )
                 
                 # For other errors, continue but mark with default values
                 extracted_at = datetime.now(timezone.utc).isoformat()

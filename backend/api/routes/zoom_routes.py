@@ -20,6 +20,8 @@ from backend.services.zoom_download_service import ZoomDownloadService
 from backend.services.zoom_api_client import ZoomAPIClient
 from backend.utils.config import Config
 from backend.utils.email_service import EmailService
+from backend.core.exceptions import ValidationError, ServiceUnavailableError
+from backend.utils.error_helpers import validate_date_format, validate_date_range
 
 # Load environment variables from .env file
 load_dotenv()
@@ -89,7 +91,10 @@ def start_download():
         # Check if download is already running
         if download_state['is_running']:
             logger.warning("Attempted to start download while one is already running")
-            return jsonify({'status': 'error', 'message': 'Download is already running'}), 400
+            raise ValidationError(
+                "Download is already running",
+                details={'suggestion': 'Wait for the current download to complete or stop it first'}
+            )
         
         # Get request data
         data = request.get_json() or {}
@@ -102,19 +107,15 @@ def start_download():
         
         # Validate date parameters
         if not start_date or not end_date:
-            return jsonify({'status': 'error', 'message': 'start_date and end_date are required'}), 400
+            raise ValidationError(
+                "start_date and end_date are required",
+                details={'fields': ['start_date', 'end_date'], 'suggestion': 'Provide both dates in YYYY-MM-DD format'}
+            )
         
-        if not isinstance(start_date, str) or not isinstance(end_date, str):
-            return jsonify({'status': 'error', 'message': 'Dates must be strings in YYYY-MM-DD format'}), 400
-        
-        # Validate date range
-        try:
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-            if start_date_obj > end_date_obj:
-                return jsonify({'status': 'error', 'message': 'Start date must be before end date'}), 400
-        except ValueError:
-            return jsonify({'status': 'error', 'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+        # Validate date formats and range
+        validate_date_format(start_date, 'start_date')
+        validate_date_format(end_date, 'end_date')
+        validate_date_range(start_date, end_date)
         
         # Initialize download service
         try:
@@ -174,7 +175,10 @@ def stop_download():
     
     try:
         if not download_state['is_running']:
-            return jsonify({'status': 'error', 'message': 'No download is currently running'}), 400
+            raise ValidationError(
+                "No download is currently running",
+                details={'suggestion': 'Start a download first'}
+            )
         
         # Stop the download
         download_state['is_running'] = False

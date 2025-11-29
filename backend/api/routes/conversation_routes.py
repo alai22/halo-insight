@@ -9,6 +9,7 @@ from typing import Dict, Optional
 from flask import Blueprint, request, jsonify, g
 from ...models.response import SearchResult
 from ...utils.logging import get_logger
+from ...core.exceptions import ValidationError, NotFoundError, ServiceUnavailableError
 
 logger = get_logger('conversation_routes')
 
@@ -48,6 +49,18 @@ def _normalize_firmware_version_for_display(version: str) -> Optional[str]:
 # Create blueprint
 conversation_bp = Blueprint('conversations', __name__, url_prefix='/api/conversations')
 
+
+def _get_service_container():
+    """Helper to get service container or raise ServiceUnavailableError"""
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
+    return service_container
+
 # Global topic extraction state (for async processing)
 topic_extraction_state = {
     'is_running': False,
@@ -72,33 +85,30 @@ topic_extraction_thread: Optional[threading.Thread] = None
 @conversation_bp.route('/summary')
 def conversations_summary():
     """Get conversation data summary"""
-    try:
-        # Get service from container (injected via Flask's g)
-        # Use getattr with default None to avoid AttributeError
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        conversation_service = service_container.get_conversation_service()
-        summary = conversation_service.get_summary()
-        
-        return jsonify({
-            'success': True,
-            'summary': summary.to_string(),
-            'data': {
-                'total_items': summary.total_items,
-                'unique_customers': summary.unique_customers,
-                'unique_conversations': summary.unique_conversations,
-                'date_range': summary.date_range,
-                'content_types': summary.content_types,
-                'message_types': summary.message_types
-            }
-        })
+    # Get service from container (injected via Flask's g)
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except Exception as e:
-        logger.error(f"Conversation summary error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+    conversation_service = service_container.get_conversation_service()
+    summary = conversation_service.get_summary()
+    
+    return jsonify({
+        'success': True,
+        'summary': summary.to_string(),
+        'data': {
+            'total_items': summary.total_items,
+            'unique_customers': summary.unique_customers,
+            'unique_conversations': summary.unique_conversations,
+            'date_range': summary.date_range,
+            'content_types': summary.content_types,
+            'message_types': summary.message_types
+        }
+    })
 
 
 @conversation_bp.route('/search', methods=['POST'])
@@ -106,20 +116,18 @@ def conversations_search():
     """Search conversations"""
     try:
         # Get service from container (injected via Flask's g)
-        # Use getattr with default None to avoid AttributeError
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
+        service_container = _get_service_container()
         conversation_service = service_container.get_conversation_service()
         
-        data = request.get_json()
+        data = request.get_json() or {}
         query = data.get('query')
         limit = data.get('limit', 10)
         
         if not query:
-            return jsonify({'error': 'Query is required'}), 400
+            raise ValidationError(
+                "Query is required",
+                details={'field': 'query', 'suggestion': 'Provide a search query in the request body'}
+            )
         
         logger.info(f"Conversation search request: query={query}, limit={limit}")
         
@@ -138,45 +146,38 @@ def conversations_search():
             'count': len(results)
         })
     
-    except Exception as e:
-        logger.error(f"Conversation search error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
 
 @conversation_bp.route('/<conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
     """Get all items for a specific conversation ID"""
-    try:
-        # Get service from container (injected via Flask's g)
-        # Use getattr with default None to avoid AttributeError
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
-        
-        conversation_service = service_container.get_conversation_service()
-        
-        logger.info(f"Get conversation request: conversation_id={conversation_id}")
-        
-        items = conversation_service.get_conversation_by_id(conversation_id)
-        
-        if not items:
-            return jsonify({
-                'success': False,
-                'error': f'Conversation {conversation_id} not found',
-                'items': []
-            }), 404
-        
-        return jsonify({
-            'success': True,
-            'conversation_id': conversation_id,
-            'items': items,
-            'count': len(items)
-        })
+    # Get service from container (injected via Flask's g)
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error("Service container not available in request context")
+        raise ServiceUnavailableError(
+            "Service container not initialized",
+            details={'suggestion': 'Check application initialization'}
+        )
     
-    except Exception as e:
-        logger.error(f"Get conversation error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+    conversation_service = service_container.get_conversation_service()
+    
+    logger.info(f"Get conversation request: conversation_id={conversation_id}")
+    
+    items = conversation_service.get_conversation_by_id(conversation_id)
+    
+    if not items:
+        raise NotFoundError(
+            f'Conversation {conversation_id} not found',
+            details={'conversation_id': conversation_id}
+        )
+    
+    return jsonify({
+        'success': True,
+        'conversation_id': conversation_id,
+        'items': items,
+        'count': len(items)
+    })
 
 
 @conversation_bp.route('/topic-trends', methods=['GET'])
@@ -184,10 +185,7 @@ def get_topic_trends():
     """Get conversation topic trends for a specific date (uses pre-extracted topics)"""
     try:
         # Get service from container (injected via Flask's g)
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
+        service_container = _get_service_container()
         
         # Get date parameter (default to 2025-10-20 for prototype)
         date = request.args.get('date', '2025-10-20')
@@ -412,10 +410,7 @@ def extract_topics():
             }), 400
         
         # Get service from container (injected via Flask's g)
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
+        service_container = _get_service_container()
         
         conversation_service = service_container.get_conversation_service()
         claude_service = service_container.get_claude_service()
@@ -700,10 +695,7 @@ def get_conversation_count():
     """Get count of conversations for a specific date or date range, including already-extracted count"""
     try:
         # Get service from container (injected via Flask's g)
-        service_container = getattr(g, 'service_container', None)
-        if not service_container:
-            logger.error("Service container not available in request context")
-            return jsonify({'error': 'Service container not initialized'}), 500
+        service_container = _get_service_container()
         
         conversation_service = service_container.get_conversation_service()
         
