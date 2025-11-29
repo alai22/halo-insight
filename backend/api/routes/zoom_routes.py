@@ -201,7 +201,14 @@ def get_download_stats():
     """Get overall download statistics"""
     try:
         if not download_service:
-            download_service = ZoomDownloadService()
+            try:
+                download_service = ZoomDownloadService()
+            except Exception as e:
+                logger.error(f"Failed to initialize ZoomDownloadService: {e}")
+                return jsonify({
+                    'status': 'error', 
+                    'message': f'Failed to initialize Zoom service: {str(e)}. Please check your Zoom credentials.'
+                }), 500
         
         stats = download_service.get_download_statistics()
         
@@ -220,7 +227,14 @@ def get_download_history():
     """Get download file history"""
     try:
         if not download_service:
-            download_service = ZoomDownloadService()
+            try:
+                download_service = ZoomDownloadService()
+            except Exception as e:
+                logger.error(f"Failed to initialize ZoomDownloadService: {e}")
+                return jsonify({
+                    'status': 'error', 
+                    'message': f'Failed to initialize Zoom service: {str(e)}. Please check your Zoom credentials.'
+                }), 500
         
         stats = download_service.get_download_statistics()
         

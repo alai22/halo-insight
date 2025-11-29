@@ -55,6 +55,8 @@ class ZoomAPIClient:
         
         # Request new token
         logger.info("Requesting new Zoom OAuth access token")
+        logger.debug(f"Using Account ID: {self.account_id[:10]}... (truncated)")
+        logger.debug(f"Using Client ID: {self.client_id[:10]}... (truncated)")
         
         # Create Basic Auth header
         credentials = f"{self.client_id}:{self.client_secret}"
@@ -66,14 +68,24 @@ class ZoomAPIClient:
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         
-        # Parameters should be in the POST body, not query string
+        # Parameters should be in the POST body as form-encoded data
+        # For Server-to-Server OAuth, grant_type must be 'account_credentials'
         data = {
             'grant_type': 'account_credentials',
             'account_id': self.account_id
         }
         
+        logger.debug(f"OAuth request URL: {url}")
+        logger.debug(f"OAuth request data: grant_type=account_credentials, account_id={self.account_id[:10]}...")
+        
         try:
             response = requests.post(url, headers=headers, data=data, timeout=30)
+            
+            # Log response details for debugging
+            logger.debug(f"OAuth response status: {response.status_code}")
+            if response.status_code != 200:
+                logger.error(f"OAuth response body: {response.text}")
+            
             response.raise_for_status()
             
             data = response.json()
@@ -88,14 +100,26 @@ class ZoomAPIClient:
         except requests.exceptions.HTTPError as e:
             # Capture detailed error response from Zoom
             error_details = "Unknown error"
+            error_code = None
             if hasattr(e, 'response') and e.response is not None:
                 try:
                     error_json = e.response.json()
                     error_details = error_json.get('error_description', error_json.get('error', e.response.text))
+                    error_code = error_json.get('error', '')
                     logger.error(f"Zoom API error response: {error_json}")
                 except:
                     error_details = e.response.text
                     logger.error(f"Zoom API error response (non-JSON): {error_details}")
+            
+            # Provide helpful error message for common issues
+            if error_code == 'unsupported_grant_type':
+                error_details = (
+                    f"{error_details}. "
+                    "This usually means your Zoom app is not a Server-to-Server OAuth app. "
+                    "Please verify in Zoom Marketplace that you created a 'Server-to-Server OAuth' app, "
+                    "not a regular OAuth app. The grant_type 'account_credentials' only works with Server-to-Server apps."
+                )
+            
             logger.error(f"Failed to obtain Zoom access token: {e}")
             logger.error(f"Zoom API error details: {error_details}")
             raise Exception(f"Zoom OAuth failed: {error_details}")

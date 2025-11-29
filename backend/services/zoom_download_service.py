@@ -33,6 +33,10 @@ class ZoomDownloadService(IZoomDownloadService):
         except ValueError as e:
             logger.error(f"Failed to initialize ZoomDownloadService: {e}")
             raise
+        except Exception as e:
+            # Don't fail initialization if OAuth fails - we'll check later
+            logger.warning(f"ZoomDownloadService initialized but OAuth may fail: {e}")
+            self.api_client = None
     
     def download_chat_messages(self, start_date: str, end_date: str,
                                progress_callback: Optional[Callable] = None,
@@ -46,6 +50,13 @@ class ZoomDownloadService(IZoomDownloadService):
             progress_callback: Optional callback(current, total, downloaded, failed)
             max_duration_minutes: Maximum duration for download in minutes
         """
+        if not self.api_client:
+            # Try to initialize if not already done
+            try:
+                self.api_client = ZoomAPIClient()
+            except Exception as e:
+                raise ValueError(f"Zoom API client not available: {e}. Please check your Zoom credentials.")
+        
         try:
             logger.info(f"Starting Zoom chat download: {start_date} to {end_date}")
             
