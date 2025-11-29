@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { Download, Database, Bot, TrendingUp, Wrench } from 'lucide-react';
+import { Download, Database, Bot, TrendingUp, Wrench, Video } from 'lucide-react';
 
 const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const [activeSection, setActiveSection] = useState(() => {
     // Determine section based on current mode/adminMode
-    if (adminMode === 'download' || currentMode === 'api-data-manager') {
+    if (adminMode === 'download' || currentMode === 'api-data-manager' || currentMode === 'zoom') {
       return 'data-management';
     }
     if (adminMode === 'claude') {
@@ -38,6 +38,19 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
       action: () => {
         setAdminMode('download');
         setCurrentMode('tools');
+      }
+    },
+    {
+      id: 'zoom',
+      name: 'Zoom Download Manager',
+      description: 'Download chat messages from Zoom API',
+      icon: Video,
+      color: 'text-indigo-600',
+      bgColor: 'bg-indigo-50',
+      borderColor: 'border-indigo-200',
+      action: () => {
+        setCurrentMode('zoom');
+        setAdminMode(null);
       }
     }
   ];
@@ -78,6 +91,9 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
     }
     if (tool.id === 'download') {
       return adminMode === 'download';
+    }
+    if (tool.id === 'zoom') {
+      return currentMode === 'zoom';
     }
     if (tool.id === 'claude') {
       return adminMode === 'claude';
