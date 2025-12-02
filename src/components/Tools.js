@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
-import { Download, Database, Bot, TrendingUp, Wrench, Video } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Download, Database, Bot, TrendingUp, Wrench, Video, Activity } from 'lucide-react';
 
 const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const [activeSection, setActiveSection] = useState(() => {
     // Determine section based on current mode/adminMode
-    if (adminMode === 'download' || currentMode === 'api-data-manager' || currentMode === 'zoom') {
+    if (adminMode === 'download' || currentMode === 'api-data-manager' || currentMode === 'zoom' || currentMode === 'analytics') {
       return 'data-management';
     }
     if (adminMode === 'claude') {
@@ -12,6 +12,15 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
     }
     return 'data-management'; // Default to data management
   });
+
+  // Update active section when mode changes
+  useEffect(() => {
+    if (adminMode === 'download' || currentMode === 'api-data-manager' || currentMode === 'zoom' || currentMode === 'analytics') {
+      setActiveSection('data-management');
+    } else if (adminMode === 'claude') {
+      setActiveSection('admin-tools');
+    }
+  }, [currentMode, adminMode]);
 
   const dataManagementTools = [
     {
@@ -50,6 +59,19 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
       borderColor: 'border-indigo-200',
       action: () => {
         setCurrentMode('zoom');
+        setAdminMode(null);
+      }
+    },
+    {
+      id: 'analytics',
+      name: 'Analytics Dashboard',
+      description: 'View visitor and pageview analytics',
+      icon: Activity,
+      color: 'text-cyan-600',
+      bgColor: 'bg-cyan-50',
+      borderColor: 'border-cyan-200',
+      action: () => {
+        setCurrentMode('analytics');
         setAdminMode(null);
       }
     }
@@ -94,6 +116,9 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
     }
     if (tool.id === 'zoom') {
       return currentMode === 'zoom';
+    }
+    if (tool.id === 'analytics') {
+      return currentMode === 'analytics';
     }
     if (tool.id === 'claude') {
       return adminMode === 'claude';

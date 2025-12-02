@@ -10,7 +10,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       return 'gladly';
     } else if (['churn-trends', 'survicate'].includes(currentMode)) {
       return 'churn';
-    } else if (['api-data-manager', 'tools'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
+    } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       return 'tools';
     }
     // Default to gladly if mode doesn't match
@@ -23,7 +23,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       setActiveTab('gladly');
     } else if (['churn-trends', 'survicate'].includes(currentMode)) {
       setActiveTab('churn');
-    } else if (['api-data-manager', 'tools'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
+    } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       setActiveTab('tools');
     }
   }, [currentMode, adminMode]);
@@ -128,7 +128,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           onClick={() => {
             setActiveTab('tools');
             // Switch to tools mode if current mode is from other tab
-            if (!['api-data-manager', 'tools'].includes(currentMode) && adminMode !== 'download' && adminMode !== 'claude') {
+            if (!['api-data-manager', 'tools', 'analytics'].includes(currentMode) && adminMode !== 'download' && adminMode !== 'claude') {
               const defaultMode = 'tools';
               setCurrentMode(defaultMode);
               setSearchParams({ mode: defaultMode });
