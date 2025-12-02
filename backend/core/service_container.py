@@ -40,6 +40,7 @@ class ServiceContainer:
         self._zoom_download_service: Optional['IZoomDownloadService'] = None
         self._survey_service: Optional['ISurveyService'] = None
         self._survicate_rag_service: Optional['ISurvicateRAGService'] = None
+        self._analytics_service = None
         
         # Track if services are overridden (for testing)
         self._overrides: dict = {}
@@ -343,6 +344,38 @@ class ServiceContainer:
         
         return self._survicate_rag_service
     
+    # Analytics Service
+    def get_analytics_service(self, override=None):
+        """
+        Get or create the AnalyticsService instance.
+        
+        Args:
+            override: Optional service instance to use instead (for testing)
+            
+        Returns:
+            AnalyticsService instance
+        """
+        if override is not None:
+            self._overrides['analytics_service'] = override
+            self._analytics_service = override
+            return override
+        
+        if 'analytics_service' in self._overrides:
+            return self._overrides.get('analytics_service')
+        
+        if self._analytics_service is None:
+            try:
+                # Lazy import to avoid circular dependencies
+                from ..services.analytics_service import AnalyticsService
+                logger.debug("Creating AnalyticsService instance")
+                self._analytics_service = AnalyticsService()
+                logger.info("AnalyticsService initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize AnalyticsService: {str(e)}")
+                self._analytics_service = None
+        
+        return self._analytics_service
+    
     def clear_overrides(self):
         """Clear all service overrides (useful for testing cleanup)"""
         self._overrides.clear()
@@ -359,6 +392,7 @@ class ServiceContainer:
         self._zoom_download_service = None
         self._survey_service = None
         self._survicate_rag_service = None
+        self._analytics_service = None
         self._overrides.clear()
         logger.debug("Service container reset")
 

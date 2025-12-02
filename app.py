@@ -29,10 +29,12 @@ from backend.api.routes.download_routes import download_bp
 from backend.api.routes.zoom_routes import zoom_bp
 from backend.api.routes.survicate_routes import survicate_bp
 from backend.api.routes.auth_routes import auth_bp
+from backend.api.routes.analytics_routes import analytics_bp
 
 # Import middleware
 from backend.api.middleware.error_handlers import register_error_handlers
 from backend.api.middleware.request_logging import register_request_logging
+from backend.api.middleware.analytics import register_analytics_middleware
 
 # Import utilities
 from backend.utils.config import Config
@@ -94,6 +96,15 @@ def create_app():
             # Set to None so routes can handle gracefully
             g.service_container = None
     
+    # Register analytics middleware (after service container is available)
+    service_container = get_service_container()
+    analytics_service = service_container.get_analytics_service()
+    if analytics_service:
+        register_analytics_middleware(app, analytics_service)
+        app_logger.info("Analytics middleware registered")
+    else:
+        app_logger.warning("Analytics service not available - analytics middleware not registered")
+    
     # Register blueprints
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)  # Auth routes (no auth required)
@@ -103,6 +114,7 @@ def create_app():
     app.register_blueprint(download_bp)
     app.register_blueprint(zoom_bp)
     app.register_blueprint(survicate_bp)
+    app.register_blueprint(analytics_bp)
     
     # Register error handlers
     register_error_handlers(app)

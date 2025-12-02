@@ -12,6 +12,8 @@ import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import ApiDataManager from './components/ApiDataManager';
 import Tools from './components/Tools';
+import AnalyticsDashboard from './components/AnalyticsDashboard';
+import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
 
@@ -45,7 +47,8 @@ function App() {
     'churn-trends': [],
     'conversation-trends': [],
     'api-data-manager': [],
-    'tools': []
+    'tools': [],
+    'analytics': []
   });
   
   // Initialize currentMode from URL or default
@@ -196,6 +199,9 @@ function App() {
       checkHealth();
     }
   }, [isAuthenticated]);
+
+  // Track pageviews with analytics
+  useAnalytics();
 
   const handleLogin = async () => {
     // Check localStorage first - if token exists, we're authenticated
@@ -629,12 +635,14 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || currentMode === 'zoom' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {/* Show actual tool components when active */}
           {currentMode === 'api-data-manager' ? (
             <ApiDataManager />
           ) : currentMode === 'zoom' ? (
             <ZoomDownloadManager />
+          ) : currentMode === 'analytics' ? (
+            <AnalyticsDashboard />
           ) : adminMode === 'download' ? (
             <DownloadManager />
           ) : adminMode === 'claude' ? (
@@ -664,7 +672,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && (
           <div className="bg-white border-t border-gray-200 p-6">
             {/* Clear Conversation Button for Survicate Mode */}
             {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Database, Search, MessageSquare, ChevronDown, Download, FileText, BarChart3, Video } from 'lucide-react';
+import { Bot, Database, Search, MessageSquare, ChevronDown, Download, FileText, BarChart3, Video, TrendingUp } from 'lucide-react';
 
 const ModeSelector = ({ currentMode, setCurrentMode }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -54,6 +54,13 @@ const ModeSelector = ({ currentMode, setCurrentMode }) => {
       description: 'Visualize cancellation trends and patterns',
       icon: BarChart3,
       color: 'text-red-600'
+    },
+    {
+      id: 'analytics',
+      name: 'Analytics',
+      description: 'View visitor and pageview analytics',
+      icon: TrendingUp,
+      color: 'text-cyan-600'
     }
   ];
 
