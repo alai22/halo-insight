@@ -271,7 +271,63 @@ class AnalyticsService:
         """Manually flush the buffer (useful for shutdown)"""
         self._flush_buffer()
     
-    def query_events(self, start_date: str, end_date: str, page_path_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_buffer_status(self) -> Dict[str, Any]:
+        """Get current buffer status"""
+        with self.buffer_lock:
+            buffer_size = len(self.event_buffer)
+            time_since_write = time.time() - self.last_write_time
+        
+        return {
+            'buffer_size': buffer_size,
+            'batch_size': self.batch_size,
+            'time_since_write_seconds': int(time_since_write),
+            'batch_interval_seconds': self.batch_interval_seconds,
+            'will_flush_when': 'buffer_full' if buffer_size >= self.batch_size else f'after_{self.batch_interval_seconds - int(time_since_write)}s'
+        }
+    
+    def get_buffered_events(self, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
+        """
+        Get events currently in buffer (not yet written to S3)
+        
+        Args:
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+            
+        Returns:
+            List of buffered event dictionaries
+        """
+        with self.buffer_lock:
+            buffered = list(self.event_buffer)
+        
+        if not start_date and not end_date:
+            return buffered
+        
+        # Filter by date if specified
+        filtered = []
+        for event in buffered:
+            timestamp_str = event.get('timestamp', '')
+            try:
+                if timestamp_str.endswith('Z'):
+                    dt = datetime.fromisoformat(timestamp_str[:-1])
+                else:
+                    dt = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                
+                event_date = dt.strftime('%Y-%m-%d')
+                
+                if start_date and event_date < start_date:
+                    continue
+                if end_date and event_date > end_date:
+                    continue
+                
+                filtered.append(event)
+            except Exception:
+                # Include events with invalid timestamps if no date filter
+                if not start_date and not end_date:
+                    filtered.append(event)
+        
+        return filtered
+    
+    def query_events(self, start_date: str, end_date: str, page_path_filter: Optional[str] = None, include_buffer: bool = True) -> List[Dict[str, Any]]:
         """
         Query events from S3 for a date range
         
@@ -279,12 +335,16 @@ class AnalyticsService:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
             page_path_filter: Optional page path to filter by
+            include_buffer: Whether to include buffered (not yet written) events
             
         Returns:
-            List of event dictionaries
+            List of event dictionaries (from S3 and optionally from buffer)
         """
+        # If S3 not configured, only return buffered events if requested
         if not self.s3_client or not self.bucket_name:
-            logger.warning("S3 not configured, cannot query events")
+            logger.warning("S3 not configured, only returning buffered events")
+            if include_buffer:
+                return self.get_buffered_events(start_date, end_date)
             return []
         
         try:
@@ -345,9 +405,20 @@ class AnalyticsService:
                 current_dt += timedelta(days=1)
             
             logger.info(f"Queried {len(all_events)} events from S3 for date range {start_date} to {end_date}")
+            
+            # Also include buffered events if requested
+            if include_buffer:
+                buffered_events = self.get_buffered_events(start_date, end_date)
+                if buffered_events:
+                    logger.info(f"Including {len(buffered_events)} buffered events in query results")
+                    all_events.extend(buffered_events)
+            
             return all_events
             
         except Exception as e:
             logger.error(f"Error querying events from S3: {e}", exc_info=True)
+            # Still return buffered events even if S3 query fails
+            if include_buffer:
+                return self.get_buffered_events(start_date, end_date)
             return []
 

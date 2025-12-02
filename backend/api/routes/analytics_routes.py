@@ -95,9 +95,80 @@ def track_event():
         }), 500
 
 
+@analytics_bp.route('/status', methods=['GET'])
+def get_analytics_status():
+    """Get analytics service status and buffer information"""
+    try:
+        # Get analytics service from service container
+        analytics_service = g.service_container.get_analytics_service() if hasattr(g, 'service_container') else None
+        
+        if not analytics_service:
+            return jsonify({
+                'success': False,
+                'error': 'Analytics service not available'
+            }), 503
+        
+        status = analytics_service.get_buffer_status()
+        buffered_count = len(analytics_service.get_buffered_events())
+        
+        return jsonify({
+            'success': True,
+            'status': {
+                **status,
+                'buffered_events': buffered_count,
+                's3_configured': analytics_service.s3_client is not None and analytics_service.bucket_name is not None
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting analytics status: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'An error occurred while getting analytics status'
+        }), 500
+
+
+@analytics_bp.route('/flush', methods=['POST'])
+def flush_analytics():
+    """Manually flush analytics buffer to S3"""
+    try:
+        # Get analytics service from service container
+        analytics_service = g.service_container.get_analytics_service() if hasattr(g, 'service_container') else None
+        
+        if not analytics_service:
+            return jsonify({
+                'success': False,
+                'error': 'Analytics service not available'
+            }), 503
+        
+        # Get buffer status before flush
+        status_before = analytics_service.get_buffer_status()
+        buffered_before = status_before['buffer_size']
+        
+        # Flush buffer
+        analytics_service.flush()
+        
+        # Get status after flush
+        status_after = analytics_service.get_buffer_status()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Flushed {buffered_before} events to S3',
+            'events_flushed': buffered_before,
+            'buffer_size_after': status_after['buffer_size']
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error flushing analytics buffer: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'An error occurred while flushing analytics buffer'
+        }), 500
+
+
 @analytics_bp.route('/query', methods=['GET'])
 def query_analytics():
-    """Query analytics data from S3"""
+    """Query analytics data from S3 (includes buffered events)"""
     try:
         # Get analytics service from service container
         analytics_service = g.service_container.get_analytics_service() if hasattr(g, 'service_container') else None
@@ -113,6 +184,7 @@ def query_analytics():
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         page_path = request.args.get('page_path')  # Optional filter
+        include_buffer = request.args.get('include_buffer', 'true').lower() == 'true'  # Default to true
         
         # Default to last 30 days if not specified
         if not end_date:
@@ -130,8 +202,11 @@ def query_analytics():
                 'error': 'Invalid date format. Use YYYY-MM-DD'
             }), 400
         
-        # Query events
-        events = analytics_service.query_events(start_date, end_date, page_path)
+        # Query events (includes buffered events by default)
+        events = analytics_service.query_events(start_date, end_date, page_path, include_buffer=include_buffer)
+        
+        # Get buffer status for info
+        buffer_status = analytics_service.get_buffer_status()
         
         # Aggregate data
         total_pageviews = len(events)
@@ -245,6 +320,10 @@ def query_analytics():
                     'date_range': {
                         'start': start_date,
                         'end': end_date
+                    },
+                    'buffer_status': {
+                        'buffered_events': buffer_status['buffer_size'],
+                        'will_flush_when': buffer_status['will_flush_when']
                     }
                 },
                 'pageviews_over_time': pageviews_timeseries,
