@@ -188,6 +188,24 @@ class ZoomAPIClient:
                     self._token_expires_at = None
                     headers['Authorization'] = f'Bearer {self.get_access_token()}'
                     continue
+                elif e.response.status_code == 400:
+                    # Bad Request - likely missing scopes or invalid parameters
+                    error_text = e.response.text
+                    logger.error(f"HTTP 400 Bad Request: {error_text}")
+                    logger.error(f"Request URL: {url}")
+                    logger.error(f"Request params: {params}")
+                    
+                    # Check if it's a scope/permission issue
+                    if 'scope' in error_text.lower() or 'permission' in error_text.lower() or 'unauthorized' in error_text.lower():
+                        error_msg = (
+                            f"400 Bad Request - Missing required scopes. "
+                            f"Please enable 'chat_message:read:admin' or 'imchat:read:admin' scope in your "
+                            f"Server-to-Server OAuth app settings in Zoom Marketplace. "
+                            f"Error: {error_text}"
+                        )
+                        raise Exception(error_msg)
+                    else:
+                        raise Exception(f"400 Bad Request: {error_text}")
                 elif e.response.status_code == 429:
                     retry_after = int(e.response.headers.get('Retry-After', 60))
                     logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
@@ -195,6 +213,8 @@ class ZoomAPIClient:
                     continue
                 else:
                     logger.error(f"HTTP error {e.response.status_code}: {e.response.text}")
+                    logger.error(f"Request URL: {url}")
+                    logger.error(f"Request params: {params}")
                     raise
             except requests.exceptions.RequestException as e:
                 if attempt == retries - 1:
