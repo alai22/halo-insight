@@ -199,6 +199,8 @@ def stop_download():
 @zoom_bp.route('/download/stats', methods=['GET'])
 def get_download_stats():
     """Get overall download statistics"""
+    global download_service
+    
     try:
         if not download_service:
             try:
@@ -225,6 +227,8 @@ def get_download_stats():
 @zoom_bp.route('/download/history', methods=['GET'])
 def get_download_history():
     """Get download file history"""
+    global download_service
+    
     try:
         if not download_service:
             try:

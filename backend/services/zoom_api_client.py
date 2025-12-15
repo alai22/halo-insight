@@ -31,13 +31,25 @@ class ZoomAPIClient:
                  base_url: Optional[str] = None):
         """Initialize Zoom API client"""
         
-        self.account_id = account_id or Config.ZOOM_ACCOUNT_ID
-        self.client_id = client_id or Config.ZOOM_CLIENT_ID
-        self.client_secret = client_secret or Config.ZOOM_CLIENT_SECRET
+        self.account_id = (account_id or Config.ZOOM_ACCOUNT_ID or "").strip()
+        self.client_id = (client_id or Config.ZOOM_CLIENT_ID or "").strip()
+        self.client_secret = (client_secret or Config.ZOOM_CLIENT_SECRET or "").strip()
         self.base_url = base_url or "https://api.zoom.us/v2"
         
         if not self.account_id or not self.client_id or not self.client_secret:
-            raise ValueError("ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, and ZOOM_CLIENT_SECRET must be set")
+            missing = []
+            if not self.account_id:
+                missing.append("ZOOM_ACCOUNT_ID")
+            if not self.client_id:
+                missing.append("ZOOM_CLIENT_ID")
+            if not self.client_secret:
+                missing.append("ZOOM_CLIENT_SECRET")
+            raise ValueError(f"Missing required Zoom credentials: {', '.join(missing)}. Please check your .env file.")
+        
+        # Log credential status (without exposing values)
+        logger.info(f"ZoomAPIClient initialized - Account ID: {self.account_id[:10]}... (length: {len(self.account_id)}), "
+                   f"Client ID: {self.client_id[:10]}... (length: {len(self.client_id)}), "
+                   f"Client Secret: {'*' * min(len(self.client_secret), 10)}... (length: {len(self.client_secret)})")
         
         # Token cache
         self._access_token = None
@@ -119,9 +131,20 @@ class ZoomAPIClient:
                     "Please verify in Zoom Marketplace that you created a 'Server-to-Server OAuth' app, "
                     "not a regular OAuth app. The grant_type 'account_credentials' only works with Server-to-Server apps."
                 )
+            elif error_code == 'invalid_client':
+                error_details = (
+                    f"{error_details}. "
+                    "This usually means the Client ID or Client Secret is incorrect, or the app is not activated. "
+                    "Please verify: "
+                    "1) Client ID and Client Secret are correct (check for extra spaces or typos), "
+                    "2) The Server-to-Server OAuth app is activated/published in Zoom Marketplace, "
+                    "3) The credentials match the app type (Server-to-Server, not regular OAuth)"
+                )
             
             logger.error(f"Failed to obtain Zoom access token: {e}")
             logger.error(f"Zoom API error details: {error_details}")
+            logger.error(f"Using Account ID: {self.account_id[:10]}... (length: {len(self.account_id)})")
+            logger.error(f"Using Client ID: {self.client_id[:10]}... (length: {len(self.client_id)})")
             raise Exception(f"Zoom OAuth failed: {error_details}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to obtain Zoom access token: {e}")
