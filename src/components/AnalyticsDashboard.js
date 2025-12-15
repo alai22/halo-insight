@@ -339,13 +339,13 @@ const AnalyticsDashboard = () => {
       {/* IP Addresses Table */}
       {ipAddresses.length > 0 && (
         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">IP Addresses (Privacy Protected)</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">IP Addresses</h3>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    IP Address (Masked)
+                    IP Address
                   </th>
                 </tr>
               </thead>

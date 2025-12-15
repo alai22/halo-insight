@@ -276,26 +276,15 @@ def query_analytics():
         for date_key, visitors_set in visitors_by_date.items():
             unique_visitors_by_date[date_key] = len(visitors_set)
         
-        # IP addresses (with privacy - hash last octet for display)
+        # IP addresses
         ip_list = []
         ip_seen = set()
         for event in events:
             ip = event.get('ip_address', '')
             if ip and ip not in ip_seen and ip != 'Unknown':
                 ip_seen.add(ip)
-                # Hash last octet for privacy
-                if '.' in ip:
-                    parts = ip.split('.')
-                    if len(parts) == 4:
-                        parts[-1] = 'xxx'
-                        masked_ip = '.'.join(parts)
-                    else:
-                        masked_ip = ip
-                else:
-                    masked_ip = ip
                 ip_list.append({
-                    'ip': masked_ip,
-                    'full_ip': ip  # Keep full IP for backend analysis
+                    'ip': ip
                 })
         
         # Convert pageviews_by_date to sorted list for chart
