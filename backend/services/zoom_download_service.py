@@ -76,12 +76,16 @@ class ZoomDownloadService(IZoomDownloadService):
             
             # Get all chat sessions
             logger.info("Fetching chat sessions...")
+            if progress_callback:
+                # Update phase to fetching_sessions
+                progress_callback(0, 0, 0, 0, phase='fetching_sessions')
+            
             sessions = self.api_client.get_all_chat_sessions(start_date, end_date)
             
             if not sessions:
                 logger.warning("No chat sessions found in date range")
                 if progress_callback:
-                    progress_callback(0, 0, 0, 0)
+                    progress_callback(0, 0, 0, 0, phase='completed')
                 return
             
             total_sessions = len(sessions)
@@ -90,9 +94,10 @@ class ZoomDownloadService(IZoomDownloadService):
             # Initialize progress tracking
             downloaded_count = 0
             failed_count = 0
+            total_messages = 0
             
             if progress_callback:
-                progress_callback(0, total_sessions, 0, 0)
+                progress_callback(0, total_sessions, 0, 0, phase='downloading_messages')
             
             # Download messages for each session
             try:
@@ -112,17 +117,25 @@ class ZoomDownloadService(IZoomDownloadService):
                         try:
                             logger.info(f"Processing session {i}/{total_sessions}: {session_id}")
                             
+                            # Update progress with current session info
+                            if progress_callback:
+                                progress_callback(i, total_sessions, downloaded_count, failed_count, 
+                                                current_session_id=session_id, phase='downloading_messages')
+                            
                             # Get all messages for this session
                             messages = self.api_client.get_all_chat_messages(
                                 session_id, start_date, end_date
                             )
+                            
+                            message_count = len(messages)
+                            total_messages += message_count
                             
                             # Create data structure
                             session_data = {
                                 'session_id': session_id,
                                 'session_info': session,
                                 'messages': messages,
-                                'message_count': len(messages),
+                                'message_count': message_count,
                                 '_metadata': {
                                     'downloaded_at': datetime.now().isoformat(),
                                     'date_range': {
@@ -137,9 +150,13 @@ class ZoomDownloadService(IZoomDownloadService):
                             outfile.write(json.dumps(session_data) + '\n')
                             downloaded_count += 1
                             
-                            # Update progress
+                            # Update progress with message counts
                             if progress_callback:
-                                progress_callback(i, total_sessions, downloaded_count, failed_count)
+                                progress_callback(i, total_sessions, downloaded_count, failed_count,
+                                                current_session_id=session_id,
+                                                messages_in_session=message_count,
+                                                total_messages=total_messages,
+                                                phase='downloading_messages')
                             
                             # Small delay to avoid rate limiting
                             time.sleep(0.2)
@@ -148,7 +165,10 @@ class ZoomDownloadService(IZoomDownloadService):
                             logger.error(f"Error processing session {session_id}: {session_error}")
                             failed_count += 1
                             if progress_callback:
-                                progress_callback(i, total_sessions, downloaded_count, failed_count)
+                                progress_callback(i, total_sessions, downloaded_count, failed_count,
+                                                current_session_id=session_id,
+                                                total_messages=total_messages,
+                                                phase='downloading_messages')
                             continue
                 
                 elapsed_time = datetime.now() - start_time
@@ -156,14 +176,27 @@ class ZoomDownloadService(IZoomDownloadService):
                 logger.info(f"Time elapsed: {elapsed_time}")
                 logger.info(f"Successfully downloaded: {downloaded_count} sessions")
                 logger.info(f"Failed: {failed_count} sessions")
+                logger.info(f"Total messages downloaded: {total_messages}")
                 logger.info(f"Output saved to: {output_file}")
+                
+                # Update progress to uploading phase
+                if progress_callback:
+                    progress_callback(downloaded_count, total_sessions, downloaded_count, failed_count,
+                                    total_messages=total_messages, phase='uploading_s3')
                 
                 # Upload to S3 if configured
                 if Config.STORAGE_TYPE == 's3' and Config.S3_BUCKET_NAME:
                     try:
+                        logger.info("Uploading to S3...")
                         self._upload_to_s3(output_file)
+                        logger.info("S3 upload completed")
                     except Exception as s3_error:
                         logger.error(f"Failed to upload to S3: {s3_error}")
+                
+                # Mark as completed
+                if progress_callback:
+                    progress_callback(downloaded_count, total_sessions, downloaded_count, failed_count,
+                                    total_messages=total_messages, phase='completed')
                 
             except Exception as file_error:
                 logger.error(f"Error writing to output file {output_file}: {file_error}")

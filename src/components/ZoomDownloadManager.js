@@ -346,6 +346,34 @@ const ZoomDownloadManager = () => {
           
           {downloadStatus.is_running ? (
             <div>
+              {/* Phase Indicator */}
+              {downloadStatus.current_phase && (
+                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
+                    <span className="text-sm font-medium text-blue-800">
+                      {downloadStatus.current_phase === 'fetching_sessions' && 'Fetching chat sessions from Zoom...'}
+                      {downloadStatus.current_phase === 'downloading_messages' && 'Downloading messages from sessions...'}
+                      {downloadStatus.current_phase === 'uploading_s3' && 'Uploading to S3...'}
+                      {downloadStatus.current_phase === 'completed' && 'Download completed!'}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {/* Current Session Info */}
+              {downloadStatus.current_session_id && downloadStatus.current_phase === 'downloading_messages' && (
+                <div className="mb-4 p-2 bg-gray-50 border border-gray-200 rounded text-sm">
+                  <span className="text-gray-600">Processing session: </span>
+                  <span className="font-mono text-gray-800">{downloadStatus.current_session_id.substring(0, 30)}...</span>
+                  {downloadStatus.messages_in_current_session > 0 && (
+                    <span className="text-gray-600 ml-2">
+                      ({downloadStatus.messages_in_current_session} messages)
+                    </span>
+                  )}
+                </div>
+              )}
+              
               <div className="mb-4">
                 <div className="flex justify-between mb-2">
                   <span className="text-sm font-medium text-gray-700">Progress</span>
@@ -362,24 +390,51 @@ const ZoomDownloadManager = () => {
                 </div>
               </div>
               
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 <div>
                   <div className="text-sm text-gray-600">Downloaded</div>
                   <div className="text-2xl font-bold text-green-600">{downloadStatus.downloaded_count}</div>
+                  <div className="text-xs text-gray-500">sessions</div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-600">Failed</div>
                   <div className="text-2xl font-bold text-red-600">{downloadStatus.failed_count}</div>
+                  <div className="text-xs text-gray-500">sessions</div>
                 </div>
+                <div>
+                  <div className="text-sm text-gray-600">Total Messages</div>
+                  <div className="text-2xl font-bold text-purple-600">{downloadStatus.total_messages || 0}</div>
+                  <div className="text-xs text-gray-500">messages</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600">Rate</div>
+                  <div className="text-lg font-semibold text-gray-800">
+                    {downloadStatus.sessions_per_minute ? `${downloadStatus.sessions_per_minute.toFixed(1)}/min` : '0/min'}
+                  </div>
+                  <div className="text-xs text-gray-500">sessions</div>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 pt-4 border-t border-gray-200">
                 <div>
                   <div className="text-sm text-gray-600">Elapsed Time</div>
                   <div className="text-lg font-semibold text-gray-800">
                     {downloadStatus.elapsed_time ? `${Math.floor(downloadStatus.elapsed_time / 60)}m ${Math.floor(downloadStatus.elapsed_time % 60)}s` : '0s'}
                   </div>
                 </div>
+                {downloadStatus.estimated_time_remaining && downloadStatus.estimated_time_remaining > 0 && (
+                  <div>
+                    <div className="text-sm text-gray-600">Est. Time Remaining</div>
+                    <div className="text-lg font-semibold text-orange-600">
+                      {Math.floor(downloadStatus.estimated_time_remaining / 60)}m {Math.floor(downloadStatus.estimated_time_remaining % 60)}s
+                    </div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-gray-600">Status</div>
-                  <div className="text-lg font-semibold text-blue-600">Running</div>
+                  <div className="text-lg font-semibold text-blue-600">
+                    {downloadStatus.current_phase === 'completed' ? 'Completed' : 'Running'}
+                  </div>
                 </div>
               </div>
             </div>

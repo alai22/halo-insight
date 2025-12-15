@@ -42,7 +42,13 @@ download_state = {
     'start_time': None,
     'end_time': None,
     'error': None,
-    'progress_percentage': 0
+    'progress_percentage': 0,
+    'current_phase': None,  # 'fetching_sessions', 'downloading_messages', 'uploading_s3', 'completed'
+    'current_session_id': None,
+    'total_messages': 0,
+    'messages_in_current_session': 0,
+    'estimated_time_remaining': None,
+    'sessions_per_minute': 0
 }
 
 # Global download service instance
@@ -63,6 +69,18 @@ def get_download_status():
         if download_state['start_time']:
             elapsed_time = (datetime.now() - download_state['start_time']).total_seconds()
         
+        # Calculate sessions per minute
+        sessions_per_minute = 0
+        if elapsed_time and elapsed_time > 0 and download_state['current_session'] > 0:
+            sessions_per_minute = (download_state['current_session'] / elapsed_time) * 60
+        
+        # Calculate estimated time remaining
+        estimated_time_remaining = None
+        if sessions_per_minute > 0 and download_state['total_sessions'] > download_state['current_session']:
+            remaining_sessions = download_state['total_sessions'] - download_state['current_session']
+            estimated_seconds = (remaining_sessions / sessions_per_minute) * 60
+            estimated_time_remaining = estimated_seconds
+        
         return jsonify({
             'status': 'success',
             'data': {
@@ -74,7 +92,13 @@ def get_download_status():
                 'progress_percentage': round(download_state['progress_percentage'], 2),
                 'start_time': download_state['start_time'].isoformat() if download_state['start_time'] else None,
                 'elapsed_time': elapsed_time,
-                'error': download_state['error']
+                'error': download_state['error'],
+                'current_phase': download_state.get('current_phase'),
+                'current_session_id': download_state.get('current_session_id'),
+                'total_messages': download_state.get('total_messages', 0),
+                'messages_in_current_session': download_state.get('messages_in_current_session', 0),
+                'estimated_time_remaining': estimated_time_remaining,
+                'sessions_per_minute': round(sessions_per_minute, 2)
             }
         })
     except Exception as e:
@@ -136,7 +160,13 @@ def start_download():
             'start_time': datetime.now(),
             'end_time': None,
             'error': None,
-            'progress_percentage': 0
+            'progress_percentage': 0,
+            'current_phase': 'fetching_sessions',
+            'current_session_id': None,
+            'total_messages': 0,
+            'messages_in_current_session': 0,
+            'estimated_time_remaining': None,
+            'sessions_per_minute': 0
         })
         
         # Start download in background thread
@@ -322,7 +352,9 @@ def get_zoom_status():
         }), 200
 
 
-def _update_progress(current: int, total: int, downloaded: int, failed: int):
+def _update_progress(current: int, total: int, downloaded: int, failed: int, 
+                     current_session_id: str = None, messages_in_session: int = 0,
+                     total_messages: int = 0, phase: str = None):
     """Update download progress state"""
     global download_state
     
@@ -332,16 +364,34 @@ def _update_progress(current: int, total: int, downloaded: int, failed: int):
         download_state['downloaded_count'] = downloaded
         download_state['failed_count'] = failed
         
+        if current_session_id:
+            download_state['current_session_id'] = current_session_id
+        if messages_in_session > 0:
+            download_state['messages_in_current_session'] = messages_in_session
+        if total_messages > 0:
+            download_state['total_messages'] = total_messages
+        if phase:
+            download_state['current_phase'] = phase
+        
         # Calculate progress percentage
         if total > 0:
             download_state['progress_percentage'] = (current / total) * 100
         else:
             download_state['progress_percentage'] = 0
         
+        # Calculate sessions per minute
+        if download_state['start_time']:
+            elapsed = (datetime.now() - download_state['start_time']).total_seconds()
+            if elapsed > 0 and current > 0:
+                download_state['sessions_per_minute'] = (current / elapsed) * 60
+        
         # Log progress to console for debugging with timestamp
         timestamp = datetime.now().strftime("%H:%M:%S")
-        logger.info(f"[{timestamp}] [PROGRESS UPDATE] {current}/{total} ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
-        print(f"[{timestamp}] [ZOOM PROGRESS] {current}/{total} sessions processed ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}")
+        phase_str = f" [{phase}]" if phase else ""
+        session_info = f" (Session: {current_session_id[:20]}...)" if current_session_id else ""
+        messages_info = f" | Messages: {messages_in_session} in session, {total_messages} total" if messages_in_session > 0 else ""
+        logger.info(f"[{timestamp}] [PROGRESS UPDATE]{phase_str} {current}/{total} ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}{session_info}{messages_info}")
+        print(f"[{timestamp}] [ZOOM PROGRESS]{phase_str} {current}/{total} sessions ({download_state['progress_percentage']:.1f}%) - Downloaded: {downloaded}, Failed: {failed}{session_info}{messages_info}")
     except Exception as e:
         logger.error(f"Error updating progress: {e}\n{traceback.format_exc()}")
 
