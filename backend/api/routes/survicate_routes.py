@@ -1124,6 +1124,104 @@ def generate_slides_report():
         }), 500
 
 
+@survicate_bp.route('/available-questions', methods=['GET'])
+def get_available_questions():
+    """Get list of all available questions from the data"""
+    try:
+        import pandas as pd
+        import os
+        import io
+        import re
+        
+        # Check if we should use API mode (S3 cache) or file mode
+        data_source = request.args.get('data_source', 'file')
+        file_key = request.args.get('file_key')  # Optional: specific file to use
+        
+        if data_source == 'api':
+            # Load from cache (S3 or local storage)
+            try:
+                from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+                cache_service = SurvicateS3CacheService()
+                
+                if not cache_service.use_local_storage and not cache_service.s3_client:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Storage not available',
+                        'details': 'S3 client not configured and local storage not enabled.'
+                    }), 503
+                
+                augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=file_key)
+                if not augmented_csv_content:
+                    storage_type = 'local storage' if cache_service.use_local_storage else 'S3'
+                    return jsonify({
+                        'success': False,
+                        'error': 'Augmented CSV not found',
+                        'details': f'Please download and augment data from API first. (Checked {storage_type})'
+                    }), 404
+                
+                df = pd.read_csv(io.StringIO(augmented_csv_content))
+            except Exception as e:
+                logger.error(f"Failed to load from cache: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to load augmented CSV',
+                    'details': str(e)
+                }), 500
+        else:
+            # Load from local file
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+            csv_path = os.path.join(project_root, Config.SURVICATE_CSV_PATH)
+            
+            if not os.path.exists(csv_path):
+                return jsonify({
+                    'success': False,
+                    'error': 'CSV file not found',
+                    'details': f'File not found: {csv_path}'
+                }), 404
+            
+            df = pd.read_csv(csv_path)
+        
+        # Extract question columns (format: Q#N: Question text (Answer) or Q#N: Question text (Comment))
+        questions = []
+        seen_questions = set()
+        
+        for col in df.columns:
+            # Match pattern: Q#N: Question text (Answer/Comment)
+            match = re.match(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)', str(col))
+            if match:
+                q_num = match.group(1)
+                q_text = match.group(2).strip()
+                q_type = match.group(3)
+                
+                # Only add Answer columns (skip Comment duplicates)
+                if q_type == 'Answer' and q_num not in seen_questions:
+                    seen_questions.add(q_num)
+                    questions.append({
+                        'id': f'Q{q_num}',
+                        'number': int(q_num),
+                        'text': f'Q#{q_num}: {q_text}',
+                        'question_text': q_text
+                    })
+        
+        # Sort by question number
+        questions.sort(key=lambda x: x['number'])
+        
+        return jsonify({
+            'success': True,
+            'questions': questions,
+            'total': len(questions)
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Error getting available questions: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Failed to get available questions',
+            'details': str(e)
+        }), 500
+
+
 @survicate_bp.route('/question-trends', methods=['GET'])
 def get_question_trends():
     """Get trends for specific survey questions by month (COUNTA of non-empty values)"""
@@ -1239,8 +1337,14 @@ def get_question_trends():
         
         # First, try to match by text content (ignoring Q# number)
         # This is the primary matching strategy - it works even if question numbers shift
+        exclude_patterns = question_config.get('exclude_patterns', []) if question_config else []
+        
         for col in df.columns:
             col_lower = str(col).lower()
+            
+            # Skip columns that match exclude patterns (to avoid matching wrong questions)
+            if exclude_patterns and any(exclude_word.lower() in col_lower for exclude_word in exclude_patterns):
+                continue
             
             # Check if all pattern words are in the column name
             if all(word.lower() in col_lower for word in pattern):

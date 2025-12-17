@@ -65,10 +65,11 @@ QUESTION_CONFIG: Dict[str, Dict[str, any]] = {
         'is_conditional': True  # Only shown conditionally
     },
     'learn_engagement': {
-        'patterns': ['engage', 'Learn training curriculum'],
+        'patterns': ['engage', 'Learn', 'training curriculum'],
         'display_name': 'Did You Engage With the Learn Training Curriculum?',
         'legacy_q_number': 'Q11',  # Was Q9, now Q11 after new questions added
-        'previous_q_numbers': ['Q9']  # Track previous numbers for reference
+        'previous_q_numbers': ['Q9'],  # Track previous numbers for reference
+        'exclude_patterns': ['one dog', 'multiple dogs']  # Exclude new Q9 question
     },
     'learn_incomplete_reason': {
         'patterns': ['main reason', 'didn\'t complete', 'Learn curriculum'],

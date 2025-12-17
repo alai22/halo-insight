@@ -12,6 +12,8 @@ const ChurnTrendsChart = () => {
   const [error, setError] = useState(null);
   const [totalResponses, setTotalResponses] = useState(0);
   const [reasonTotals, setReasonTotals] = useState({});
+  const [availableQuestions, setAvailableQuestions] = useState([]);
+  const [questionsLoading, setQuestionsLoading] = useState(true);
   
   // Weekly chart state
   const [weeklyData, setWeeklyData] = useState([]);
@@ -53,6 +55,24 @@ const ChurnTrendsChart = () => {
     '#E8F0FE',  // Very pale Blue
     '#FCE8E6',  // Very pale Red
   ];
+
+  const fetchAvailableQuestions = async () => {
+    setQuestionsLoading(true);
+    try {
+      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const fileKey = localStorage.getItem('survicate_selected_file_key');
+      const url = `/api/survicate/available-questions?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
+      const response = await axios.get(url);
+      if (response.data.success) {
+        setAvailableQuestions(response.data.questions || []);
+      }
+    } catch (err) {
+      console.error('Error fetching available questions:', err);
+      // Don't set error state - just log it, questions will be empty
+    } finally {
+      setQuestionsLoading(false);
+    }
+  };
 
   const fetchChurnTrends = async () => {
     setLoading(true);
@@ -121,14 +141,17 @@ const ChurnTrendsChart = () => {
   useEffect(() => {
     fetchChurnTrends();
     fetchChurnTrendsWeekly();
+    fetchAvailableQuestions();
     // Also refresh when data source changes
     const handleStorageChange = () => {
       fetchChurnTrends();
       fetchChurnTrendsWeekly();
+      fetchAvailableQuestions();
     };
     const handleFileChange = () => {
       fetchChurnTrends();
       fetchChurnTrendsWeekly();
+      fetchAvailableQuestions();
     };
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('survicate-file-changed', handleFileChange);
@@ -925,13 +948,18 @@ const ChurnTrendsChart = () => {
           ];
 
           // Other questions without parent reasons
-          // Updated to reflect new question order after Q8 was added
-          const otherQuestions = [
-            { id: 'Q9', text: 'Q#9: Did you engage with the Learn training curriculum?' },
-            { id: 'Q10', text: 'Q#10: What was the main reason you didn\'t complete the Learn curriculum?' },
-            { id: 'Q11', text: 'Q#11: Did you contact our Customer Service team via Dog Park?' },
-            { id: 'Q12', text: 'Q#12: Would a free session with a trainer to help your dog use the collar effectively have helped you continue to use it?' }
-          ];
+          // Dynamically fetch from API - no need to hardcode or match semantically
+          // Filter out questions that are already in categorized groups
+          const categorizedQuestionIds = new Set(
+            questionGroups.flatMap(group => group.questions.map(q => q.id))
+          );
+          
+          const otherQuestions = availableQuestions
+            .filter(q => !categorizedQuestionIds.has(q.id))
+            .map(q => ({
+              id: q.id,
+              text: q.text
+            }));
 
           return (
             <>

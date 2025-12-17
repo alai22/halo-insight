@@ -74,6 +74,7 @@ def generate_churn_slides(csv_path='data/survicate_cancelled_subscriptions_augme
         slide.shapes.add_picture(chart_img, Inches(0.5), Inches(1.2), Inches(9), Inches(5.5))
     
     # SLIDE 2-N: Question Trend Charts
+    # Updated to reflect new question order after Q9/Q10 were added
     question_mapping = {
         'Q2': 'Q#2: Where does the location pin not match your dog\'s location?',
         'Q3': 'Q#3: Was the pet location pin grayed out when the location was inaccurate?',
@@ -81,10 +82,11 @@ def generate_churn_slides(csv_path='data/survicate_cancelled_subscriptions_augme
         'Q5': 'Q#5: Did you screw in the contact tips required for static feedback to work properly?',
         'Q6': 'Q#6: What battery life, charging or power issues did you encounter?',
         'Q7': 'Q#7: Which containment solution did you purchase?',
-        'Q8': 'Q#8: Did you engage with the Learn training curriculum?',
-        'Q9': 'Q#9: What was the main reason you didn\'t complete the Learn curriculum?',
-        'Q10': 'Q#10: Did you contact our Customer Service team via Dog Park?',
-        'Q11': 'Q#11: Would a free session with a trainer to help your dog use the collar effectively have helped you continue to use it?'
+        'Q8': 'Q#8: Which other GPS or wireless fence did you purchase?',
+        'Q11': 'Q#11: Did you engage with the Learn training curriculum?',  # Was Q9, now Q11
+        'Q12': 'Q#12: What was the main reason you didn\'t complete the Learn curriculum?',  # Was Q10, now Q12
+        'Q13': 'Q#13: Did you contact our Customer Service team via Dog Park?',  # Was Q11, now Q13
+        'Q14': 'Q#14: Would a free session with a trainer to help your dog use the collar effectively have helped you continue to use it?'  # Was Q12, now Q14
     }
     
     for question_id, question_text in question_mapping.items():
@@ -202,18 +204,34 @@ def create_main_chart(df, colors):
 def create_question_chart(df, question_id, question_text):
     """Create a question trend chart and return as image bytes"""
     # Map question codes to search patterns (same as API route)
-    question_patterns = {
-        'Q2': ['location pin', 'not match', 'dog'],
-        'Q3': ['pet location pin', 'grayed out', 'inaccurate'],
-        'Q4': ['collar', 'not sending feedback', 'dog not responding'],
-        'Q5': ['screw in', 'contact tips', 'static feedback'],
-        'Q6': ['battery life', 'charging', 'power issues'],
-        'Q7': ['containment solution', 'purchase'],
-        'Q8': ['engage', 'Learn training curriculum'],
-        'Q9': ['main reason', 'didn\'t complete', 'Learn curriculum'],
-        'Q10': ['contact', 'Customer Service', 'Dog Park'],
-        'Q11': ['free session', 'trainer', 'collar effectively']
-    }
+    # Updated to reflect new question order - use centralized config if available
+    try:
+        from backend.utils.survicate_question_config import get_question_by_legacy_number
+        question_config = get_question_by_legacy_number(question_id)
+        if question_config:
+            pattern = question_config['patterns']
+            exclude_patterns = question_config.get('exclude_patterns', [])
+        else:
+            # Fallback to hardcoded patterns
+            pattern = []
+            exclude_patterns = []
+    except ImportError:
+        # Fallback if config not available
+        question_patterns = {
+            'Q2': ['location pin', 'not match', 'dog'],
+            'Q3': ['pet location pin', 'grayed out', 'inaccurate'],
+            'Q4': ['collar', 'not sending feedback', 'dog not responding'],
+            'Q5': ['screw in', 'contact tips', 'static feedback'],
+            'Q6': ['battery life', 'charging', 'power issues'],
+            'Q7': ['containment solution', 'purchase'],
+            'Q8': ['other GPS', 'wireless fence', 'purchase'],
+            'Q11': ['engage', 'Learn', 'training curriculum'],  # Was Q9, now Q11
+            'Q12': ['main reason', 'didn\'t complete', 'Learn curriculum'],  # Was Q10, now Q12
+            'Q13': ['contact', 'Customer Service', 'Dog Park'],  # Was Q11, now Q13
+            'Q14': ['free session', 'trainer', 'collar effectively']  # Was Q12, now Q14
+        }
+        pattern = question_patterns.get(question_id, [])
+        exclude_patterns = []
     
     # Find matching column (same logic as API route)
     pattern = question_patterns.get(question_id, [])
@@ -222,8 +240,16 @@ def create_question_chart(df, question_id, question_text):
     # First try pattern matching
     for col in df.columns:
         col_lower = str(col).lower()
-        if all(word.lower() in col_lower for word in pattern):
-            if f'q#{question_id[1:]}' in col_lower or f'q{question_id[1:]}' in col_lower:
+        
+        # Skip columns that match exclude patterns
+        if exclude_patterns and any(exclude_word.lower() in col_lower for exclude_word in exclude_patterns):
+            continue
+        
+        # Match by pattern (text content) - don't require Q# number match
+        # This makes it resilient to question renumbering
+        if pattern and all(word.lower() in col_lower for word in pattern):
+            # Prefer columns with (Answer) or (Comment) suffix
+            if '(Answer)' in col or '(Comment)' in col:
                 column_name = col
                 break
     
