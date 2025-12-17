@@ -1,8 +1,8 @@
 """
-API routes for authentication (magic link)
+API routes for authentication (magic link and Google OAuth)
 """
 
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, redirect, url_for
 from ...utils.logging import get_logger
 from ...services.auth_service import AuthService
 from ...utils.email_service import EmailService
@@ -154,6 +154,7 @@ def verify_token():
         # Create session
         session['authenticated'] = True
         session['email'] = email
+        session['auth_method'] = 'magic_link'
         session.permanent = True  # Make session persistent
         
         logger.info(f"User authenticated successfully: {email}")
@@ -207,11 +208,13 @@ def auth_status():
         try:
             is_authenticated = session.get('authenticated', False)
             email = session.get('email', None)
+            auth_method = session.get('auth_method', None)
             if is_authenticated:
                 logger.debug("Authenticated via session")
                 return jsonify({
                     'authenticated': True,
                     'email': email,
+                    'auth_method': auth_method,
                     'session_available': True
                 }), 200
         except RuntimeError as session_error:
@@ -433,3 +436,175 @@ def admin_login():
             'success': False,
             'error': 'An error occurred during admin login. Please try again.'
         }), 500
+
+
+@auth_bp.route('/google/login', methods=['GET'])
+def google_login():
+    """Initiate Google OAuth login flow"""
+    try:
+        # Check if Google OAuth is configured
+        if not Config.GOOGLE_OAUTH_CLIENT_ID or not Config.GOOGLE_OAUTH_CLIENT_SECRET:
+            logger.error("Google OAuth not configured")
+            return jsonify({
+                'success': False,
+                'error': 'Google SSO is not configured. Please contact administrator.'
+            }), 503
+        
+        # Get redirect URI from config or construct from request
+        redirect_uri = Config.GOOGLE_OAUTH_REDIRECT_URI
+        if not redirect_uri:
+            # Construct from request
+            base_url = os.getenv('APP_BASE_URL', request.host_url.rstrip('/'))
+            redirect_uri = f"{base_url}/api/auth/google/callback"
+        
+        # Generate state for CSRF protection
+        import secrets
+        state = secrets.token_urlsafe(32)
+        session['oauth_state'] = state
+        
+        # Build Google OAuth authorization URL
+        from urllib.parse import urlencode
+        params = {
+            'client_id': Config.GOOGLE_OAUTH_CLIENT_ID,
+            'redirect_uri': redirect_uri,
+            'response_type': 'code',
+            'scope': 'openid email profile',
+            'state': state,
+            'access_type': 'offline',
+            'prompt': 'select_account'
+        }
+        
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+        
+        logger.info(f"Redirecting to Google OAuth")
+        return redirect(auth_url)
+    
+    except Exception as e:
+        logger.error(f"Error initiating Google OAuth: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'An error occurred during Google login. Please try again.'
+        }), 500
+
+
+@auth_bp.route('/google/callback', methods=['GET'])
+def google_callback():
+    """Handle Google OAuth callback"""
+    try:
+        # Check if Google OAuth is configured
+        if not Config.GOOGLE_OAUTH_CLIENT_ID or not Config.GOOGLE_OAUTH_CLIENT_SECRET:
+            logger.error("Google OAuth not configured")
+            return redirect("/?auth=error&message=Google SSO is not configured")
+        
+        # Check for error from Google
+        error = request.args.get('error')
+        if error:
+            logger.error(f"Google OAuth error: {error}")
+            return redirect("/?auth=error&message=Google authentication was cancelled or failed")
+        
+        # Verify state (CSRF protection)
+        state = request.args.get('state')
+        stored_state = session.get('oauth_state')
+        if not state or not stored_state or state != stored_state:
+            logger.warning("OAuth state mismatch - possible CSRF attack")
+            return redirect("/?auth=error&message=Invalid authentication state")
+        
+        # Clear state from session
+        session.pop('oauth_state', None)
+        
+        # Get authorization code
+        code = request.args.get('code')
+        if not code:
+            logger.error("No authorization code in callback")
+            return redirect("/?auth=error&message=No authorization code received")
+        
+        # Get redirect URI
+        redirect_uri = Config.GOOGLE_OAUTH_REDIRECT_URI
+        if not redirect_uri:
+            base_url = os.getenv('APP_BASE_URL', request.host_url.rstrip('/'))
+            redirect_uri = f"{base_url}/api/auth/google/callback"
+        
+        # Exchange authorization code for access token
+        import requests
+        token_url = 'https://oauth2.googleapis.com/token'
+        token_data = {
+            'code': code,
+            'client_id': Config.GOOGLE_OAUTH_CLIENT_ID,
+            'client_secret': Config.GOOGLE_OAUTH_CLIENT_SECRET,
+            'redirect_uri': redirect_uri,
+            'grant_type': 'authorization_code'
+        }
+        
+        try:
+            token_response = requests.post(token_url, data=token_data)
+            token_response.raise_for_status()
+            token_json = token_response.json()
+            access_token = token_json.get('access_token')
+            
+            if not access_token:
+                logger.error("No access token in response")
+                return redirect("/?auth=error&message=Failed to obtain access token")
+        except Exception as token_error:
+            logger.error(f"Error exchanging OAuth code for token: {str(token_error)}")
+            return redirect("/?auth=error&message=Failed to authenticate with Google")
+        
+        # Get user info from Google
+        userinfo_url = 'https://www.googleapis.com/oauth2/v2/userinfo'
+        headers = {'Authorization': f'Bearer {access_token}'}
+        
+        try:
+            userinfo_response = requests.get(userinfo_url, headers=headers)
+            userinfo_response.raise_for_status()
+            user_info = userinfo_response.json()
+        except Exception as user_info_error:
+            logger.error(f"Error fetching user info from Google: {str(user_info_error)}")
+            return redirect("/?auth=error&message=Failed to retrieve user information")
+        
+        # Extract user information
+        email = user_info.get('email', '').lower()
+        name = user_info.get('name', '')
+        picture = user_info.get('picture', '')
+        
+        if not email:
+            logger.error("No email in Google user info")
+            return redirect("/?auth=error&message=No email address found in Google account")
+        
+        # Validate email domain
+        if not AuthService.validate_email_domain(email):
+            logger.warning(f"Google OAuth login attempt from unauthorized domain: {email}")
+            return redirect("/?auth=error&message=Only @halocollar.com email addresses are allowed")
+        
+        # Create session (same structure as other auth methods)
+        session['authenticated'] = True
+        session['email'] = email
+        session['auth_method'] = 'google'
+        if name:
+            session['name'] = name
+        if picture:
+            session['avatar_url'] = picture
+        session.permanent = True  # Make session persistent
+        
+        logger.info(f"User authenticated successfully via Google OAuth: {email}")
+        
+        # Redirect to frontend with success indicator
+        return redirect(f"/?auth=success&email={email}")
+    
+    except Exception as e:
+        logger.error(f"Error in Google OAuth callback: {str(e)}", exc_info=True)
+        return redirect("/?auth=error&message=An error occurred during authentication")
+
+
+@auth_bp.route('/google/enabled', methods=['GET'])
+def check_google_enabled():
+    """Check if Google OAuth is configured and enabled"""
+    try:
+        is_enabled = bool(Config.GOOGLE_OAUTH_CLIENT_ID and Config.GOOGLE_OAUTH_CLIENT_SECRET)
+        
+        return jsonify({
+            'enabled': is_enabled
+        }), 200
+    except Exception as e:
+        logger.error(f"Error checking Google OAuth status: {str(e)}")
+        return jsonify({
+            'enabled': False
+        }), 200

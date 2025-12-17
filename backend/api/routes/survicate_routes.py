@@ -1199,32 +1199,42 @@ def get_question_trends():
             }), 400
         
         # Map question codes to search patterns (flexible matching by TEXT CONTENT)
-        # Updated to match by question text content, not sequential number
-        # This makes it resilient to question number shifts when new questions are added
-        question_patterns = {
-            'Q2': ['location pin', 'not match', 'dog'],
-            'Q3': ['pet location pin', 'grayed out', 'inaccurate'],
-            'Q4': ['collar', 'not sending feedback', 'dog not responding'],
-            'Q5': ['screw in', 'contact tips', 'static feedback'],
-            'Q6': ['battery life', 'charging', 'power issues'],
-            'Q7': ['containment solution', 'purchase'],
-            'Q8': ['other GPS', 'wireless fence', 'purchase'],  # NEW Q8 question
-            'Q9': ['engage', 'Learn training curriculum'],  # OLD Q8 -> now Q9
-            'Q10': ['main reason', 'didn\'t complete', 'Learn curriculum'],  # OLD Q9 -> now Q10
-            'Q11': ['contact', 'Customer Service', 'Dog Park'],  # OLD Q10 -> now Q11
-            'Q12': ['free session', 'trainer', 'collar effectively']  # OLD Q11 -> now Q12
-        }
+        # Uses centralized question configuration for resilience to renumbering
+        from ...utils.survicate_question_config import get_question_patterns, get_question_by_legacy_number
         
-        if question not in question_patterns:
+        # Get patterns from centralized config (supports both logical IDs and legacy Q# numbers)
+        question_patterns = get_question_patterns()
+        
+        # Also support logical question IDs (e.g., 'learn_engagement' instead of 'Q9')
+        # Check if question is a logical ID first
+        question_config = None
+        if question.startswith('Q'):
+            # Legacy Q# format - get config by number
+            question_config = get_question_by_legacy_number(question)
+        else:
+            # Logical ID format - get config directly
+            from ...utils.survicate_question_config import get_question_by_logical_id
+            question_config = get_question_by_logical_id(question)
+        
+        # If we have a config, use its patterns; otherwise fall back to legacy patterns
+        if question_config:
+            pattern = question_config['patterns']
+            prefer_answer = question_config.get('prefer_answer', False)
+        elif question in question_patterns:
+            pattern = question_patterns[question]
+            prefer_answer = question in ['Q4', 'Q6', 'Q10', 'Q12']  # Legacy hardcoded list
+        else:
+            # Question not found
+            from ...utils.survicate_question_config import get_all_question_ids
+            all_logical_ids = get_all_question_ids()
             return jsonify({
                 'success': False,
                 'error': 'Invalid question',
-                'details': f'Valid questions: {", ".join(sorted(question_patterns.keys()))}'
+                'details': f'Question "{question}" not found. Valid questions: {", ".join(sorted(question_patterns.keys()))} or logical IDs: {", ".join(all_logical_ids)}'
             }), 400
         
         # Find the column that matches the pattern by TEXT CONTENT ONLY
         # This approach is resilient to question number shifts
-        pattern = question_patterns[question]
         column_name = None
         
         # First, try to match by text content (ignoring Q# number)
@@ -1234,8 +1244,8 @@ def get_question_trends():
             
             # Check if all pattern words are in the column name
             if all(word.lower() in col_lower for word in pattern):
-                # Prefer (Answer) version for certain questions
-                if question in ['Q4', 'Q6', 'Q10']:
+                # Prefer (Answer) version if configured
+                if prefer_answer:
                     if '(Answer)' in col:
                         column_name = col
                         break
@@ -1248,17 +1258,24 @@ def get_question_trends():
         # Fallback: if text matching didn't work, try sequential number match
         # This helps with edge cases or if question text changed significantly
         if not column_name:
-            for col in df.columns:
-                col_str = str(col)
-                if col_str.startswith(f'Q#{question[1:]}:') or col_str.startswith(f'Q{question[1:]}:'):
-                    # For Q4, Q6, Q10, prefer the (Answer) version
-                    if question in ['Q4', 'Q6', 'Q10']:
-                        if '(Answer)' in col_str:
+            # Get legacy Q# number for fallback matching
+            legacy_q = question
+            if question_config:
+                legacy_q = question_config.get('legacy_q_number', question)
+            
+            if legacy_q.startswith('Q'):
+                q_num = legacy_q[1:]  # Extract number part
+                for col in df.columns:
+                    col_str = str(col)
+                    if col_str.startswith(f'Q#{q_num}:') or col_str.startswith(f'Q{q_num}:'):
+                        # Prefer (Answer) version if configured
+                        if prefer_answer:
+                            if '(Answer)' in col_str:
+                                column_name = col
+                                break
+                        else:
                             column_name = col
                             break
-                    else:
-                        column_name = col
-                        break
         
         if not column_name:
             logger.error(f"Could not find column for question {question}. Available columns: {[c for c in df.columns if question[1:] in str(c)]}")

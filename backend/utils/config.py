@@ -138,6 +138,11 @@ class Config:
     # Admin password for admin tools (separate from regular auth)
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     
+    # Google OAuth Configuration
+    GOOGLE_OAUTH_CLIENT_ID: Optional[str] = os.getenv('GOOGLE_OAUTH_CLIENT_ID')
+    GOOGLE_OAUTH_CLIENT_SECRET: Optional[str] = os.getenv('GOOGLE_OAUTH_CLIENT_SECRET')
+    GOOGLE_OAUTH_REDIRECT_URI: Optional[str] = os.getenv('GOOGLE_OAUTH_REDIRECT_URI')
+    
     # PII Protection Configuration
     # Enable PII protection before sending data to Claude API
     # Options: 'hash' (deterministic hash), 'redact' ([REDACTED] placeholder), 'remove' (delete), 'none' (disabled)
