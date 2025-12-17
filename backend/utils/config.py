@@ -135,6 +135,8 @@ class Config:
     # Authentication Configuration
     # Password for password-based login (stored securely on backend)
     AUTH_PASSWORD: str = os.getenv('AUTH_PASSWORD', 'gladly2024')
+    # Admin password for admin tools (separate from regular auth)
+    ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     
     # PII Protection Configuration
     # Enable PII protection before sending data to Claude API

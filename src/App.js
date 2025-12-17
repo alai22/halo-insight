@@ -27,6 +27,11 @@ axios.interceptors.request.use(
     if (authToken) {
       config.headers['X-Auth-Token'] = authToken;
     }
+    // Also include admin token for admin routes
+    const adminToken = localStorage.getItem('admin_token');
+    if (adminToken) {
+      config.headers['X-Admin-Token'] = adminToken;
+    }
     return config;
   },
   (error) => {
@@ -73,6 +78,7 @@ function App() {
   });
   const [healthStatus, setHealthStatus] = useState(null);
   const [adminMode, setAdminMode] = useState(null); // 'claude' or 'download' for admin tools
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   
   // Ref to prevent infinite loops when syncing URL and currentMode
   const isSyncingRef = useRef(false);
@@ -173,21 +179,29 @@ function App() {
       if (authToken) {
         console.log('Initial auth check - token found, setting authenticated to true');
         setIsAuthenticated(true);
-        return;
-      }
-      
-      // If no token, check backend session
-      try {
-        const response = await axios.get('/api/auth/status');
-        
-        if (response.data.authenticated) {
-          setIsAuthenticated(true);
-        } else {
+      } else {
+        // If no token, check backend session
+        try {
+          const response = await axios.get('/api/auth/status');
+          
+          if (response.data.authenticated) {
+            setIsAuthenticated(true);
+          } else {
+            setIsAuthenticated(false);
+          }
+        } catch (error) {
+          console.error('Error checking auth status:', error);
           setIsAuthenticated(false);
         }
-      } catch (error) {
-        console.error('Error checking auth status:', error);
-        setIsAuthenticated(false);
+      }
+      
+      // Check admin authentication
+      const adminToken = localStorage.getItem('admin_token');
+      if (adminToken) {
+        console.log('Initial admin auth check - token found, setting admin authenticated to true');
+        setIsAdminAuthenticated(true);
+      } else {
+        setIsAdminAuthenticated(false);
       }
     };
     checkAuthStatus();
@@ -245,7 +259,10 @@ function App() {
       // Clear localStorage auth token
       localStorage.removeItem('auth_token');
       localStorage.removeItem('auth_method');
+      localStorage.removeItem('admin_token');
       setIsAuthenticated(false);
+      setIsAdminAuthenticated(false);
+      setAdminMode(null);
     }
   };
 
@@ -258,9 +275,62 @@ function App() {
     }
   };
 
+  // Handle admin authentication check
+  const handleAdminLogin = async () => {
+    const adminToken = localStorage.getItem('admin_token');
+    if (adminToken) {
+      setIsAdminAuthenticated(true);
+      return;
+    }
+    // If no token, admin is not authenticated
+    setIsAdminAuthenticated(false);
+  };
+
+  // Check admin auth when trying to access admin tools
+  useEffect(() => {
+    if (isAuthenticated && (adminMode === 'claude' || adminMode === 'download')) {
+      const checkAdminAuth = async () => {
+        const adminToken = localStorage.getItem('admin_token');
+        if (adminToken) {
+          // Check with backend to verify token is still valid
+          try {
+            const response = await axios.get('/api/auth/admin-status');
+            if (response.data.admin_authenticated) {
+              setIsAdminAuthenticated(true);
+            } else {
+              // Token invalid, clear it and reset admin mode
+              localStorage.removeItem('admin_token');
+              setIsAdminAuthenticated(false);
+              setAdminMode(null);
+              setCurrentMode('tools');
+            }
+          } catch (error) {
+            console.error('Error checking admin status:', error);
+            // On error, assume not authenticated
+            setIsAdminAuthenticated(false);
+            setAdminMode(null);
+            setCurrentMode('tools');
+          }
+        } else {
+          // No token, not admin authenticated
+          setIsAdminAuthenticated(false);
+        }
+      };
+      checkAdminAuth();
+    } else if (!adminMode) {
+      // Not in admin mode, reset admin auth state
+      setIsAdminAuthenticated(false);
+    }
+  }, [adminMode, isAuthenticated]);
+
   // If not authenticated, show login screen
   if (!isAuthenticated) {
-    return <Login onLogin={handleLogin} />;
+    return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} />;
+  }
+
+  // If trying to access admin tools but not admin authenticated, show admin login
+  if ((adminMode === 'claude' || adminMode === 'download') && !isAdminAuthenticated) {
+    return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} requireAdmin={true} />;
   }
 
   const addConversation = (type, userMessage, response, metadata = {}) => {

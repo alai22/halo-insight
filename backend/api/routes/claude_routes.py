@@ -4,6 +4,7 @@ API routes for Claude interactions
 
 from flask import Blueprint, request, jsonify, g
 from ...utils.logging import get_logger
+from ...api.middleware.auth import require_admin_auth
 
 logger = get_logger('claude_routes')
 
@@ -12,6 +13,7 @@ claude_bp = Blueprint('claude', __name__, url_prefix='/api/claude')
 
 
 @claude_bp.route('/chat', methods=['POST'])
+@require_admin_auth
 def claude_chat():
     """Send message to Claude API"""
     try:

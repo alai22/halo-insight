@@ -21,6 +21,7 @@ from backend.services.conversation_tracker import ConversationTracker
 from backend.services.s3_conversation_aggregator import S3ConversationAggregator
 from backend.utils.config import Config
 from backend.utils.email_service import EmailService
+from backend.api.middleware.auth import require_admin_auth
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,6 +50,7 @@ download_service: Optional[GladlyDownloadService] = None
 download_thread: Optional[threading.Thread] = None
 
 @download_bp.route('/status', methods=['GET'])
+@require_admin_auth
 def get_download_status():
     """Get current download status"""
     try:
@@ -80,6 +82,7 @@ def get_download_status():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/start', methods=['POST'])
+@require_admin_auth
 def start_download():
     """Start a new download batch"""
     global download_service, download_thread, download_state
@@ -186,6 +189,7 @@ def start_download():
         return jsonify({'status': 'error', 'message': error_msg}), 500
 
 @download_bp.route('/stop', methods=['POST'])
+@require_admin_auth
 def stop_download():
     """Stop the current download"""
     global download_state
@@ -210,6 +214,7 @@ def stop_download():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/history', methods=['GET'])
+@require_admin_auth
 def get_download_history():
     """Get detailed conversation download history"""
     try:
@@ -244,6 +249,7 @@ def get_download_history():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/stats', methods=['GET'])
+@require_admin_auth
 def get_download_stats():
     """Get overall download statistics"""
     try:
@@ -481,6 +487,7 @@ def _run_download(batch_size: int, max_duration_minutes: int, start_date: str = 
         logger.info(f"[{thread_name}] Download thread finished")
 
 @download_bp.route('/aggregate', methods=['POST'])
+@require_admin_auth
 def aggregate_conversations():
     """Aggregate downloaded conversations and refresh RAG data"""
     try:
@@ -508,6 +515,7 @@ def aggregate_conversations():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/migrate-tracking', methods=['POST'])
+@require_admin_auth
 def migrate_tracking_data():
     """Migrate local tracking data to S3"""
     try:
@@ -533,6 +541,7 @@ def migrate_tracking_data():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/aggregate/status', methods=['GET'])
+@require_admin_auth
 def get_aggregation_status():
     """Get status of aggregated conversation file"""
     try:
@@ -549,6 +558,7 @@ def get_aggregation_status():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/csv-date-range', methods=['GET'])
+@require_admin_auth
 def get_csv_date_range():
     """Get available date range from CSV file"""
     try:
@@ -603,6 +613,7 @@ def get_csv_date_range():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @download_bp.route('/csv-date-breakdown', methods=['GET'])
+@require_admin_auth
 def get_csv_date_breakdown():
     """Get breakdown of conversations by date from CSV with download status"""
     try:

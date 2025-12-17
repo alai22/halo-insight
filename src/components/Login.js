@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Mail, CheckCircle, Loader } from 'lucide-react';
 import axios from 'axios';
 
-function Login({ onLogin }) {
+function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
   const [authMethod, setAuthMethod] = useState('password'); // 'password' or 'magic-link'
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
@@ -51,7 +51,9 @@ function Login({ onLogin }) {
     setLoading(true);
 
     try {
-      const response = await axios.post('/api/auth/password-login', {
+      // If requireAdmin is true, use admin login endpoint
+      const endpoint = requireAdmin ? '/api/auth/admin-login' : '/api/auth/password-login';
+      const response = await axios.post(endpoint, {
         password: password
       }, {
         withCredentials: true  // Important for session cookies
@@ -61,15 +63,27 @@ function Login({ onLogin }) {
         // Password validated on backend
         // If session is available, it's already created
         // If not, store auth token in localStorage (temporary workaround)
-        if (!response.data.session_available && response.data.auth_token) {
-          localStorage.setItem('auth_token', response.data.auth_token);
-          localStorage.setItem('auth_method', 'password');
-          console.log('Stored auth token in localStorage (session unavailable)');
-          // Small delay to ensure localStorage is written before checking status
-          await new Promise(resolve => setTimeout(resolve, 100));
+        if (requireAdmin) {
+          // Admin login
+          if (!response.data.session_available && response.data.admin_token) {
+            localStorage.setItem('admin_token', response.data.admin_token);
+            localStorage.setItem('auth_method', 'admin_password');
+            console.log('Stored admin token in localStorage (session unavailable)');
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          if (onAdminLogin) {
+            onAdminLogin();
+          }
+        } else {
+          // Regular login
+          if (!response.data.session_available && response.data.auth_token) {
+            localStorage.setItem('auth_token', response.data.auth_token);
+            localStorage.setItem('auth_method', 'password');
+            console.log('Stored auth token in localStorage (session unavailable)');
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          onLogin();
         }
-        // Password validated on backend, session created or token stored
-        onLogin();
         setError('');
       } else {
         setError(response.data.error || 'Incorrect password');
@@ -186,16 +200,25 @@ function Login({ onLogin }) {
           />
         </div>
         <h1 className="text-2xl font-bold text-center text-gray-900 mb-4">
-          Halo Insight
+          {requireAdmin ? 'Admin Login' : 'Halo Insight'}
         </h1>
         
-        <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
-          <p>Customer support conversation analysis and churn insights.</p>
-          <p>Analyze Gladly conversations, survey responses, and identify trends.</p>
-        </div>
+        {!requireAdmin && (
+          <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
+            <p>Customer support conversation analysis and churn insights.</p>
+            <p>Analyze Gladly conversations, survey responses, and identify trends.</p>
+          </div>
+        )}
         
-        {/* Auth Method Toggle - only show if email is enabled */}
-        {emailEnabled && (
+        {requireAdmin && (
+          <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
+            <p className="text-orange-600 font-semibold">Admin Access Required</p>
+            <p>Enter admin password to access admin tools.</p>
+          </div>
+        )}
+        
+        {/* Auth Method Toggle - only show if email is enabled and not admin login */}
+        {emailEnabled && !requireAdmin && (
           <div className="flex mb-6 bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => {
@@ -236,14 +259,14 @@ function Login({ onLogin }) {
         {(!emailEnabled || authMethod === 'password') ? (
           <form onSubmit={handlePasswordSubmit}>
             <p className="text-center text-gray-600 mb-6">
-              Enter password to access
+              {requireAdmin ? 'Enter admin password' : 'Enter password to access'}
             </p>
             <div className="mb-4">
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
+                placeholder={requireAdmin ? "Enter admin password" : "Enter password"}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
                 disabled={loading}
@@ -328,11 +351,13 @@ function Login({ onLogin }) {
           </form>
         )}
         
-        <p className="text-xs text-gray-500 text-center mt-6">
-          {authMethod === 'password' 
-            ? 'Secured with password authentication'
-            : 'Secured with magic link authentication (Beta)'}
-        </p>
+        {!requireAdmin && (
+          <p className="text-xs text-gray-500 text-center mt-6">
+            {authMethod === 'password' 
+              ? 'Secured with password authentication'
+              : 'Secured with magic link authentication (Beta)'}
+          </p>
+        )}
       </div>
     </div>
   );

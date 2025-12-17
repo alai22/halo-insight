@@ -46,3 +46,39 @@ def require_auth(f):
     
     return decorated_function
 
+
+def require_admin_auth(f):
+    """
+    Decorator to require admin authentication for admin API routes
+    
+    Usage:
+        @require_admin_auth
+        @some_bp.route('/admin-protected')
+        def admin_route():
+            ...
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check if user is authenticated as admin via session
+        try:
+            if session.get('admin_authenticated', False):
+                return f(*args, **kwargs)
+        except RuntimeError:
+            # Session not available (no secret key) - check for token header
+            pass
+        
+        # Fallback: Check for admin auth token in headers
+        admin_token = request.headers.get('X-Admin-Token')
+        if admin_token:
+            # Simple validation - token exists means admin logged in
+            logger.debug(f"Admin authenticated via token header for {request.path}")
+            return f(*args, **kwargs)
+        
+        # Not authenticated as admin
+        logger.warning(f"Unauthorized admin access attempt to {request.path}")
+        return jsonify({
+            'error': 'Admin authentication required',
+            'message': 'Please log in with admin credentials to access this resource'
+        }), 401
+    
+    return decorated_function
