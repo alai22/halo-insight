@@ -1183,6 +1183,7 @@ def get_available_questions():
             df = pd.read_csv(csv_path)
         
         # Extract question columns (format: Q#N: Question text (Answer) or Q#N: Question text (Comment))
+        # Only include questions that have actual data (non-empty responses)
         questions = []
         seen_questions = set()
         
@@ -1196,13 +1197,18 @@ def get_available_questions():
                 
                 # Only add Answer columns (skip Comment duplicates)
                 if q_type == 'Answer' and q_num not in seen_questions:
-                    seen_questions.add(q_num)
-                    questions.append({
-                        'id': f'Q{q_num}',
-                        'number': int(q_num),
-                        'text': f'Q#{q_num}: {q_text}',
-                        'question_text': q_text
-                    })
+                    # Check if this question has any actual data (non-null, non-empty values)
+                    col_data = df[col]
+                    has_data = col_data.notna().any() and (col_data.astype(str).str.strip() != '').any()
+                    
+                    if has_data:
+                        seen_questions.add(q_num)
+                        questions.append({
+                            'id': f'Q{q_num}',
+                            'number': int(q_num),
+                            'text': f'Q#{q_num}: {q_text}',
+                            'question_text': q_text
+                        })
         
         # Sort by question number
         questions.sort(key=lambda x: x['number'])

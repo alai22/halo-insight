@@ -91,6 +91,16 @@ const QuestionTrendsChart = ({ question, questionText }) => {
   }
 
   if (error) {
+    // For "Invalid question" or "not found" errors, don't render anything
+    // This prevents error boxes from appearing for questions that don't exist
+    if (error.includes('Invalid question') || 
+        error.includes('not found') || 
+        error.includes('Column not found') ||
+        error.includes('Question') && error.includes('not found')) {
+      return null; // Don't render anything for missing questions
+    }
+    
+    // For other errors, show error message
     return (
       <div className="flex items-center justify-center h-64 p-8">
         <div className="text-center max-w-md">
