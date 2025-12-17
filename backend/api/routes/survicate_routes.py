@@ -7,6 +7,7 @@ from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
 from ...utils.error_helpers import validate_required_fields, validate_message_format, validate_list_items
+from ...api.middleware.auth import require_admin_auth
 
 logger = get_logger('survicate_routes')
 
@@ -73,6 +74,7 @@ def survicate_ask():
 
 
 @survicate_bp.route('/refresh', methods=['POST'])
+@require_admin_auth
 def refresh_surveys():
     """Refresh survey data from specified source (file or api)"""
     service_container = getattr(g, 'service_container', None)
@@ -167,6 +169,7 @@ def search_surveys():
 
 
 @survicate_bp.route('/raw-files/download', methods=['GET'])
+@require_admin_auth
 def download_raw_file():
     """Download a raw CSV file from S3"""
     try:
@@ -275,6 +278,7 @@ def download_raw_file():
 
 
 @survicate_bp.route('/raw-files', methods=['GET'])
+@require_admin_auth
 def list_raw_files():
     """List all raw CSV files in S3 or local storage"""
     try:
@@ -318,6 +322,7 @@ def list_raw_files():
 
 
 @survicate_bp.route('/augmented-files', methods=['GET'])
+@require_admin_auth
 def list_augmented_files():
     """List all available augmented CSV files in S3 or local storage"""
     try:
@@ -365,6 +370,7 @@ def list_augmented_files():
 
 
 @survicate_bp.route('/augmented-files/download', methods=['GET'])
+@require_admin_auth
 def download_augmented_file():
     """Download an augmented CSV file"""
     try:
@@ -441,6 +447,7 @@ def download_augmented_file():
 
 
 @survicate_bp.route('/augment', methods=['POST'])
+@require_admin_auth
 def trigger_augmentation():
     """Manually trigger augmentation of raw CSV file"""
     try:
@@ -1350,6 +1357,7 @@ def get_question_trends():
 
 
 @survicate_bp.route('/cache-status', methods=['GET'])
+@require_admin_auth
 def get_cache_status():
     """Get S3 cache status for API mode"""
     try:
@@ -1379,6 +1387,7 @@ def get_cache_status():
 
 
 @survicate_bp.route('/refresh-api', methods=['POST'])
+@require_admin_auth
 def refresh_api_cache():
     """Manually trigger API cache refresh"""
     try:
@@ -1416,6 +1425,7 @@ def refresh_api_cache():
 
 
 @survicate_bp.route('/env-check', methods=['GET'])
+@require_admin_auth
 def check_env_vars():
     """Check if Survicate environment variables are available in the container"""
     import os
@@ -1443,6 +1453,7 @@ def check_env_vars():
 
 
 @survicate_bp.route('/test-api-raw', methods=['GET'])
+@require_admin_auth
 def test_api_raw():
     """Test Survicate API with raw request to see exact error response"""
     try:
@@ -1538,6 +1549,7 @@ def test_api_raw():
 
 
 @survicate_bp.route('/inspect-response', methods=['GET'])
+@require_admin_auth
 def inspect_response():
     """Inspect a sample API response to see its structure"""
     try:
@@ -1610,6 +1622,7 @@ def inspect_response():
 
 
 @survicate_bp.route('/api-status', methods=['GET'])
+@require_admin_auth
 def get_api_status():
     """Test Survicate API connection"""
     try:

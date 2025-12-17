@@ -286,50 +286,66 @@ function App() {
     setIsAdminAuthenticated(false);
   };
 
-  // Check admin auth when trying to access admin tools
+  // Check admin auth when trying to access admin tools or Tools page
   useEffect(() => {
-    if (isAuthenticated && (adminMode === 'claude' || adminMode === 'download')) {
-      const checkAdminAuth = async () => {
-        const adminToken = localStorage.getItem('admin_token');
-        if (adminToken) {
-          // Check with backend to verify token is still valid
-          try {
-            const response = await axios.get('/api/auth/admin-status');
-            if (response.data.admin_authenticated) {
-              setIsAdminAuthenticated(true);
-            } else {
-              // Token invalid, clear it and reset admin mode
-              localStorage.removeItem('admin_token');
+    if (isAuthenticated) {
+      // Check admin auth if:
+      // 1. In admin mode (claude or download)
+      // 2. On Tools page (currentMode === 'tools')
+      // 3. On api-data-manager (Survicate admin)
+      const needsAdminAuth = adminMode === 'claude' || 
+                             adminMode === 'download' || 
+                             currentMode === 'tools' ||
+                             currentMode === 'api-data-manager';
+      
+      if (needsAdminAuth) {
+        const checkAdminAuth = async () => {
+          const adminToken = localStorage.getItem('admin_token');
+          if (adminToken) {
+            // Check with backend to verify token is still valid
+            try {
+              const response = await axios.get('/api/auth/admin-status');
+              if (response.data.admin_authenticated) {
+                setIsAdminAuthenticated(true);
+              } else {
+                // Token invalid, clear it and reset admin mode
+                localStorage.removeItem('admin_token');
+                setIsAdminAuthenticated(false);
+                setAdminMode(null);
+                // Don't change currentMode if user is just browsing - only reset if they were in admin mode
+                if (adminMode === 'claude' || adminMode === 'download') {
+                  setCurrentMode('churn-trends');
+                }
+              }
+            } catch (error) {
+              console.error('Error checking admin status:', error);
+              // On error, assume not authenticated
               setIsAdminAuthenticated(false);
               setAdminMode(null);
-              setCurrentMode('tools');
+              if (adminMode === 'claude' || adminMode === 'download') {
+                setCurrentMode('churn-trends');
+              }
             }
-          } catch (error) {
-            console.error('Error checking admin status:', error);
-            // On error, assume not authenticated
+          } else {
+            // No token, not admin authenticated
             setIsAdminAuthenticated(false);
-            setAdminMode(null);
-            setCurrentMode('tools');
           }
-        } else {
-          // No token, not admin authenticated
-          setIsAdminAuthenticated(false);
-        }
-      };
-      checkAdminAuth();
-    } else if (!adminMode) {
-      // Not in admin mode, reset admin auth state
-      setIsAdminAuthenticated(false);
+        };
+        checkAdminAuth();
+      } else if (!adminMode && currentMode !== 'tools' && currentMode !== 'api-data-manager') {
+        // Not in admin mode or on admin pages, reset admin auth state
+        setIsAdminAuthenticated(false);
+      }
     }
-  }, [adminMode, isAuthenticated]);
+  }, [adminMode, currentMode, isAuthenticated]);
 
   // If not authenticated, show login screen
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} />;
   }
 
-  // If trying to access admin tools but not admin authenticated, show admin login
-  if ((adminMode === 'claude' || adminMode === 'download') && !isAdminAuthenticated) {
+  // If trying to access admin tools or Tools page but not admin authenticated, show admin login
+  if ((adminMode === 'claude' || adminMode === 'download' || currentMode === 'tools' || currentMode === 'api-data-manager') && !isAdminAuthenticated) {
     return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} requireAdmin={true} />;
   }
 

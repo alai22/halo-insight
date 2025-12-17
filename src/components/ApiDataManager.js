@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Download, RefreshCw, FileDown, Sparkles, CheckCircle, XCircle, Clock, Database } from 'lucide-react';
+import axios from 'axios';
 
 const ApiDataManager = () => {
   const [cacheStatus, setCacheStatus] = useState(null);
@@ -12,10 +13,9 @@ const ApiDataManager = () => {
   // Fetch cache status
   const fetchCacheStatus = async () => {
     try {
-      const response = await fetch('/api/survicate/cache-status');
-      const data = await response.json();
-      if (data.success) {
-        setCacheStatus(data.cache_status);
+      const response = await axios.get('/api/survicate/cache-status');
+      if (response.data.success) {
+        setCacheStatus(response.data.cache_status);
       }
     } catch (error) {
       console.error('Error fetching cache status:', error);
@@ -25,10 +25,9 @@ const ApiDataManager = () => {
   // Fetch raw files
   const fetchRawFiles = async () => {
     try {
-      const response = await fetch('/api/survicate/raw-files');
-      const data = await response.json();
-      if (data.success) {
-        setRawFiles(data.files || []);
+      const response = await axios.get('/api/survicate/raw-files');
+      if (response.data.success) {
+        setRawFiles(response.data.files || []);
       }
     } catch (error) {
       console.error('Error fetching raw files:', error);
@@ -38,10 +37,9 @@ const ApiDataManager = () => {
   // Fetch augmented files
   const fetchAugmentedFiles = async () => {
     try {
-      const response = await fetch('/api/survicate/augmented-files');
-      const data = await response.json();
-      if (data.success) {
-        setAugmentedFiles(data.files || []);
+      const response = await axios.get('/api/survicate/augmented-files');
+      if (response.data.success) {
+        setAugmentedFiles(response.data.files || []);
       }
     } catch (error) {
       console.error('Error fetching augmented files:', error);
@@ -78,18 +76,14 @@ const ApiDataManager = () => {
     setRefreshProgress({ status: 'starting', message: 'Starting API refresh...' });
     
     try {
-      const response = await fetch('/api/survicate/refresh-api', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const response = await axios.post('/api/survicate/refresh-api');
       
-      const data = await response.json();
-      if (data.success) {
+      if (response.data.success) {
         setRefreshProgress({ status: 'running', message: 'Downloading responses from API...' });
         // Poll for completion
         const pollInterval = setInterval(async () => {
-          const statusResponse = await fetch('/api/survicate/cache-status');
-          const statusData = await statusResponse.json();
+          const statusResponse = await axios.get('/api/survicate/cache-status');
+          const statusData = statusResponse.data;
           if (statusData.success && statusData.cache_status) {
             const state = statusData.cache_status.refresh_state;
             if (state && state.is_running) {
@@ -132,13 +126,11 @@ const ApiDataManager = () => {
   const handleTriggerAugmentation = async (fileKey) => {
     setIsAugmenting(true);
     try {
-      const response = await fetch('/api/survicate/augment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw_file_key: fileKey })
+      const response = await axios.post('/api/survicate/augment', {
+        raw_file_key: fileKey
       });
       
-      const data = await response.json();
+      const data = response.data;
       if (data.success) {
         // Poll for completion
         const pollInterval = setInterval(async () => {
