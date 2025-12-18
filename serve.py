@@ -6,7 +6,10 @@ werkzeug.serving.WSGIRequestHandler.max_header_size = 32768  # 32KB (default is 
 from flask import Flask, send_from_directory, g
 from flask_cors import CORS
 import os
+import secrets
+from datetime import timedelta
 from app import app as api_app, get_service_container
+from backend.utils.config import Config
 
 # Initialize services (they initialize themselves when imported)
 print("Initializing services...")
@@ -20,8 +23,18 @@ except Exception as e:
 # Create main app
 app = Flask(__name__, static_folder="build")
 
-# Enable CORS for all origins in production
-CORS(app)
+# Configure session secret key (required for session management, including Google OAuth state)
+# IMPORTANT: In production, set FLASK_SECRET_KEY in .env for session persistence
+secret_key = Config.FLASK_SECRET_KEY or os.getenv('FLASK_SECRET_KEY') or secrets.token_hex(32)
+if not Config.FLASK_SECRET_KEY and not os.getenv('FLASK_SECRET_KEY'):
+    print("⚠️ Warning: FLASK_SECRET_KEY not set - sessions will not persist across restarts. Set FLASK_SECRET_KEY in .env for production.")
+app.secret_key = secret_key
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessions last 24 hours
+
+# Enable CORS with credentials support (required for session cookies)
+CORS(app, supports_credentials=True)
 
 # Set up service container for each request (critical for dependency injection)
 @app.before_request
