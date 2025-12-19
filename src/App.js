@@ -172,35 +172,39 @@ function App() {
   // Check if user is already authenticated (check localStorage token first, then backend session)
   useEffect(() => {
     const checkAuthStatus = async () => {
-      // First check localStorage for auth token (temporary workaround)
-      const authToken = localStorage.getItem('auth_token');
-      
-      // If token exists, trust it immediately (temporary workaround)
-      if (authToken) {
-        console.log('Initial auth check - token found, setting authenticated to true');
-        setIsAuthenticated(true);
-      } else {
-        // If no token, check backend session
-        try {
-          const response = await axios.get('/api/auth/status');
+      // Check authentication with backend session (works with Google SSO)
+      try {
+        const response = await axios.get('/api/auth/status', {
+          withCredentials: true
+        });
+        
+        if (response.data.authenticated) {
+          console.log('Initial auth check - setting authenticated to true');
+          setIsAuthenticated(true);
           
-          if (response.data.authenticated) {
-            setIsAuthenticated(true);
-          } else {
-            setIsAuthenticated(false);
+          // Also check admin status if authenticated
+          try {
+            const adminResponse = await axios.get('/api/auth/admin-status', {
+              withCredentials: true
+            });
+            if (adminResponse.data.admin_authenticated) {
+              console.log('Initial admin auth check - admin authenticated');
+              setIsAdminAuthenticated(true);
+            } else {
+              setIsAdminAuthenticated(false);
+            }
+          } catch (adminError) {
+            console.error('Error checking admin status:', adminError);
+            setIsAdminAuthenticated(false);
           }
-        } catch (error) {
-          console.error('Error checking auth status:', error);
+        } else {
+          console.log('Initial auth check - not authenticated');
           setIsAuthenticated(false);
+          setIsAdminAuthenticated(false);
         }
-      }
-      
-      // Check admin authentication
-      const adminToken = localStorage.getItem('admin_token');
-      if (adminToken) {
-        console.log('Initial admin auth check - token found, setting admin authenticated to true');
-        setIsAdminAuthenticated(true);
-      } else {
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+        setIsAuthenticated(false);
         setIsAdminAuthenticated(false);
       }
     };
@@ -218,35 +222,39 @@ function App() {
   useAnalytics();
 
   const handleLogin = async () => {
-    // Check localStorage first - if token exists, we're authenticated
-    const authToken = localStorage.getItem('auth_token');
-    console.log('handleLogin - authToken from localStorage:', authToken ? 'found' : 'not found');
-    
-    // If we have a token, immediately set authenticated to true
-    // This is a temporary workaround - in production with FLASK_SECRET_KEY, sessions will work
-    if (authToken) {
-      console.log('handleLogin - token found, setting authenticated to true immediately');
-      setIsAuthenticated(true);
-      return;
-    }
-    
-    // If no token, verify authentication with backend session
+    // Verify authentication with backend session (works with Google SSO)
     try {
-      const response = await axios.get('/api/auth/status');
+      const response = await axios.get('/api/auth/status', {
+        withCredentials: true
+      });
       
       console.log('handleLogin - auth status response:', response.data);
       
       if (response.data.authenticated) {
         console.log('handleLogin - setting authenticated to true');
         setIsAuthenticated(true);
+        
+        // Also check admin status
+        try {
+          const adminResponse = await axios.get('/api/auth/admin-status', {
+            withCredentials: true
+          });
+          if (adminResponse.data.admin_authenticated) {
+            setIsAdminAuthenticated(true);
+          }
+        } catch (adminError) {
+          console.error('Error checking admin status:', adminError);
+        }
       } else {
         // If not authenticated, stay on login screen
         console.log('handleLogin - not authenticated');
         setIsAuthenticated(false);
+        setIsAdminAuthenticated(false);
       }
     } catch (error) {
       console.error('Error checking auth status:', error);
       setIsAuthenticated(false);
+      setIsAdminAuthenticated(false);
     }
   };
 
@@ -277,13 +285,20 @@ function App() {
 
   // Handle admin authentication check
   const handleAdminLogin = async () => {
-    const adminToken = localStorage.getItem('admin_token');
-    if (adminToken) {
-      setIsAdminAuthenticated(true);
-      return;
+    // Check admin status from backend (works with Google SSO session)
+    try {
+      const response = await axios.get('/api/auth/admin-status', {
+        withCredentials: true
+      });
+      if (response.data.admin_authenticated) {
+        setIsAdminAuthenticated(true);
+      } else {
+        setIsAdminAuthenticated(false);
+      }
+    } catch (error) {
+      console.error('Error checking admin status:', error);
+      setIsAdminAuthenticated(false);
     }
-    // If no token, admin is not authenticated
-    setIsAdminAuthenticated(false);
   };
 
   // Check admin auth when trying to access admin tools or Tools page
@@ -300,35 +315,30 @@ function App() {
       
       if (needsAdminAuth) {
         const checkAdminAuth = async () => {
-          const adminToken = localStorage.getItem('admin_token');
-          if (adminToken) {
-            // Check with backend to verify token is still valid
-            try {
-              const response = await axios.get('/api/auth/admin-status');
-              if (response.data.admin_authenticated) {
-                setIsAdminAuthenticated(true);
-              } else {
-                // Token invalid, clear it and reset admin mode
-                localStorage.removeItem('admin_token');
-                setIsAdminAuthenticated(false);
-                setAdminMode(null);
-                // Don't change currentMode if user is just browsing - only reset if they were in admin mode
-                if (adminMode === 'claude' || adminMode === 'download') {
-                  setCurrentMode('churn-trends');
-                }
-              }
-            } catch (error) {
-              console.error('Error checking admin status:', error);
-              // On error, assume not authenticated
+          // Check admin status from backend (works with Google SSO session)
+          try {
+            const response = await axios.get('/api/auth/admin-status', {
+              withCredentials: true
+            });
+            if (response.data.admin_authenticated) {
+              setIsAdminAuthenticated(true);
+            } else {
+              // Not admin authenticated, reset admin mode
               setIsAdminAuthenticated(false);
               setAdminMode(null);
+              // Don't change currentMode if user is just browsing - only reset if they were in admin mode
               if (adminMode === 'claude' || adminMode === 'download') {
                 setCurrentMode('churn-trends');
               }
             }
-          } else {
-            // No token, not admin authenticated
+          } catch (error) {
+            console.error('Error checking admin status:', error);
+            // On error, assume not authenticated
             setIsAdminAuthenticated(false);
+            setAdminMode(null);
+            if (adminMode === 'claude' || adminMode === 'download') {
+              setCurrentMode('churn-trends');
+            }
           }
         };
         checkAdminAuth();

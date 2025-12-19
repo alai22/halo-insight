@@ -574,6 +574,9 @@ def google_callback():
             logger.warning(f"Google OAuth login attempt from unauthorized domain: {email}")
             return redirect("/?auth=error&message=Only @halocollar.com email addresses are allowed")
         
+        # Check if user is an admin
+        is_admin = Config.is_admin_email(email)
+        
         # Create session (same structure as other auth methods)
         session['authenticated'] = True
         session['email'] = email
@@ -582,9 +585,17 @@ def google_callback():
             session['name'] = name
         if picture:
             session['avatar_url'] = picture
+        
+        # Set admin authentication if email matches admin email(s)
+        if is_admin:
+            session['admin_authenticated'] = True
+            logger.info(f"Admin user authenticated via Google OAuth: {email}")
+        else:
+            session['admin_authenticated'] = False
+        
         session.permanent = True  # Make session persistent
         
-        logger.info(f"User authenticated successfully via Google OAuth: {email}")
+        logger.info(f"User authenticated successfully via Google OAuth: {email} (admin: {is_admin})")
         
         # Redirect to frontend with success indicator
         return redirect(f"/?auth=success&email={email}")

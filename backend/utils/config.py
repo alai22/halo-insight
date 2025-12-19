@@ -136,7 +136,18 @@ class Config:
     # Password for password-based login (stored securely on backend)
     AUTH_PASSWORD: str = os.getenv('AUTH_PASSWORD', 'gladly2024')
     # Admin password for admin tools (separate from regular auth)
+    # DEPRECATED: Use ADMIN_EMAIL with Google SSO instead
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
+    # Admin email(s) for Google SSO admin access (comma-separated for multiple admins)
+    ADMIN_EMAIL: Optional[str] = os.getenv('ADMIN_EMAIL', '')
+    
+    @classmethod
+    def is_admin_email(cls, email: str) -> bool:
+        """Check if email is an admin email"""
+        if not cls.ADMIN_EMAIL:
+            return False
+        admin_emails = [e.strip().lower() for e in cls.ADMIN_EMAIL.split(',') if e.strip()]
+        return email.lower() in admin_emails
     
     # Google OAuth Configuration
     GOOGLE_OAUTH_CLIENT_ID: Optional[str] = os.getenv('GOOGLE_OAUTH_CLIENT_ID')
