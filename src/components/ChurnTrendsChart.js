@@ -56,6 +56,43 @@ const ChurnTrendsChart = () => {
     '#FCE8E6',  // Very pale Red
   ];
 
+  // Helper function to find full question text for a reason name
+  const getFullQuestionText = (reasonName) => {
+    if (!reasonName || reasonName === 'Other') return null;
+    
+    // Try to match reason name to available questions
+    // Reason names are shortened versions, so we'll match by keywords
+    const reasonLower = reasonName.toLowerCase();
+    const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2); // Filter out short words
+    
+    // Find question that contains the most matching keywords
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    availableQuestions.forEach(q => {
+      const qText = (q.question_text || q.text || '').toLowerCase();
+      if (!qText) return;
+      
+      // Count how many reason words appear in the question text
+      const matchCount = reasonWords.filter(word => qText.includes(word)).length;
+      const score = matchCount / reasonWords.length; // Percentage of words matched
+      
+      // Also check if question text starts with reason name (for exact matches)
+      if (qText.includes(reasonLower) || reasonLower.includes(qText.substring(0, 40))) {
+        if (score > bestScore || (score === bestScore && qText.length > (bestMatch?.length || 0))) {
+          bestScore = score;
+          bestMatch = q.question_text || q.text;
+        }
+      } else if (score > 0.5 && score > bestScore) {
+        // If at least 50% of words match, consider it
+        bestScore = score;
+        bestMatch = q.question_text || q.text;
+      }
+    });
+    
+    return bestMatch;
+  };
+
   const fetchAvailableQuestions = async () => {
     setQuestionsLoading(true);
     try {
@@ -531,38 +568,70 @@ const ChurnTrendsChart = () => {
                     marginTop: '10px',
                     width: '100%'
                   }}>
-                    {sortedPayload.map((entry, index) => (
-                      <div 
-                        key={`legend-item-${index}`}
-                        style={{ 
-                          display: 'flex', 
-                          alignItems: 'flex-start', 
-                          gap: '10px',
-                          fontSize: '13px',
-                          lineHeight: '1.6',
-                          padding: '4px 0'
-                        }}
-                      >
+                    {sortedPayload.map((entry, index) => {
+                      const isTruncated = entry.value.length > 35;
+                      const fullQuestionText = isTruncated ? getFullQuestionText(entry.value) : null;
+                      const showTooltip = isTruncated && fullQuestionText;
+                      
+                      return (
                         <div 
+                          key={`legend-item-${index}`}
+                          className="relative group"
                           style={{ 
-                            width: '16px', 
-                            height: '16px', 
-                            backgroundColor: entry.color,
-                            borderRadius: '3px',
-                            flexShrink: 0,
-                            marginTop: '2px',
-                            border: '1px solid rgba(0, 0, 0, 0.1)'
-                          }} 
-                        />
-                        <span style={{ 
-                          color: '#1f2937',
-                          fontWeight: '500',
-                          wordBreak: 'break-word'
-                        }}>
-                          {entry.value}
-                        </span>
-                      </div>
-                    ))}
+                            display: 'flex', 
+                            alignItems: 'flex-start', 
+                            gap: '10px',
+                            fontSize: '13px',
+                            lineHeight: '1.6',
+                            padding: '4px 0'
+                          }}
+                        >
+                          <div 
+                            style={{ 
+                              width: '16px', 
+                              height: '16px', 
+                              backgroundColor: entry.color,
+                              borderRadius: '3px',
+                              flexShrink: '0',
+                              marginTop: '2px',
+                              border: '1px solid rgba(0, 0, 0, 0.1)'
+                            }} 
+                          />
+                          <span 
+                            style={{ 
+                              color: '#1f2937',
+                              fontWeight: '500',
+                              wordBreak: 'break-word',
+                              cursor: showTooltip ? 'help' : 'default'
+                            }}
+                            title={showTooltip ? fullQuestionText : undefined}
+                          >
+                            {entry.value}
+                          </span>
+                          {/* Custom tooltip on hover */}
+                          {showTooltip && (
+                            <div 
+                              className="absolute left-0 top-full mt-2 hidden group-hover:block z-50 bg-gray-900 text-white text-xs rounded-lg shadow-xl p-3 max-w-md pointer-events-none"
+                              style={{
+                                whiteSpace: 'normal',
+                                wordWrap: 'break-word',
+                                lineHeight: '1.5',
+                                transform: 'translateX(-10px)'
+                              }}
+                            >
+                              <div className="font-semibold mb-1.5 text-white">Full Question:</div>
+                              <div className="text-gray-100">{fullQuestionText}</div>
+                            </div>
+                          )}
+                          {/* Small indicator for truncated items */}
+                          {isTruncated && !showTooltip && (
+                            <span className="text-gray-400 text-xs ml-1" title="Original question text not available">
+                              ℹ️
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               }}
@@ -843,38 +912,70 @@ const ChurnTrendsChart = () => {
                               marginTop: '10px',
                               width: '100%'
                             }}>
-                              {sortedPayload.map((entry, index) => (
-                                <div 
-                                  key={`legend-item-${index}`}
-                                  style={{ 
-                                    display: 'flex', 
-                                    alignItems: 'flex-start', 
-                                    gap: '10px',
-                                    fontSize: '13px',
-                                    lineHeight: '1.6',
-                                    padding: '4px 0'
-                                  }}
-                                >
+                              {sortedPayload.map((entry, index) => {
+                                const isTruncated = entry.value.length > 35;
+                                const fullQuestionText = isTruncated ? getFullQuestionText(entry.value) : null;
+                                const showTooltip = isTruncated && fullQuestionText;
+                                
+                                return (
                                   <div 
+                                    key={`legend-item-${index}`}
+                                    className="relative group"
                                     style={{ 
-                                      width: '16px', 
-                                      height: '16px', 
-                                      backgroundColor: entry.color,
-                                      borderRadius: '3px',
-                                      flexShrink: 0,
-                                      marginTop: '2px',
-                                      border: '1px solid rgba(0, 0, 0, 0.1)'
-                                    }} 
-                                  />
-                                  <span style={{ 
-                                    color: '#1f2937',
-                                    fontWeight: '500',
-                                    wordBreak: 'break-word'
-                                  }}>
-                                    {entry.value}
-                                  </span>
-                                </div>
-                              ))}
+                                      display: 'flex', 
+                                      alignItems: 'flex-start', 
+                                      gap: '10px',
+                                      fontSize: '13px',
+                                      lineHeight: '1.6',
+                                      padding: '4px 0'
+                                    }}
+                                  >
+                                    <div 
+                                      style={{ 
+                                        width: '16px', 
+                                        height: '16px', 
+                                        backgroundColor: entry.color,
+                                        borderRadius: '3px',
+                                        flexShrink: '0',
+                                        marginTop: '2px',
+                                        border: '1px solid rgba(0, 0, 0, 0.1)'
+                                      }} 
+                                    />
+                                    <span 
+                                      style={{ 
+                                        color: '#1f2937',
+                                        fontWeight: '500',
+                                        wordBreak: 'break-word',
+                                        cursor: showTooltip ? 'help' : 'default'
+                                      }}
+                                      title={showTooltip ? fullQuestionText : undefined}
+                                    >
+                                      {entry.value}
+                                    </span>
+                                    {/* Custom tooltip on hover */}
+                                    {showTooltip && (
+                                      <div 
+                                        className="absolute left-0 top-full mt-2 hidden group-hover:block z-50 bg-gray-900 text-white text-xs rounded-lg shadow-xl p-3 max-w-md pointer-events-none"
+                                        style={{
+                                          whiteSpace: 'normal',
+                                          wordWrap: 'break-word',
+                                          lineHeight: '1.5',
+                                          transform: 'translateX(-10px)'
+                                        }}
+                                      >
+                                        <div className="font-semibold mb-1.5 text-white">Full Question:</div>
+                                        <div className="text-gray-100">{fullQuestionText}</div>
+                                      </div>
+                                    )}
+                                    {/* Small indicator for truncated items */}
+                                    {isTruncated && !showTooltip && (
+                                      <span className="text-gray-400 text-xs ml-1" title="Original question text not available">
+                                        ℹ️
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           );
                         }}
