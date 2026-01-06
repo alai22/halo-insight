@@ -116,9 +116,10 @@ class ZoomDownloadService(IZoomDownloadService):
                             logger.info(f"Time limit reached ({max_duration_minutes} minutes). Stopping download.")
                             break
                         
-                        session_id = session.get('session_id') or session.get('id')
+                        # Team Chat uses 'id' or 'channel_id', IM Chat used 'session_id'
+                        session_id = session.get('session_id') or session.get('channel_id') or session.get('id')
                         if not session_id:
-                            logger.warning(f"Session missing ID: {session}")
+                            logger.warning(f"Session/Channel missing ID: {session}")
                             failed_count += 1
                             continue
                         
