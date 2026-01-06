@@ -60,6 +60,9 @@ download_thread: Optional[threading.Thread] = None
 def get_download_status():
     """Get current download status"""
     try:
+        # Check if thread is still alive
+        thread_alive = download_thread.is_alive() if download_thread else False
+        
         # Calculate progress percentage
         if download_state['total_sessions'] > 0:
             download_state['progress_percentage'] = (download_state['current_session'] / download_state['total_sessions']) * 100
@@ -81,10 +84,17 @@ def get_download_status():
             estimated_seconds = (remaining_sessions / sessions_per_minute) * 60
             estimated_time_remaining = estimated_seconds
         
+        # If thread is not alive but state says running, mark as error
+        if download_state['is_running'] and not thread_alive and not download_state.get('error'):
+            logger.warning("Download thread is not alive but state says running - marking as error")
+            download_state['is_running'] = False
+            download_state['error'] = 'Download thread stopped unexpectedly'
+        
         return jsonify({
             'status': 'success',
             'data': {
                 'is_running': download_state['is_running'],
+                'thread_alive': thread_alive,
                 'current_session': download_state['current_session'],
                 'total_sessions': download_state['total_sessions'],
                 'downloaded_count': download_state['downloaded_count'],
@@ -143,11 +153,14 @@ def start_download():
         
         # Initialize download service
         try:
+            logger.info("Initializing ZoomDownloadService...")
             download_service = ZoomDownloadService()
-            logger.debug("Zoom download service initialized")
+            logger.info("Zoom download service initialized successfully")
         except Exception as e:
             error_msg = f"Failed to initialize download service: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            download_state['is_running'] = False
+            download_state['error'] = error_msg
             return jsonify({'status': 'error', 'message': error_msg}), 500
         
         # Reset download state
@@ -170,6 +183,7 @@ def start_download():
         })
         
         # Start download in background thread
+        logger.info(f"Creating download thread for {start_date} to {end_date}")
         download_thread = threading.Thread(
             target=_run_download,
             args=(start_date, end_date, max_duration_minutes),
@@ -177,8 +191,18 @@ def start_download():
             name="ZoomDownloadThread"
         )
         download_thread.start()
+        logger.info(f"Download thread started (thread ID: {download_thread.ident}, name: {download_thread.name})")
         
-        logger.info(f"Zoom download thread started: {start_date} to {end_date}")
+        # Give thread a moment to start and log
+        import time
+        time.sleep(0.5)
+        
+        # Verify thread is alive
+        if not download_thread.is_alive():
+            logger.warning("Download thread died immediately after starting!")
+            download_state['is_running'] = False
+            download_state['error'] = 'Download thread failed to start'
+            return jsonify({'status': 'error', 'message': 'Download thread failed to start'}), 500
         
         return jsonify({
             'status': 'success',
@@ -402,18 +426,30 @@ def _run_download(start_date: str, end_date: str, max_duration_minutes: int):
     
     start_time = datetime.now()
     thread_name = threading.current_thread().name
-    logger.info(f"[{thread_name}] Zoom download thread started: {start_date} to {end_date}, max_duration={max_duration_minutes}")
+    thread_id = threading.current_thread().ident
+    
+    logger.info(f"[{thread_name}] ===== Zoom download thread STARTED =====")
+    logger.info(f"[{thread_name}] Thread ID: {thread_id}")
+    logger.info(f"[{thread_name}] Date range: {start_date} to {end_date}")
+    logger.info(f"[{thread_name}] Max duration: {max_duration_minutes} minutes")
+    logger.info(f"[{thread_name}] Download service exists: {download_service is not None}")
     
     try:
         if not download_service:
-            error_msg = 'Download service not initialized'
-            logger.error(f"[{thread_name}] {error_msg}")
-            download_state['error'] = error_msg
-            download_state['is_running'] = False
-            return
+            logger.error(f"[{thread_name}] Download service is None, initializing...")
+            try:
+                download_service = ZoomDownloadService()
+                logger.info(f"[{thread_name}] Successfully initialized download service in thread")
+            except Exception as init_error:
+                error_msg = f'Failed to initialize download service: {str(init_error)}'
+                logger.error(f"[{thread_name}] {error_msg}\n{traceback.format_exc()}")
+                download_state['error'] = error_msg
+                download_state['is_running'] = False
+                return
         
         # Run the download with comprehensive error handling
         try:
+            logger.info(f"[{thread_name}] Calling download_service.download_chat_messages()...")
             download_service.download_chat_messages(
                 start_date=start_date,
                 end_date=end_date,

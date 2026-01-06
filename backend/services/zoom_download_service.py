@@ -75,12 +75,20 @@ class ZoomDownloadService(IZoomDownloadService):
             end_time = start_time + timedelta(minutes=max_duration_minutes)
             
             # Get all chat sessions
-            logger.info("Fetching chat sessions...")
+            logger.info("Fetching chat sessions from Zoom API...")
+            logger.info(f"Date range: {start_date} to {end_date}")
             if progress_callback:
                 # Update phase to fetching_sessions
                 progress_callback(0, 0, 0, 0, phase='fetching_sessions')
             
-            sessions = self.api_client.get_all_chat_sessions(start_date, end_date)
+            try:
+                sessions = self.api_client.get_all_chat_sessions(start_date, end_date)
+                logger.info(f"Successfully fetched {len(sessions) if sessions else 0} chat sessions")
+            except Exception as fetch_error:
+                logger.error(f"Error fetching chat sessions: {fetch_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
             
             if not sessions:
                 logger.warning("No chat sessions found in date range")

@@ -197,12 +197,39 @@ class ZoomAPIClient:
                     
                     # Check if it's a scope/permission issue
                     if 'scope' in error_text.lower() or 'permission' in error_text.lower() or 'unauthorized' in error_text.lower():
-                        error_msg = (
-                            f"400 Bad Request - Missing required scopes. "
-                            f"Please enable 'chat_message:read:admin' or 'imchat:read:admin' scope in your "
-                            f"Server-to-Server OAuth app settings in Zoom Marketplace. "
-                            f"Error: {error_text}"
-                        )
+                        # Parse the error to extract required scopes
+                        import json
+                        try:
+                            error_data = json.loads(error_text)
+                            required_scopes = error_data.get('message', '')
+                        except:
+                            required_scopes = error_text
+                        
+                        # Check if error mentions imchat scopes (which may be deprecated)
+                        if 'imchat' in error_text.lower():
+                            error_msg = (
+                                f"400 Bad Request - Missing required scopes.\n\n"
+                                f"IM Chat scopes (imchat:read, imchat:read:admin) are no longer available in Zoom Marketplace.\n"
+                                f"Zoom has deprecated IM Chat API in favor of Team Chat API.\n\n"
+                                f"SOLUTION - Enable Team Chat scopes instead:\n"
+                                f"1. Go to https://marketplace.zoom.us/\n"
+                                f"2. Navigate to your Server-to-Server OAuth app\n"
+                                f"3. Go to the 'Scopes' section\n"
+                                f"4. Under 'Team Chat' category, enable these scopes:\n"
+                                f"   - chat_message:read:admin (Read chat messages - Admin)\n"
+                                f"   - team_chat:read:list_user_messages:admin (List user messages - Admin)\n"
+                                f"   - team_chat:read:user_message:admin (Read user messages - Admin)\n"
+                                f"5. Save and activate your app\n"
+                                f"6. Wait 2-3 minutes for changes to propagate\n\n"
+                                f"Note: If enabling Team Chat scopes doesn't work, we may need to migrate to Team Chat API endpoints.\n"
+                                f"\nZoom API Error: {error_text}"
+                            )
+                        else:
+                            error_msg = (
+                                f"400 Bad Request - Missing required scopes. "
+                                f"Please enable the required scopes in your Server-to-Server OAuth app settings in Zoom Marketplace. "
+                                f"Error: {error_text}"
+                            )
                         raise Exception(error_msg)
                     else:
                         raise Exception(f"400 Bad Request: {error_text}")
