@@ -11,6 +11,8 @@ const SurveyManager = () => {
   const [surveyResponses, setSurveyResponses] = useState([]);
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [loadingResponses, setLoadingResponses] = useState(false);
+  const [surveyFiles, setSurveyFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
 
   const [error, setError] = useState(null);
 
@@ -89,13 +91,34 @@ const SurveyManager = () => {
     }
   };
 
+  // Fetch files for a survey
+  const fetchSurveyFiles = async (surveyId) => {
+    setLoadingFiles(true);
+    try {
+      const response = await axios.get(`/api/survicate/surveys/${surveyId}/files`);
+      if (response.data.success) {
+        setSurveyFiles(response.data.files || []);
+      } else {
+        console.error('Failed to fetch files:', response.data.error);
+        setSurveyFiles([]);
+      }
+    } catch (error) {
+      console.error('Error fetching files:', error);
+      setSurveyFiles([]);
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
   // Handle survey selection
   const handleSurveySelect = (survey) => {
     setSelectedSurvey(survey);
     setSurveyQuestions([]);
     setSurveyResponses([]);
+    setSurveyFiles([]);
     fetchSurveyQuestions(survey.id);
     fetchSurveyResponses(survey.id);
+    fetchSurveyFiles(survey.id);
   };
 
   // Handle download
@@ -137,6 +160,8 @@ const SurveyManager = () => {
                   alert(`Download completed with error: ${state.error}`);
                 } else {
                   alert(`Download completed for "${surveyName}"`);
+                  // Refresh files list for this survey
+                  fetchSurveyFiles(surveyId);
                 }
               }
             }
@@ -328,6 +353,57 @@ const SurveyManager = () => {
                       Question {q.id}
                     </div>
                     <div className="text-sm text-gray-600">{q.text}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Downloaded Files Section */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-md font-medium text-gray-900">Downloaded Files</h3>
+              <button
+                onClick={() => fetchSurveyFiles(selectedSurvey.id)}
+                className="p-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+                title="Refresh files"
+              >
+                <RefreshCw className={`h-4 w-4 ${loadingFiles ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+            {loadingFiles ? (
+              <div className="text-sm text-gray-500 py-4">Loading files...</div>
+            ) : surveyFiles.length === 0 ? (
+              <div className="text-sm text-gray-500 py-4">No files downloaded yet. Click "Download" above to download responses.</div>
+            ) : (
+              <div className="space-y-2">
+                {surveyFiles.map((file) => (
+                  <div key={file.key} className="p-3 bg-gray-50 rounded border border-gray-200 flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="font-medium text-gray-900 mb-1">{file.display_name}</div>
+                      <div className="text-sm text-gray-600 space-y-1">
+                        {file.response_count !== undefined && (
+                          <div>{file.response_count.toLocaleString()} responses</div>
+                        )}
+                        {file.last_modified && (
+                          <div>Downloaded: {new Date(file.last_modified).toLocaleString()}</div>
+                        )}
+                        {file.file_size && (
+                          <div>Size: {(file.file_size / 1024).toFixed(2)} KB</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="ml-4">
+                      <a
+                        href={`/api/survicate/surveys/${selectedSurvey.id}/files/download?file_key=${encodeURIComponent(file.key)}`}
+                        download={file.display_name}
+                        className="px-3 py-2 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
+                        title="Download CSV file"
+                      >
+                        <FileDown className="h-4 w-4" />
+                        <span>Download</span>
+                      </a>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -203,7 +203,15 @@ class SurvicateS3CacheService:
             
             if self.use_local_storage:
                 # Save to local file
-                cache_file = self.local_cache_dir / self.cache_key.split('/')[-1]
+                # Preserve directory structure from cache_key (e.g., surveys/{survey_id}/raw_{timestamp}.csv)
+                cache_key_parts = self.cache_key.split('/')
+                if len(cache_key_parts) > 1:
+                    # Create subdirectories to match S3 structure
+                    subdir = self.local_cache_dir / '/'.join(cache_key_parts[:-1])
+                    subdir.mkdir(parents=True, exist_ok=True)
+                    cache_file = subdir / cache_key_parts[-1]
+                else:
+                    cache_file = self.local_cache_dir / cache_key_parts[-1]
                 
                 # Safety check: Never overwrite the manual CSV file
                 manual_csv_path = Path(Config.SURVICATE_CSV_PATH)

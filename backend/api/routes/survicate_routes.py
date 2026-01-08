@@ -3,7 +3,7 @@ API routes for Survicate survey analysis
 """
 
 from flask import Blueprint, request, jsonify, g
-from datetime import datetime
+from datetime import datetime, timezone
 from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
@@ -2059,6 +2059,169 @@ def download_survey_responses(survey_id):
             'success': False,
             'error': str(e),
             'details': f'Failed to start download for survey {survey_id}. Check server logs for details.'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/files', methods=['GET'])
+def list_survey_files(survey_id):
+    """List all downloaded files for a specific survey"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        import boto3
+        from pathlib import Path
+        
+        cache_service = SurvicateS3CacheService()
+        files = []
+        
+        if cache_service.use_local_storage:
+            # List files from local storage
+            if cache_service.local_cache_dir and cache_service.local_cache_dir.exists():
+                # Look for files in survey-specific subdirectory
+                survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+                if survey_dir.exists():
+                    for csv_file in survey_dir.glob('raw_*.csv'):
+                        try:
+                            content = csv_file.read_text(encoding='utf-8')
+                            lines = content.strip().split('\n')
+                            line_count = max(0, len(lines) - 1)
+                            mtime = csv_file.stat().st_mtime
+                            last_modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                            
+                            # Store with full path for download
+                            file_key = f'surveys/{survey_id}/{csv_file.name}'
+                            
+                            files.append({
+                                'key': file_key,
+                                'display_name': csv_file.name,
+                                'file_size': csv_file.stat().st_size,
+                                'last_modified': last_modified.isoformat(),
+                                'response_count': line_count
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to get info for {csv_file}: {e}")
+        else:
+            # List files from S3
+            if cache_service.s3_client:
+                try:
+                    prefix = f'surveys/{survey_id}/'
+                    response = cache_service.s3_client.list_objects_v2(
+                        Bucket=cache_service.bucket_name,
+                        Prefix=prefix
+                    )
+                    
+                    if 'Contents' in response:
+                        for obj in response['Contents']:
+                            key = obj['Key']
+                            if key.endswith('.csv'):
+                                files.append({
+                                    'key': key,
+                                    'display_name': key.split('/')[-1],
+                                    'file_size': obj.get('Size', 0),
+                                    'last_modified': obj.get('LastModified', datetime.now(timezone.utc)).isoformat(),
+                                    'response_count': 0  # Would need to read file to count
+                                })
+                except Exception as e:
+                    logger.error(f"Failed to list files from S3: {e}")
+        
+        # Sort by last modified (newest first)
+        files.sort(key=lambda x: x['last_modified'], reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'files': files,
+            'total': len(files)
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to list survey files: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to list files for survey {survey_id}'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/files/download', methods=['GET'])
+def download_survey_file(survey_id):
+    """Download a specific survey file"""
+    try:
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        from flask import Response
+        import urllib.parse
+        
+        file_key = request.args.get('file_key')
+        if not file_key:
+            return jsonify({
+                'success': False,
+                'error': 'file_key parameter required'
+            }), 400
+        
+        cache_service = SurvicateS3CacheService()
+        file_key = urllib.parse.unquote(file_key)
+        
+        if cache_service.use_local_storage:
+            # Load from local file
+            # file_key format: surveys/{survey_id}/raw_{timestamp}.csv
+            # Extract just the filename for local storage
+            filename = file_key.split('/')[-1] if '/' in file_key else file_key
+            file_path = cache_service.local_cache_dir / filename
+            if not file_path.exists():
+                return jsonify({
+                    'success': False,
+                    'error': 'File not found',
+                    'details': f'File {filename} does not exist locally.'
+                }), 404
+            
+            file_content = file_path.read_bytes()
+            filename = file_key.split('/')[-1] if '/' in file_key else file_key
+            
+            return Response(
+                file_content,
+                mimetype='text/csv',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Content-Type': 'text/csv; charset=utf-8'
+                }
+            )
+        else:
+            # Get from S3
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available',
+                    'details': 'S3 client not configured.'
+                }), 503
+            
+            try:
+                response = cache_service.s3_client.get_object(
+                    Bucket=cache_service.bucket_name,
+                    Key=file_key
+                )
+                file_content = response['Body'].read()
+                filename = file_key.split('/')[-1] if '/' in file_key else file_key
+                
+                return Response(
+                    file_content,
+                    mimetype='text/csv',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Type': 'text/csv; charset=utf-8'
+                    }
+                )
+            except cache_service.s3_client.exceptions.NoSuchKey:
+                return jsonify({
+                    'success': False,
+                    'error': 'File not found',
+                    'details': f'File {file_key} does not exist in S3.'
+                }), 404
+    
+    except Exception as e:
+        logger.error(f"Failed to download survey file: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to download file'
         }), 500
 
 
