@@ -2362,6 +2362,82 @@ def get_survey_aggregated_summary(survey_id):
         question_stats = {}
         question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
         
+        # Helper function to analyze text responses with LLM
+        def analyze_text_responses_with_llm(question_text, text_responses, claude_service):
+            """Use Claude to analyze free-form text responses and extract insights"""
+            if not claude_service or len(text_responses) == 0:
+                return None
+            
+            try:
+                # Limit to first 100 responses to avoid token limits
+                sample_responses = text_responses[:100]
+                responses_text = "\n".join([f"- {resp}" for resp in sample_responses])
+                
+                system_prompt = f"""You are analyzing free-form text responses to a survey question. Your task is to extract quantified insights from these responses.
+
+Question: "{question_text}"
+
+Analyze the following {len(sample_responses)} responses and provide:
+1. Common themes/topics (list 5-10 most common themes with approximate frequency)
+2. Sentiment distribution (positive, neutral, negative with approximate percentages)
+3. Key phrases or keywords that appear frequently
+4. Categorized feedback (group similar feedback into categories with counts)
+
+Format your response as JSON with this structure:
+{{
+  "themes": [
+    {{"theme": "theme name", "frequency": "high/medium/low", "examples": ["example 1", "example 2"]}}
+  ],
+  "sentiment": {{
+    "positive": 35,
+    "neutral": 45,
+    "negative": 20
+  }},
+  "key_phrases": ["phrase 1", "phrase 2", "phrase 3"],
+  "categories": [
+    {{"category": "category name", "count": 15, "percentage": 25.5, "examples": ["example 1"]}}
+  ],
+  "summary": "Brief 2-3 sentence summary of the main insights"
+}}
+
+Be concise but specific. Focus on actionable insights."""
+
+                message = f"Analyze these survey responses:\n\n{responses_text}"
+                
+                response = claude_service.send_message(
+                    message=message,
+                    model=None,  # Use default model
+                    max_tokens=2000,
+                    system_prompt=system_prompt
+                )
+                
+                # Parse JSON from response
+                response_text = response.content.strip()
+                
+                # Try to extract JSON from response (might have markdown code blocks)
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    insights = json.loads(json_match.group(0))
+                    return insights
+                else:
+                    # Fallback: return as text summary
+                    return {
+                        'summary': response_text,
+                        'raw_analysis': True
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to analyze text responses with LLM: {e}")
+                return None
+        
+        # Get Claude service for text analysis (optional)
+        claude_service = None
+        try:
+            service_container = getattr(g, 'service_container', None)
+            if service_container:
+                claude_service = service_container.get_claude_service()
+        except Exception as e:
+            logger.debug(f"Claude service not available for text analysis: {e}")
+        
         for col in df.columns:
             match = question_pattern.match(str(col))
             if match and match.group(3) == 'Answer':  # Only process Answer columns
@@ -2388,14 +2464,31 @@ def get_survey_aggregated_summary(survey_id):
                     # Sort by count (descending)
                     sorted_answers = sorted(answer_distribution.items(), key=lambda x: x[1]['count'], reverse=True)
                     
-                    question_stats[f'Q{q_num}'] = {
+                    # Detect if this is a free-form text question
+                    # Criteria: high unique answer ratio (>50%) or average answer length > 50 chars
+                    unique_ratio = len(answer_distribution) / total_answers if total_answers > 0 else 0
+                    avg_length = answers.astype(str).str.len().mean() if len(answers) > 0 else 0
+                    is_text_question = unique_ratio > 0.5 or avg_length > 50
+                    
+                    question_data = {
                         'question_number': int(q_num),
                         'question_text': q_text,
                         'total_responses': int(total_answers),
                         'response_rate': round((total_answers / total_responses) * 100, 2) if total_responses > 0 else 0,
                         'top_answers': dict(sorted_answers[:10]),  # Top 10 answers
-                        'unique_answers_count': len(answer_distribution)
+                        'unique_answers_count': len(answer_distribution),
+                        'is_text_question': is_text_question,
+                        'average_answer_length': round(avg_length, 1) if avg_length else 0
                     }
+                    
+                    # If it's a text question, analyze with LLM
+                    if is_text_question and claude_service:
+                        text_responses_list = answers.astype(str).tolist()
+                        llm_insights = analyze_text_responses_with_llm(q_text, text_responses_list, claude_service)
+                        if llm_insights:
+                            question_data['llm_insights'] = llm_insights
+                    
+                    question_stats[f'Q{q_num}'] = question_data
         
         # Sort questions by question number
         sorted_questions = sorted(question_stats.items(), key=lambda x: x[1]['question_number'])

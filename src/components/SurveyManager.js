@@ -404,14 +404,154 @@ const SurveyManager = () => {
                           {Object.entries(surveySummary.questions).slice(0, 5).map(([qKey, qData]) => (
                             <div key={qKey} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
                               <div className="mb-3">
-                                <div className="font-medium text-gray-900 mb-1">
-                                  {qKey}: {qData.question_text}
+                                <div className="font-medium text-gray-900 mb-1 flex items-center space-x-2">
+                                  <span>{qKey}: {qData.question_text}</span>
+                                  {qData.is_text_question && (
+                                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
+                                      Text Question
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-sm text-gray-600">
                                   {qData.total_responses} responses ({qData.response_rate}% response rate) • {qData.unique_answers_count} unique answers
+                                  {qData.average_answer_length > 0 && ` • Avg length: ${qData.average_answer_length.toFixed(0)} chars`}
                                 </div>
                               </div>
-                              {qData.top_answers && Object.keys(qData.top_answers).length > 0 && (
+                              
+                              {/* LLM Insights for Text Questions */}
+                              {qData.is_text_question && qData.llm_insights && (
+                                <div className="mt-4 p-4 bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg border border-purple-200">
+                                  <div className="flex items-center space-x-2 mb-3">
+                                    <BarChart3 className="h-4 w-4 text-purple-600" />
+                                    <div className="text-sm font-semibold text-purple-900">AI-Powered Insights</div>
+                                  </div>
+                                  
+                                  {/* Summary */}
+                                  {qData.llm_insights.summary && !qData.llm_insights.raw_analysis && (
+                                    <div className="mb-3 p-2 bg-white rounded border border-purple-100">
+                                      <div className="text-xs font-medium text-gray-700 mb-1">Summary</div>
+                                      <div className="text-sm text-gray-800">{qData.llm_insights.summary}</div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Sentiment Distribution */}
+                                  {qData.llm_insights.sentiment && (
+                                    <div className="mb-3">
+                                      <div className="text-xs font-medium text-gray-700 mb-2">Sentiment Distribution</div>
+                                      <div className="flex space-x-2">
+                                        {qData.llm_insights.sentiment.positive !== undefined && (
+                                          <div className="flex-1">
+                                            <div className="flex justify-between text-xs mb-1">
+                                              <span className="text-green-700">Positive</span>
+                                              <span className="text-gray-600">{qData.llm_insights.sentiment.positive}%</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2">
+                                              <div
+                                                className="bg-green-500 h-2 rounded-full"
+                                                style={{ width: `${qData.llm_insights.sentiment.positive}%` }}
+                                              />
+                                            </div>
+                                          </div>
+                                        )}
+                                        {qData.llm_insights.sentiment.neutral !== undefined && (
+                                          <div className="flex-1">
+                                            <div className="flex justify-between text-xs mb-1">
+                                              <span className="text-gray-700">Neutral</span>
+                                              <span className="text-gray-600">{qData.llm_insights.sentiment.neutral}%</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2">
+                                              <div
+                                                className="bg-gray-500 h-2 rounded-full"
+                                                style={{ width: `${qData.llm_insights.sentiment.neutral}%` }}
+                                              />
+                                            </div>
+                                          </div>
+                                        )}
+                                        {qData.llm_insights.sentiment.negative !== undefined && (
+                                          <div className="flex-1">
+                                            <div className="flex justify-between text-xs mb-1">
+                                              <span className="text-red-700">Negative</span>
+                                              <span className="text-gray-600">{qData.llm_insights.sentiment.negative}%</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2">
+                                              <div
+                                                className="bg-red-500 h-2 rounded-full"
+                                                style={{ width: `${qData.llm_insights.sentiment.negative}%` }}
+                                              />
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Themes */}
+                                  {qData.llm_insights.themes && qData.llm_insights.themes.length > 0 && (
+                                    <div className="mb-3">
+                                      <div className="text-xs font-medium text-gray-700 mb-2">Common Themes</div>
+                                      <div className="flex flex-wrap gap-2">
+                                        {qData.llm_insights.themes.slice(0, 8).map((theme, idx) => (
+                                          <div key={idx} className="px-2 py-1 bg-white rounded border border-purple-200 text-xs">
+                                            <div className="font-medium text-gray-800">{theme.theme}</div>
+                                            {theme.frequency && (
+                                              <div className="text-gray-500 text-xs">{theme.frequency}</div>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Categories */}
+                                  {qData.llm_insights.categories && qData.llm_insights.categories.length > 0 && (
+                                    <div className="mb-3">
+                                      <div className="text-xs font-medium text-gray-700 mb-2">Categorized Feedback</div>
+                                      <div className="space-y-2">
+                                        {qData.llm_insights.categories.slice(0, 5).map((category, idx) => (
+                                          <div key={idx} className="flex items-center justify-between text-xs">
+                                            <span className="text-gray-700 flex-1">{category.category}</span>
+                                            <div className="flex items-center space-x-2">
+                                              <div className="w-24 bg-gray-200 rounded-full h-1.5">
+                                                <div
+                                                  className="bg-purple-500 h-1.5 rounded-full"
+                                                  style={{ width: `${category.percentage}%` }}
+                                                />
+                                              </div>
+                                              <span className="text-gray-600 w-16 text-right">
+                                                {category.count} ({category.percentage}%)
+                                              </span>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Key Phrases */}
+                                  {qData.llm_insights.key_phrases && qData.llm_insights.key_phrases.length > 0 && (
+                                    <div>
+                                      <div className="text-xs font-medium text-gray-700 mb-2">Key Phrases</div>
+                                      <div className="flex flex-wrap gap-1">
+                                        {qData.llm_insights.key_phrases.slice(0, 10).map((phrase, idx) => (
+                                          <span key={idx} className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">
+                                            {phrase}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Raw Analysis Fallback */}
+                                  {qData.llm_insights.raw_analysis && qData.llm_insights.summary && (
+                                    <div className="p-2 bg-white rounded border border-purple-100 text-sm text-gray-800">
+                                      {qData.llm_insights.summary}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Regular Answer Distribution (for non-text or when LLM not available) */}
+                              {(!qData.is_text_question || !qData.llm_insights) && qData.top_answers && Object.keys(qData.top_answers).length > 0 && (
                                 <div className="space-y-2">
                                   <div className="text-xs font-medium text-gray-700 mb-2">Top Answers:</div>
                                   {Object.entries(qData.top_answers).slice(0, 5).map(([answer, stats]) => (
