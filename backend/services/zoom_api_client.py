@@ -202,8 +202,10 @@ class ZoomAPIClient:
                         try:
                             error_data = json.loads(error_text)
                             required_scopes = error_data.get('message', '')
+                            error_code = error_data.get('code', '')
                         except:
                             required_scopes = error_text
+                            error_code = None
                         
                         # Check if error mentions imchat scopes (which may be deprecated)
                         if 'imchat' in error_text.lower():
@@ -224,11 +226,36 @@ class ZoomAPIClient:
                                 f"Note: If enabling Team Chat scopes doesn't work, we may need to migrate to Team Chat API endpoints.\n"
                                 f"\nZoom API Error: {error_text}"
                             )
+                        elif 'user:read:list_users:admin' in error_text.lower() or error_code == '4711':
+                            error_msg = (
+                                f"400 Bad Request - Missing required scope: user:read:list_users:admin\n\n"
+                                f"This scope is needed to list users (for the fallback approach when no channels are found).\n\n"
+                                f"SOLUTION - Enable User scopes:\n"
+                                f"1. Go to https://marketplace.zoom.us/\n"
+                                f"2. Navigate to your Server-to-Server OAuth app\n"
+                                f"3. Go to the 'Scopes' section\n"
+                                f"4. Under 'User' category, enable:\n"
+                                f"   - user:read:list_users:admin (List users - Admin)\n"
+                                f"5. Also ensure you have Team Chat scopes enabled:\n"
+                                f"   - team_chat:read:list_user_messages:admin (List user messages - Admin)\n"
+                                f"   - team_chat:read:user_message:admin (Read user messages - Admin)\n"
+                                f"6. Save and activate your app\n"
+                                f"7. Wait 2-3 minutes for changes to propagate\n\n"
+                                f"Zoom API Error: {error_text}"
+                            )
                         else:
                             error_msg = (
-                                f"400 Bad Request - Missing required scopes. "
-                                f"Please enable the required scopes in your Server-to-Server OAuth app settings in Zoom Marketplace. "
-                                f"Error: {error_text}"
+                                f"400 Bad Request - Missing required scopes.\n\n"
+                                f"Please enable the required scopes in your Server-to-Server OAuth app settings in Zoom Marketplace.\n\n"
+                                f"Required scopes based on error:\n{required_scopes}\n\n"
+                                f"Steps:\n"
+                                f"1. Go to https://marketplace.zoom.us/\n"
+                                f"2. Navigate to your Server-to-Server OAuth app\n"
+                                f"3. Go to the 'Scopes' section\n"
+                                f"4. Enable the scopes mentioned above\n"
+                                f"5. Save and activate your app\n"
+                                f"6. Wait 2-3 minutes for changes to propagate\n\n"
+                                f"Zoom API Error: {error_text}"
                             )
                         raise Exception(error_msg)
                     else:
