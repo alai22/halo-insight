@@ -2265,6 +2265,163 @@ def download_survey_file(survey_id):
         }), 500
 
 
+@survicate_bp.route('/surveys/<survey_id>/summary', methods=['GET'])
+def get_survey_summary(survey_id):
+    """Get aggregated summary statistics for a survey from downloaded files"""
+    try:
+        import pandas as pd
+        import io
+        import re
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        
+        # Get file_key from query parameter (optional - defaults to most recent)
+        file_key = request.args.get('file_key')
+        
+        cache_service = SurvicateS3CacheService()
+        
+        # Load the CSV file
+        csv_content = None
+        if cache_service.use_local_storage:
+            if file_key:
+                filename = file_key.split('/')[-1]
+                file_path = cache_service.local_cache_dir / f'surveys/{survey_id}' / filename
+                if file_path.exists():
+                    csv_content = file_path.read_text(encoding='utf-8')
+            else:
+                # Get most recent file
+                survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+                if survey_dir.exists():
+                    csv_files = list(survey_dir.glob('raw_*.csv'))
+                    if csv_files:
+                        latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                        csv_content = latest_file.read_text(encoding='utf-8')
+        else:
+            # Load from S3
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available',
+                    'details': 'S3 client not configured.'
+                }), 503
+            
+            if file_key:
+                try:
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=file_key
+                    )
+                    csv_content = response['Body'].read().decode('utf-8')
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found',
+                        'details': f'File {file_key} does not exist in S3.'
+                    }), 404
+            else:
+                # Get most recent file
+                prefix = f'surveys/{survey_id}/'
+                response = cache_service.s3_client.list_objects_v2(
+                    Bucket=cache_service.bucket_name,
+                    Prefix=prefix
+                )
+                if 'Contents' in response and response['Contents']:
+                    # Sort by LastModified, get most recent
+                    latest_obj = max(response['Contents'], key=lambda x: x['LastModified'])
+                    file_response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=latest_obj['Key']
+                    )
+                    csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': 'No data found',
+                'details': f'No downloaded files found for survey {survey_id}. Please download responses first.'
+            }), 404
+        
+        # Parse CSV
+        df = pd.read_csv(io.StringIO(csv_content))
+        
+        # Basic statistics
+        total_responses = len(df)
+        
+        # Date range
+        date_col = 'Date & Time (UTC)'
+        date_range = None
+        if date_col in df.columns:
+            df['_parsed_date'] = pd.to_datetime(df[date_col], errors='coerce')
+            valid_dates = df['_parsed_date'].dropna()
+            if len(valid_dates) > 0:
+                date_range = {
+                    'start': valid_dates.min().isoformat(),
+                    'end': valid_dates.max().isoformat()
+                }
+        
+        # Extract question columns and aggregate answers
+        question_stats = {}
+        question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
+        
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(3) == 'Answer':  # Only process Answer columns
+                q_num = match.group(1)
+                q_text = match.group(2).strip()
+                
+                # Get non-null answers
+                answers = df[col].dropna()
+                answers = answers[answers.astype(str).str.strip() != '']
+                
+                if len(answers) > 0:
+                    # Count answer frequencies
+                    answer_counts = answers.value_counts().to_dict()
+                    total_answers = len(answers)
+                    
+                    # Calculate percentages
+                    answer_distribution = {}
+                    for answer, count in answer_counts.items():
+                        answer_distribution[str(answer)] = {
+                            'count': int(count),
+                            'percentage': round((count / total_answers) * 100, 2)
+                        }
+                    
+                    # Sort by count (descending)
+                    sorted_answers = sorted(answer_distribution.items(), key=lambda x: x[1]['count'], reverse=True)
+                    
+                    question_stats[f'Q{q_num}'] = {
+                        'question_number': int(q_num),
+                        'question_text': q_text,
+                        'total_responses': int(total_answers),
+                        'response_rate': round((total_answers / total_responses) * 100, 2) if total_responses > 0 else 0,
+                        'top_answers': dict(sorted_answers[:10]),  # Top 10 answers
+                        'unique_answers_count': len(answer_distribution)
+                    }
+        
+        # Sort questions by question number
+        sorted_questions = sorted(question_stats.items(), key=lambda x: x[1]['question_number'])
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'summary': {
+                'total_responses': total_responses,
+                'date_range': date_range,
+                'questions': dict(sorted_questions),
+                'total_questions': len(question_stats)
+            }
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to get survey summary: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to analyze survey data for survey {survey_id}'
+        }), 500
+
+
 @survicate_bp.route('/surveys/<survey_id>/questions', methods=['GET'])
 def get_survey_questions_endpoint(survey_id):
     """Get questions for a specific survey"""

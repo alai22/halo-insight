@@ -15,6 +15,8 @@ const SurveyManager = () => {
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'files', 'questions', 'responses'
   const [surveysWithFiles, setSurveysWithFiles] = useState(new Set()); // Track which surveys have files
+  const [surveySummary, setSurveySummary] = useState(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
 
   const [error, setError] = useState(null);
 
@@ -93,6 +95,26 @@ const SurveyManager = () => {
     }
   };
 
+  // Fetch summary statistics for a survey
+  const fetchSurveySummary = async (surveyId, fileKey = null) => {
+    setLoadingSummary(true);
+    try {
+      const url = `/api/survicate/surveys/${surveyId}/summary${fileKey ? `?file_key=${encodeURIComponent(fileKey)}` : ''}`;
+      const response = await axios.get(url);
+      if (response.data.success) {
+        setSurveySummary(response.data.summary);
+      } else {
+        console.error('Failed to fetch summary:', response.data.error);
+        setSurveySummary(null);
+      }
+    } catch (error) {
+      console.error('Error fetching summary:', error);
+      setSurveySummary(null);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
   // Fetch files for a survey
   const fetchSurveyFiles = async (surveyId) => {
     setLoadingFiles(true);
@@ -129,10 +151,18 @@ const SurveyManager = () => {
     setSurveyQuestions([]);
     setSurveyResponses([]);
     setSurveyFiles([]);
+    setSurveySummary(null);
     setActiveTab('overview');
     fetchSurveyQuestions(survey.id);
     fetchSurveyResponses(survey.id);
     fetchSurveyFiles(survey.id);
+    // Fetch summary after files are loaded (so we know which file to use)
+    setTimeout(() => {
+      fetchSurveyFiles(survey.id).then(() => {
+        // Use most recent file for summary
+        fetchSurveySummary(survey.id);
+      });
+    }, 500);
   };
 
   // Handle back to list
@@ -182,7 +212,10 @@ const SurveyManager = () => {
                   alert(`Download completed for "${surveyName}"`);
                   // Refresh files list for this survey
                   if (selectedSurvey && selectedSurvey.id === surveyId) {
-                    fetchSurveyFiles(surveyId);
+                    fetchSurveyFiles(surveyId).then(() => {
+                      // Refresh summary after files are updated
+                      setTimeout(() => fetchSurveySummary(surveyId), 1000);
+                    });
                   }
                   // Update tracking
                   setSurveysWithFiles(prev => new Set(prev).add(surveyId));
@@ -309,6 +342,115 @@ const SurveyManager = () => {
                   </div>
                 </div>
 
+                {/* Summary Statistics */}
+                {surveyFiles.length > 0 && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Analyze File:
+                    </label>
+                    <select
+                      onChange={(e) => {
+                        const fileKey = e.target.value;
+                        if (fileKey) {
+                          fetchSurveySummary(selectedSurvey.id, fileKey);
+                        } else {
+                          fetchSurveySummary(selectedSurvey.id);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      defaultValue=""
+                    >
+                      <option value="">Most Recent</option>
+                      {surveyFiles.map((file) => (
+                        <option key={file.key} value={file.key}>
+                          {file.filename} ({file.response_count?.toLocaleString() || 0} responses, {new Date(file.last_modified).toLocaleDateString()})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {loadingSummary ? (
+                  <div className="text-center py-8">
+                    <RefreshCw className="h-8 w-8 text-gray-400 animate-spin mx-auto mb-2" />
+                    <div className="text-sm text-gray-500">Loading summary statistics...</div>
+                  </div>
+                ) : surveySummary ? (
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Response Summary</h3>
+                    <div className="grid grid-cols-3 gap-4 mb-6">
+                      <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <div className="text-sm text-blue-600 mb-1">Total Responses</div>
+                        <div className="text-2xl font-bold text-blue-900">{surveySummary.total_responses?.toLocaleString() || 0}</div>
+                      </div>
+                      <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                        <div className="text-sm text-green-600 mb-1">Questions</div>
+                        <div className="text-2xl font-bold text-green-900">{surveySummary.total_questions || 0}</div>
+                      </div>
+                      {surveySummary.date_range && (
+                        <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
+                          <div className="text-sm text-purple-600 mb-1">Date Range</div>
+                          <div className="text-sm font-medium text-purple-900">
+                            {new Date(surveySummary.date_range.start).toLocaleDateString()} - {new Date(surveySummary.date_range.end).toLocaleDateString()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Question Answer Distributions */}
+                    {surveySummary.questions && Object.keys(surveySummary.questions).length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-4">Answer Distributions</h3>
+                        <div className="space-y-4">
+                          {Object.entries(surveySummary.questions).slice(0, 5).map(([qKey, qData]) => (
+                            <div key={qKey} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                              <div className="mb-3">
+                                <div className="font-medium text-gray-900 mb-1">
+                                  {qKey}: {qData.question_text}
+                                </div>
+                                <div className="text-sm text-gray-600">
+                                  {qData.total_responses} responses ({qData.response_rate}% response rate) • {qData.unique_answers_count} unique answers
+                                </div>
+                              </div>
+                              {qData.top_answers && Object.keys(qData.top_answers).length > 0 && (
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium text-gray-700 mb-2">Top Answers:</div>
+                                  {Object.entries(qData.top_answers).slice(0, 5).map(([answer, stats]) => (
+                                    <div key={answer} className="flex items-center justify-between text-sm">
+                                      <span className="text-gray-700 flex-1 truncate mr-4">{answer}</span>
+                                      <div className="flex items-center space-x-3">
+                                        <div className="w-32 bg-gray-200 rounded-full h-2">
+                                          <div
+                                            className="bg-blue-500 h-2 rounded-full"
+                                            style={{ width: `${stats.percentage}%` }}
+                                          />
+                                        </div>
+                                        <span className="text-gray-600 w-20 text-right">
+                                          {stats.count} ({stats.percentage}%)
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {Object.keys(surveySummary.questions).length > 5 && (
+                            <div className="text-sm text-gray-500 text-center py-2">
+                              Showing top 5 questions. View all in the Questions tab.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : surveyFiles.length === 0 ? (
+                  <div className="text-center py-8 bg-gray-50 rounded-lg border border-gray-200">
+                    <BarChart3 className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 mb-2">No data available for analysis</p>
+                    <p className="text-sm text-gray-500">Download responses to see summary statistics</p>
+                  </div>
+                ) : null}
+
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
                   <div className="flex space-x-3">
@@ -333,11 +475,25 @@ const SurveyManager = () => {
                     </button>
                     {surveyFiles.length > 0 && (
                       <button
-                        onClick={() => setActiveTab('files')}
+                        onClick={() => {
+                          setActiveTab('files');
+                          fetchSurveySummary(selectedSurvey.id);
+                        }}
                         className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
                       >
                         <FileDown className="h-4 w-4" />
                         <span>View Downloads ({surveyFiles.length})</span>
+                      </button>
+                    )}
+                    {surveySummary && (
+                      <button
+                        onClick={() => {
+                          fetchSurveySummary(selectedSurvey.id);
+                        }}
+                        className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 flex items-center space-x-2 transition-colors"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span>Refresh Summary</span>
                       </button>
                     )}
                   </div>
