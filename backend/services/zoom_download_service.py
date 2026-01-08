@@ -91,10 +91,45 @@ class ZoomDownloadService(IZoomDownloadService):
                 raise
             
             if not sessions:
-                logger.warning("No chat sessions found in date range")
-                if progress_callback:
-                    progress_callback(0, 0, 0, 0, phase='completed')
-                return
+                logger.warning("No Team Chat channels found. Trying alternative approach: fetching messages via users...")
+                
+                # Try alternative approach: get messages via users
+                try:
+                    # Get list of users
+                    users_response = self.api_client.list_users()
+                    users = users_response.get('users', [])
+                    
+                    if not users:
+                        logger.warning("No users found in account. Cannot fetch messages via users.")
+                        if progress_callback:
+                            progress_callback(0, 0, 0, 0, phase='completed')
+                        return
+                    
+                    logger.info(f"Found {len(users)} users. Fetching messages for each user...")
+                    
+                    # Convert users to "sessions" format for compatibility
+                    sessions = []
+                    for user in users:
+                        user_id = user.get('id')
+                        if user_id:
+                            # Create a pseudo-session object for each user
+                            sessions.append({
+                                'id': user_id,
+                                'channel_id': user_id,
+                                'session_id': user_id,
+                                'type': 'user',
+                                'user_info': user,
+                                'name': user.get('display_name', user.get('email', user_id))
+                            })
+                    
+                    logger.info(f"Created {len(sessions)} user-based sessions to fetch messages from")
+                    
+                except Exception as user_error:
+                    logger.error(f"Failed to fetch messages via users: {user_error}")
+                    logger.warning("No chat sessions/channels found and user-based approach failed")
+                    if progress_callback:
+                        progress_callback(0, 0, 0, 0, phase='completed')
+                    return
             
             total_sessions = len(sessions)
             logger.info(f"Found {total_sessions} chat sessions")
@@ -131,10 +166,35 @@ class ZoomDownloadService(IZoomDownloadService):
                                 progress_callback(i, total_sessions, downloaded_count, failed_count, 
                                                 current_session_id=session_id, phase='downloading_messages')
                             
-                            # Get all messages for this session
-                            messages = self.api_client.get_all_chat_messages(
-                                session_id, start_date, end_date
-                            )
+                            # Get all messages for this session/channel/user
+                            # Check if this is a user-based session (alternative approach)
+                            if session.get('type') == 'user':
+                                # Use user messages endpoint
+                                logger.debug(f"Fetching messages for user {session_id}")
+                                try:
+                                    user_messages_response = self.api_client.get_user_messages(
+                                        session_id, start_date, end_date
+                                    )
+                                    messages = user_messages_response.get('messages', [])
+                                    # Handle pagination for user messages
+                                    next_token = user_messages_response.get('next_page_token')
+                                    while next_token:
+                                        more_response = self.api_client.get_user_messages(
+                                            session_id, start_date, end_date, next_token
+                                        )
+                                        more_messages = more_response.get('messages', [])
+                                        messages.extend(more_messages)
+                                        next_token = more_response.get('next_page_token')
+                                        if not next_token:
+                                            break
+                                except Exception as user_msg_error:
+                                    logger.warning(f"Failed to get messages for user {session_id}: {user_msg_error}")
+                                    messages = []
+                            else:
+                                # Use channel messages endpoint (default)
+                                messages = self.api_client.get_all_chat_messages(
+                                    session_id, start_date, end_date
+                                )
                             
                             message_count = len(messages)
                             total_messages += message_count

@@ -368,7 +368,13 @@ class ZoomAPIClient:
                 all_sessions.extend(items)
                 logger.debug(f"Fetched {len(items)} channels/sessions, total: {len(all_sessions)}")
             else:
-                logger.warning(f"No channels/sessions in response: {response.keys()}")
+                # Check if channels key exists but is empty
+                if 'channels' in response:
+                    logger.debug(f"Response contains 'channels' key but it's empty (length: {len(channels)})")
+                elif 'sessions' in response:
+                    logger.debug(f"Response contains 'sessions' key but it's empty (length: {len(sessions)})")
+                else:
+                    logger.warning(f"No channels/sessions keys in response: {response.keys()}")
             
             next_page_token = response.get('next_page_token')
             if not next_page_token:
