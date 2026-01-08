@@ -256,19 +256,21 @@ class ZoomAPIClient:
                           next_page_token: Optional[str] = None,
                           page_size: int = 30) -> Dict[str, Any]:
         """
-        List Team Chat channels/conversations within a date range
+        List Team Chat channels (all channels, date filtering happens at message level)
         
         Note: Migrated from IM Chat API to Team Chat API.
         Team Chat uses channels instead of sessions.
+        The /chat/channels endpoint doesn't support date filtering - we get all channels
+        and filter messages by date later.
         
         Args:
-            from_date: Start date in YYYY-MM-DD format
-            to_date: End date in YYYY-MM-DD format
+            from_date: Start date in YYYY-MM-DD format (not used in API call, kept for compatibility)
+            to_date: End date in YYYY-MM-DD format (not used in API call, kept for compatibility)
             next_page_token: Token for pagination
-            page_size: Number of results per page (max 30)
+            page_size: Number of results per page (max 50)
         
         Returns:
-            Dict with channels/sessions list and pagination info
+            Dict with channels list and pagination info
         """
         params = {
             'page_size': min(page_size, 50)  # Team Chat API allows up to 50
@@ -277,8 +279,8 @@ class ZoomAPIClient:
         if next_page_token:
             params['next_page_token'] = next_page_token
         
-        logger.info(f"Listing Team Chat channels from {from_date} to {to_date}")
-        # Use Team Chat API endpoint for listing channels
+        logger.info(f"Listing all Team Chat channels (date filtering: {from_date} to {to_date} will be applied to messages)")
+        # Use Team Chat API endpoint for listing channels (no date filter available)
         return self._make_request('GET', '/chat/channels', params=params)
     
     def get_chat_messages(self, session_id: str, from_date: str, to_date: str,
@@ -318,9 +320,26 @@ class ZoomAPIClient:
         if next_page_token:
             params['next_page_token'] = next_page_token
         
-        logger.debug(f"Getting messages for Team Chat channel {session_id}")
+        logger.debug(f"Getting messages for Team Chat channel {session_id} from {from_date} to {to_date}")
         # Use Team Chat API endpoint for channel messages
-        return self._make_request('GET', f'/chat/channels/{session_id}/messages', params=params)
+        try:
+            return self._make_request('GET', f'/chat/channels/{session_id}/messages', params=params)
+        except Exception as e:
+            # If date string format fails, try timestamp format
+            error_str = str(e)
+            if '400' in error_str or 'Bad Request' in error_str:
+                logger.debug(f"Date string format may have failed, trying timestamp format")
+                try:
+                    from_dt = datetime.strptime(from_date, '%Y-%m-%d')
+                    to_dt = datetime.strptime(to_date, '%Y-%m-%d')
+                    params['from'] = int(from_dt.timestamp())
+                    params['to'] = int(to_dt.timestamp())
+                    return self._make_request('GET', f'/chat/channels/{session_id}/messages', params=params)
+                except Exception as e2:
+                    logger.error(f"Failed with both date formats: {e2}")
+                    raise
+            else:
+                raise
     
     def get_all_chat_sessions(self, from_date: str, to_date: str) -> List[Dict[str, Any]]:
         """
@@ -344,15 +363,29 @@ class ZoomAPIClient:
             
             # Use channels if available, otherwise use sessions
             items = channels if channels else sessions
-            all_sessions.extend(items)
+            
+            if items:
+                all_sessions.extend(items)
+                logger.debug(f"Fetched {len(items)} channels/sessions, total: {len(all_sessions)}")
+            else:
+                logger.warning(f"No channels/sessions in response: {response.keys()}")
             
             next_page_token = response.get('next_page_token')
             if not next_page_token:
                 break
-            
-            logger.debug(f"Fetched {len(items)} channels/sessions, total: {len(all_sessions)}")
         
         logger.info(f"Retrieved {len(all_sessions)} total Team Chat channels")
+        
+        # If no channels found, log a helpful message
+        if len(all_sessions) == 0:
+            logger.warning(
+                "No Team Chat channels found. This could mean:\n"
+                "1. There are no channels in your Zoom account\n"
+                "2. Your app doesn't have permission to list channels\n"
+                "3. You may need to use a different endpoint (e.g., /chat/users/{userId}/messages)\n"
+                "Check your Team Chat scopes in Zoom Marketplace."
+            )
+        
         return all_sessions
     
     def get_all_chat_messages(self, session_id: str, from_date: str, to_date: str) -> List[Dict[str, Any]]:
@@ -379,4 +412,56 @@ class ZoomAPIClient:
         
         logger.debug(f"Retrieved {len(all_messages)} total messages for session {session_id}")
         return all_messages
+    
+    def list_users(self, next_page_token: Optional[str] = None, page_size: int = 30) -> Dict[str, Any]:
+        """
+        List all users in the account (for alternative approach to get messages)
+        
+        Args:
+            next_page_token: Token for pagination
+            page_size: Number of results per page
+        
+        Returns:
+            Dict with users list and pagination info
+        """
+        params = {
+            'page_size': min(page_size, 30),
+            'status': 'active'  # Only get active users
+        }
+        
+        if next_page_token:
+            params['next_page_token'] = next_page_token
+        
+        logger.info("Listing Zoom users")
+        return self._make_request('GET', '/users', params=params)
+    
+    def get_user_messages(self, user_id: str, from_date: str, to_date: str,
+                         next_page_token: Optional[str] = None,
+                         page_size: int = 30) -> Dict[str, Any]:
+        """
+        Get messages for a specific user with date filtering
+        
+        Alternative approach: Get messages via users instead of channels
+        
+        Args:
+            user_id: Zoom user ID
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            next_page_token: Token for pagination
+            page_size: Number of results per page
+        
+        Returns:
+            Dict with messages list and pagination info
+        """
+        params = {
+            'from': from_date,
+            'to': to_date,
+            'page_size': min(page_size, 50)
+        }
+        
+        if next_page_token:
+            params['next_page_token'] = next_page_token
+        
+        logger.debug(f"Getting messages for user {user_id} from {from_date} to {to_date}")
+        return self._make_request('GET', f'/chat/users/{user_id}/messages', params=params)
 
