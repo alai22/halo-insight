@@ -79,7 +79,31 @@ class SurvicateAPIClient:
             
             response.raise_for_status()
             data = response.json()
-            return data.get('surveys', [])
+            
+            # According to Survicate API docs, response structure is:
+            # {
+            #   "pagination_data": {...},
+            #   "data": [...]
+            # }
+            if isinstance(data, dict):
+                surveys = data.get('data', [])
+                if isinstance(surveys, list):
+                    logger.info(f"Survicate API returned {len(surveys)} surveys")
+                    # Check for pagination
+                    pagination = data.get('pagination_data', {})
+                    if pagination.get('has_more', False):
+                        logger.info(f"More surveys available (pagination: {pagination.get('next_url')})")
+                    return surveys
+                else:
+                    logger.warning(f"Expected 'data' to be a list, got {type(surveys)}")
+                    return []
+            elif isinstance(data, list):
+                # Fallback: API might return surveys directly as a list
+                logger.info(f"Survicate API returned {len(data)} surveys (as list)")
+                return data
+            else:
+                logger.error(f"Unexpected response type from Survicate API: {type(data)}")
+                return []
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to list surveys: {e}")
             if hasattr(e, 'response') and e.response is not None:

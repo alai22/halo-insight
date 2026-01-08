@@ -20,8 +20,16 @@ const SurveyManager = () => {
     setError(null);
     try {
       const response = await axios.get('/api/survicate/surveys');
+      console.log('Surveys API response:', response.data);
+      
       if (response.data.success) {
-        setSurveys(response.data.surveys || []);
+        const surveysList = response.data.surveys || [];
+        console.log(`Received ${surveysList.length} surveys:`, surveysList);
+        setSurveys(surveysList);
+        
+        if (surveysList.length === 0) {
+          console.warn('API returned success but no surveys in response');
+        }
       } else {
         const errorMsg = response.data.error || 'Failed to fetch surveys';
         const details = response.data.details || '';
@@ -33,6 +41,7 @@ const SurveyManager = () => {
       const details = error.response?.data?.details || '';
       setError(`${errorMsg}${details ? ` - ${details}` : ''}`);
       console.error('Error fetching surveys:', error);
+      console.error('Error response:', error.response?.data);
     } finally {
       setLoading(false);
     }

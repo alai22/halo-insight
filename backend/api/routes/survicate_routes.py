@@ -1818,18 +1818,27 @@ def list_surveys():
         api_client = SurvicateAPIClient()
         surveys = api_client.list_surveys()
         
-        # Format survey data for frontend
+        logger.info(f"Received {len(surveys)} surveys from Survicate API")
+        if surveys and len(surveys) > 0:
+            logger.debug(f"Sample survey keys: {list(surveys[0].keys()) if isinstance(surveys[0], dict) else 'Not a dict'}")
+        
+        # Format survey data for frontend (matching Survicate API response structure)
         formatted_surveys = []
         for survey in surveys:
+            # Map API fields to frontend format
+            # API has: id, type, name, created_at, enabled, responses, launch
             formatted_surveys.append({
                 'id': survey.get('id'),
                 'name': survey.get('name', 'Unnamed Survey'),
-                'description': survey.get('description', ''),
-                'status': survey.get('status', 'unknown'),
+                'type': survey.get('type', ''),
+                'description': '',  # Not in API response
+                'status': 'active' if survey.get('enabled', False) else 'inactive',
+                'enabled': survey.get('enabled', False),
                 'created_at': survey.get('created_at'),
-                'updated_at': survey.get('updated_at'),
-                'questions_count': survey.get('questions_count', 0),
-                'responses_count': survey.get('responses_count', 0)
+                'updated_at': survey.get('last_response_at'),  # Use last_response_at as updated_at
+                'questions_count': 0,  # Would need separate API call to get this
+                'responses_count': survey.get('responses', 0),
+                'launch': survey.get('launch', {})
             })
         
         return jsonify({
