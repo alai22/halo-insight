@@ -2266,7 +2266,7 @@ def download_survey_file(survey_id):
 
 
 @survicate_bp.route('/surveys/<survey_id>/summary', methods=['GET'])
-def get_survey_summary(survey_id):
+def get_survey_aggregated_summary(survey_id):
     """Get aggregated summary statistics for a survey from downloaded files"""
     try:
         import pandas as pd
