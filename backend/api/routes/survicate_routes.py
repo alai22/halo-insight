@@ -1927,10 +1927,36 @@ def download_survey_responses(survey_id):
                 'details': 'Please wait for the current download to complete.'
             }), 409
         
-        # Initialize services
-        api_client = SurvicateAPIClient()
-        parser = SurvicateAPIParser()
-        cache_service = SurvicateS3CacheService()
+        # Initialize services with error handling
+        try:
+            api_client = SurvicateAPIClient()
+        except Exception as e:
+            logger.error(f"Failed to initialize SurvicateAPIClient: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f'Failed to initialize API client: {str(e)}',
+                'details': 'Check SURVICATE_API_KEY configuration.'
+            }), 500
+        
+        try:
+            parser = SurvicateAPIParser()
+        except Exception as e:
+            logger.error(f"Failed to initialize SurvicateAPIParser: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f'Failed to initialize parser: {str(e)}',
+                'details': 'Internal error initializing parser.'
+            }), 500
+        
+        try:
+            cache_service = SurvicateS3CacheService()
+        except Exception as e:
+            logger.error(f"Failed to initialize SurvicateS3CacheService: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f'Failed to initialize cache service: {str(e)}',
+                'details': 'Check S3 configuration or enable local storage.'
+            }), 500
         
         # Check if storage is available
         if cache_service.use_local_storage:
@@ -2017,14 +2043,17 @@ def download_survey_responses(survey_id):
         })
     
     except Exception as e:
-        logger.error(f"Failed to start survey download: {str(e)}")
+        logger.error(f"Failed to start survey download: {str(e)}", exc_info=True)
         from ...services.survey_service import api_refresh_state
         api_refresh_state['is_running'] = False
         api_refresh_state['error'] = str(e)
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Full traceback: {error_details}")
         return jsonify({
             'success': False,
             'error': str(e),
-            'details': f'Failed to start download for survey {survey_id}'
+            'details': f'Failed to start download for survey {survey_id}. Check server logs for details.'
         }), 500
 
 
