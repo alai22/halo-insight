@@ -2362,6 +2362,24 @@ def get_survey_aggregated_summary(survey_id):
         question_stats = {}
         question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
         
+        # Helper function to convert numpy/pandas types to native Python types
+        def _convert_to_native_types(obj):
+            """Recursively convert numpy/pandas types to native Python types for JSON serialization"""
+            import numpy as np
+            if isinstance(obj, dict):
+                return {k: _convert_to_native_types(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [_convert_to_native_types(item) for item in obj]
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, np.bool_):
+                return bool(obj)
+            elif isinstance(obj, (bool, int, float, str)) or obj is None:
+                return obj
+            else:
+                # Fallback: convert to string
+                return str(obj)
+        
         # Helper function to analyze text responses with LLM
         def analyze_text_responses_with_llm(question_text, text_responses, claude_service):
             """Use Claude to analyze free-form text responses and extract insights"""
@@ -2417,8 +2435,18 @@ Be concise but specific. Focus on actionable insights."""
                 # Try to extract JSON from response (might have markdown code blocks)
                 json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                 if json_match:
-                    insights = json.loads(json_match.group(0))
-                    return insights
+                    try:
+                        insights = json.loads(json_match.group(0))
+                        # Convert any numpy/pandas types to native Python types for JSON serialization
+                        insights = _convert_to_native_types(insights)
+                        return insights
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse LLM response as JSON: {e}")
+                        # Fallback: return as text summary
+                        return {
+                            'summary': response_text,
+                            'raw_analysis': True
+                        }
                 else:
                     # Fallback: return as text summary
                     return {
@@ -2477,8 +2505,8 @@ Be concise but specific. Focus on actionable insights."""
                         'response_rate': round((total_answers / total_responses) * 100, 2) if total_responses > 0 else 0,
                         'top_answers': dict(sorted_answers[:10]),  # Top 10 answers
                         'unique_answers_count': len(answer_distribution),
-                        'is_text_question': is_text_question,
-                        'average_answer_length': round(avg_length, 1) if avg_length else 0
+                        'is_text_question': bool(is_text_question),  # Ensure native Python bool
+                        'average_answer_length': float(round(avg_length, 1)) if avg_length else 0.0  # Ensure native Python float
                     }
                     
                     # If it's a text question, analyze with LLM
@@ -2493,15 +2521,21 @@ Be concise but specific. Focus on actionable insights."""
         # Sort questions by question number
         sorted_questions = sorted(question_stats.items(), key=lambda x: x[1]['question_number'])
         
+        # Convert all data to native Python types for JSON serialization
+        summary_data = {
+            'total_responses': int(total_responses),
+            'date_range': date_range,
+            'questions': dict(sorted_questions),
+            'total_questions': int(len(question_stats))
+        }
+        
+        # Recursively convert any numpy/pandas types
+        summary_data = _convert_to_native_types(summary_data)
+        
         return jsonify({
             'success': True,
             'survey_id': survey_id,
-            'summary': {
-                'total_responses': total_responses,
-                'date_range': date_range,
-                'questions': dict(sorted_questions),
-                'total_questions': len(question_stats)
-            }
+            'summary': summary_data
         })
     
     except Exception as e:
