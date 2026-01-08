@@ -8,8 +8,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
     // Determine active tab based on current mode
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       return 'gladly';
-    } else if (['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
+    } else if (['churn-trends', 'survicate'].includes(currentMode)) {
       return 'churn';
+    } else if (currentMode === 'survey-manager') {
+      return 'surveys';
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       return 'tools';
     }
@@ -21,8 +23,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
   useEffect(() => {
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       setActiveTab('gladly');
-    } else if (['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
+    } else if (['churn-trends', 'survicate'].includes(currentMode)) {
       setActiveTab('churn');
+    } else if (currentMode === 'survey-manager') {
+      setActiveTab('surveys');
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       setActiveTab('tools');
     }
@@ -76,15 +80,6 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
       borderColor: 'border-teal-200'
-    },
-    {
-      id: 'survey-manager',
-      name: 'Survey Manager',
-      description: 'Manage all Survicate surveys',
-      icon: List,
-      color: 'text-indigo-600',
-      bgColor: 'bg-indigo-50',
-      borderColor: 'border-indigo-200'
     }
   ];
 
@@ -119,7 +114,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           onClick={() => {
             setActiveTab('churn');
             // Switch to first mode of the tab if current mode is from other tab
-            if (!['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
+            if (!['churn-trends', 'survicate'].includes(currentMode)) {
               const defaultMode = 'churn-trends';
               setCurrentMode(defaultMode);
               setSearchParams({ mode: defaultMode });
@@ -132,6 +127,24 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           }`}
         >
           Churn Analysis
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('surveys');
+            // Switch to survey manager if current mode is from other tab
+            if (currentMode !== 'survey-manager') {
+              const defaultMode = 'survey-manager';
+              setCurrentMode(defaultMode);
+              setSearchParams({ mode: defaultMode });
+            }
+          }}
+          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            activeTab === 'surveys'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Survicate Surveys
         </button>
         <button
           onClick={() => {
@@ -154,7 +167,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       </div>
 
       {/* Sub-options for active tab */}
-      {activeTab !== 'tools' && (
+      {activeTab !== 'tools' && activeTab !== 'surveys' && (
         <div className="flex space-x-2">
           {(activeTab === 'gladly' ? gladlyModes : churnModes).map((mode) => {
             const Icon = mode.icon;
