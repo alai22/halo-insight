@@ -107,7 +107,15 @@ const SurveyManager = () => {
     setDownloadingSurveys(prev => new Set(prev).add(surveyId));
     
     try {
-      const response = await axios.post(`/api/survicate/surveys/${surveyId}/download`);
+      const response = await axios.post(
+        `/api/survicate/surveys/${surveyId}/download`,
+        {}, // Empty body
+        {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
       
       if (response.data.success) {
         alert(`Download started for "${surveyName}". This may take a few minutes. The file will be saved to S3 or local storage.`);

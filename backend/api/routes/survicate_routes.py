@@ -1914,7 +1914,12 @@ def download_survey_responses(survey_id):
         from ...services.survicate_s3_cache_service import SurvicateS3CacheService
         import threading
         
-        data = request.get_json() or {}
+        # Handle request data - allow missing Content-Type header
+        try:
+            data = request.get_json() or {}
+        except Exception:
+            # If JSON parsing fails (e.g., missing Content-Type), use empty dict
+            data = {}
         start = data.get('start')
         end = data.get('end')
         
