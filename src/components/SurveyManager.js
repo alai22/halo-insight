@@ -431,12 +431,27 @@ const SurveyManager = () => {
                     </div>
                     {response.answers && response.answers.length > 0 && (
                       <div className="space-y-1">
-                        {response.answers.map((answer, aIndex) => (
-                          <div key={aIndex} className="text-sm">
-                            <span className="font-medium text-gray-700">Q{answer.question_id}:</span>{' '}
-                            <span className="text-gray-600">{answer.answer || 'N/A'}</span>
-                          </div>
-                        ))}
+                        {response.answers.map((answer, aIndex) => {
+                          // Safely extract answer text (handle objects, null, undefined)
+                          let answerText = 'N/A';
+                          if (answer && answer.answer !== undefined && answer.answer !== null) {
+                            if (typeof answer.answer === 'string') {
+                              answerText = answer.answer;
+                            } else if (typeof answer.answer === 'object') {
+                              // If it's still an object, try to extract content or stringify
+                              answerText = answer.answer.content || answer.answer.text || JSON.stringify(answer.answer);
+                            } else {
+                              answerText = String(answer.answer);
+                            }
+                          }
+                          
+                          return (
+                            <div key={aIndex} className="text-sm">
+                              <span className="font-medium text-gray-700">Q{answer.question_id || '?'}:</span>{' '}
+                              <span className="text-gray-600">{answerText}</span>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

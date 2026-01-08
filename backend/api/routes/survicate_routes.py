@@ -4,6 +4,7 @@ API routes for Survicate survey analysis
 
 from flask import Blueprint, request, jsonify, g
 from datetime import datetime, timezone
+import json
 from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
@@ -1882,10 +1883,49 @@ def get_survey_responses(survey_id):
         responses = result.get('data', [])
         pagination = result.get('pagination_data', {})
         
+        # Format responses for frontend display (extract readable values from complex objects)
+        formatted_responses = []
+        for response in responses:
+            formatted_response = {
+                'id': response.get('uuid') or response.get('id', 'N/A'),
+                'created_at': response.get('collected_at') or response.get('created_at'),
+                'answers': []
+            }
+            
+            # Extract answers from the response
+            answers_array = response.get('answers', []) or []
+            for answer_item in answers_array:
+                if not isinstance(answer_item, dict):
+                    continue
+                
+                question_id = answer_item.get('question_id')
+                answer_data = answer_item.get('answer')
+                
+                # Extract readable answer text
+                answer_text = 'N/A'
+                if isinstance(answer_data, str):
+                    answer_text = answer_data
+                elif isinstance(answer_data, dict):
+                    # Try common fields
+                    answer_text = answer_data.get('content') or answer_data.get('text') or answer_data.get('answer', '')
+                    # If still empty, try to stringify the object
+                    if not answer_text:
+                        answer_text = json.dumps(answer_data)
+                elif answer_data is not None:
+                    answer_text = str(answer_data)
+                
+                formatted_response['answers'].append({
+                    'question_id': question_id,
+                    'answer': answer_text,
+                    'question_type': answer_item.get('question_type', '')
+                })
+            
+            formatted_responses.append(formatted_response)
+        
         return jsonify({
             'success': True,
             'survey_id': survey_id,
-            'responses': responses,
+            'responses': formatted_responses,
             'pagination': {
                 'has_more': pagination.get('has_more', False),
                 'next_url': pagination.get('next_url'),
