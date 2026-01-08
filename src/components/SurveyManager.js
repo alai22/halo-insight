@@ -12,17 +12,26 @@ const SurveyManager = () => {
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [loadingResponses, setLoadingResponses] = useState(false);
 
+  const [error, setError] = useState(null);
+
   // Fetch all surveys
   const fetchSurveys = async () => {
     setLoading(true);
+    setError(null);
     try {
       const response = await axios.get('/api/survicate/surveys');
       if (response.data.success) {
         setSurveys(response.data.surveys || []);
       } else {
-        console.error('Failed to fetch surveys:', response.data.error);
+        const errorMsg = response.data.error || 'Failed to fetch surveys';
+        const details = response.data.details || '';
+        setError(`${errorMsg}${details ? ` - ${details}` : ''}`);
+        console.error('Failed to fetch surveys:', response.data);
       }
     } catch (error) {
+      const errorMsg = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to fetch surveys';
+      const details = error.response?.data?.details || '';
+      setError(`${errorMsg}${details ? ` - ${details}` : ''}`);
       console.error('Error fetching surveys:', error);
     } finally {
       setLoading(false);
@@ -180,9 +189,25 @@ const SurveyManager = () => {
         
         {loading ? (
           <div className="text-sm text-gray-500 py-4">Loading surveys...</div>
+        ) : error ? (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+            <div className="text-sm text-red-800">
+              <strong>Error:</strong> {error}
+            </div>
+            {error.includes('authentication') || error.includes('auth') || error.includes('401') || error.includes('403') ? (
+              <div className="text-sm text-red-700 mt-2">
+                This feature requires admin authentication. Please log in as an admin.
+              </div>
+            ) : null}
+          </div>
         ) : surveys.length === 0 ? (
           <div className="text-sm text-gray-500 py-4">
-            No surveys found. Check your SURVICATE_API_KEY configuration.
+            No surveys found. This could mean:
+            <ul className="list-disc list-inside mt-2 space-y-1">
+              <li>No surveys exist in your Survicate account</li>
+              <li>The SURVICATE_API_KEY doesn't have access to list surveys</li>
+              <li>There was an authentication error (check browser console)</li>
+            </ul>
           </div>
         ) : (
           <div className="space-y-3">

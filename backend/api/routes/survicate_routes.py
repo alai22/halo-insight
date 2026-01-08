@@ -1810,7 +1810,6 @@ def get_api_status():
 
 
 @survicate_bp.route('/surveys', methods=['GET'])
-@require_admin_auth
 def list_surveys():
     """List all surveys in the Survicate account"""
     try:
@@ -1849,7 +1848,6 @@ def list_surveys():
 
 
 @survicate_bp.route('/surveys/<survey_id>/responses', methods=['GET'])
-@require_admin_auth
 def get_survey_responses(survey_id):
     """Get responses from a specific survey (for multi-survey management)"""
     try:
@@ -2022,7 +2020,6 @@ def download_survey_responses(survey_id):
 
 
 @survicate_bp.route('/surveys/<survey_id>/questions', methods=['GET'])
-@require_admin_auth
 def get_survey_questions_endpoint(survey_id):
     """Get questions for a specific survey"""
     try:
