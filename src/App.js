@@ -11,6 +11,7 @@ import ZoomDownloadManager from './components/ZoomDownloadManager';
 import ChurnTrendsChart from './components/ChurnTrendsChart';
 import ConversationTrendsChart from './components/ConversationTrendsChart';
 import ApiDataManager from './components/ApiDataManager';
+import SurveyManager from './components/SurveyManager';
 import Tools from './components/Tools';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { useAnalytics } from './hooks/useAnalytics';
@@ -731,10 +732,12 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {/* Show actual tool components when active */}
           {currentMode === 'api-data-manager' ? (
             <ApiDataManager />
+          ) : currentMode === 'survey-manager' ? (
+            <SurveyManager />
           ) : currentMode === 'zoom' ? (
             <ZoomDownloadManager />
           ) : currentMode === 'analytics' ? (
@@ -768,7 +771,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && (
           <div className="bg-white border-t border-gray-200 p-6">
             {/* Clear Conversation Button for Survicate Mode */}
             {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (

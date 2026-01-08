@@ -3,6 +3,7 @@ API routes for Survicate survey analysis
 """
 
 from flask import Blueprint, request, jsonify, g
+from datetime import datetime
 from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
@@ -1805,4 +1806,250 @@ def get_api_status():
             'success': False,
             'error': str(e),
             'details': 'Failed to test API connection. Check SURVICATE_API_KEY configuration.'
+        }), 500
+
+
+@survicate_bp.route('/surveys', methods=['GET'])
+@require_admin_auth
+def list_surveys():
+    """List all surveys in the Survicate account"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        
+        api_client = SurvicateAPIClient()
+        surveys = api_client.list_surveys()
+        
+        # Format survey data for frontend
+        formatted_surveys = []
+        for survey in surveys:
+            formatted_surveys.append({
+                'id': survey.get('id'),
+                'name': survey.get('name', 'Unnamed Survey'),
+                'description': survey.get('description', ''),
+                'status': survey.get('status', 'unknown'),
+                'created_at': survey.get('created_at'),
+                'updated_at': survey.get('updated_at'),
+                'questions_count': survey.get('questions_count', 0),
+                'responses_count': survey.get('responses_count', 0)
+            })
+        
+        return jsonify({
+            'success': True,
+            'surveys': formatted_surveys,
+            'total': len(formatted_surveys)
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to list surveys: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': 'Failed to list surveys. Check SURVICATE_API_KEY configuration.'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/responses', methods=['GET'])
+@require_admin_auth
+def get_survey_responses(survey_id):
+    """Get responses from a specific survey (for multi-survey management)"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        from datetime import datetime
+        
+        api_client = SurvicateAPIClient()
+        
+        # Get optional query parameters
+        start = request.args.get('start')
+        end = request.args.get('end')
+        items_per_page = int(request.args.get('items_per_page', 100))
+        page = int(request.args.get('page', 1))
+        
+        # Fetch responses with pagination
+        result = api_client.get_responses(
+            survey_id=survey_id,
+            start=start,
+            end=end,
+            items_per_page=min(max(items_per_page, 1), 100)
+        )
+        
+        responses = result.get('data', [])
+        pagination = result.get('pagination_data', {})
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'responses': responses,
+            'pagination': {
+                'has_more': pagination.get('has_more', False),
+                'next_url': pagination.get('next_url'),
+                'current_page': page,
+                'items_per_page': items_per_page,
+                'total_items': len(responses) + (len(responses) if pagination.get('has_more') else 0)
+            }
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to get survey responses: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to get responses for survey {survey_id}'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/download', methods=['POST'])
+@require_admin_auth
+def download_survey_responses(survey_id):
+    """Download all responses from a specific survey and save to S3/local storage"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        from ...services.survicate_api_parser import SurvicateAPIParser
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        import threading
+        
+        data = request.get_json() or {}
+        start = data.get('start')
+        end = data.get('end')
+        
+        # Check if download is already in progress for this survey
+        from ...services.survey_service import api_refresh_state
+        if api_refresh_state.get('is_running', False):
+            return jsonify({
+                'success': False,
+                'error': 'Download already in progress',
+                'details': 'Please wait for the current download to complete.'
+            }), 409
+        
+        # Initialize services
+        api_client = SurvicateAPIClient()
+        parser = SurvicateAPIParser()
+        cache_service = SurvicateS3CacheService()
+        
+        # Check if storage is available
+        if cache_service.use_local_storage:
+            logger.info(f"Using local storage for survey {survey_id}")
+        elif not cache_service.s3_client:
+            return jsonify({
+                'success': False,
+                'error': 'Storage not available',
+                'details': 'S3 client not configured and local storage not enabled.'
+            }), 503
+        
+        # Mark as running
+        api_refresh_state['is_running'] = True
+        api_refresh_state['error'] = None
+        api_refresh_state['last_fetch'] = datetime.now().isoformat()
+        
+        def download_survey():
+            try:
+                logger.info(f"Starting download for survey {survey_id}")
+                
+                # Fetch survey questions
+                questions_map = {}
+                try:
+                    questions_map = api_client.get_survey_questions(survey_id)
+                    parser.questions_map = questions_map
+                    logger.info(f"Fetched {len(questions_map)} questions for survey {survey_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch survey questions: {e}")
+                    parser.questions_map = {}
+                
+                # Fetch all responses
+                logger.info(f"Fetching responses from Survicate API for survey {survey_id}...")
+                api_responses = api_client.get_all_responses(
+                    survey_id=survey_id,
+                    start=start,
+                    end=end
+                )
+                logger.info(f"Successfully fetched {len(api_responses)} responses from API")
+                
+                if not api_responses:
+                    api_refresh_state['error'] = f'No responses found for survey {survey_id}'
+                    api_refresh_state['is_running'] = False
+                    return
+                
+                # Parse responses to SurveyResponse objects
+                logger.info(f"Parsing {len(api_responses)} responses...")
+                survey_responses = parser.parse_responses(api_responses)
+                
+                if not survey_responses:
+                    api_refresh_state['error'] = f'No responses were parsed for survey {survey_id}'
+                    api_refresh_state['is_running'] = False
+                    return
+                
+                # Temporarily set cache key for this survey
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                original_key = cache_service.cache_key
+                cache_service.cache_key = f'surveys/{survey_id}/raw_{timestamp}.csv'
+                
+                try:
+                    # Save to S3 or local storage using existing method
+                    cache_service.save_to_s3(survey_responses, questions_map=questions_map)
+                    logger.info(f"Saved {len(survey_responses)} responses for survey {survey_id}")
+                finally:
+                    # Restore original cache key
+                    cache_service.cache_key = original_key
+                
+                api_refresh_state['is_running'] = False
+                api_refresh_state['last_fetch'] = datetime.now().isoformat()
+                api_refresh_state['error'] = None
+                
+            except Exception as e:
+                logger.error(f"Error downloading survey {survey_id}: {e}", exc_info=True)
+                api_refresh_state['error'] = str(e)
+                api_refresh_state['is_running'] = False
+        
+        # Start download in background thread
+        thread = threading.Thread(target=download_survey, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Download started for survey {survey_id}',
+            'survey_id': survey_id
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to start survey download: {str(e)}")
+        from ...services.survey_service import api_refresh_state
+        api_refresh_state['is_running'] = False
+        api_refresh_state['error'] = str(e)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to start download for survey {survey_id}'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/questions', methods=['GET'])
+@require_admin_auth
+def get_survey_questions_endpoint(survey_id):
+    """Get questions for a specific survey"""
+    try:
+        from ...services.survicate_api_client import SurvicateAPIClient
+        
+        api_client = SurvicateAPIClient()
+        questions_map = api_client.get_survey_questions(survey_id)
+        
+        # Format questions for frontend
+        questions = []
+        for q_id, q_text in questions_map.items():
+            questions.append({
+                'id': q_id,
+                'text': q_text
+            })
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'questions': questions,
+            'total': len(questions)
+        })
+    
+    except Exception as e:
+        logger.error(f"Failed to get survey questions: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to get questions for survey {survey_id}'
         }), 500

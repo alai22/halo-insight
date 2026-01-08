@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Wrench } from 'lucide-react';
+import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Wrench, List } from 'lucide-react';
 
 const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
   const [, setSearchParams] = useSearchParams();
@@ -8,7 +8,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
     // Determine active tab based on current mode
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       return 'gladly';
-    } else if (['churn-trends', 'survicate'].includes(currentMode)) {
+    } else if (['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
       return 'churn';
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       return 'tools';
@@ -21,7 +21,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
   useEffect(() => {
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       setActiveTab('gladly');
-    } else if (['churn-trends', 'survicate'].includes(currentMode)) {
+    } else if (['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
       setActiveTab('churn');
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       setActiveTab('tools');
@@ -76,6 +76,15 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
       borderColor: 'border-teal-200'
+    },
+    {
+      id: 'survey-manager',
+      name: 'Survey Manager',
+      description: 'Manage all Survicate surveys',
+      icon: List,
+      color: 'text-indigo-600',
+      bgColor: 'bg-indigo-50',
+      borderColor: 'border-indigo-200'
     }
   ];
 
@@ -110,7 +119,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           onClick={() => {
             setActiveTab('churn');
             // Switch to first mode of the tab if current mode is from other tab
-            if (!['churn-trends', 'survicate'].includes(currentMode)) {
+            if (!['churn-trends', 'survicate', 'survey-manager'].includes(currentMode)) {
               const defaultMode = 'churn-trends';
               setCurrentMode(defaultMode);
               setSearchParams({ mode: defaultMode });
