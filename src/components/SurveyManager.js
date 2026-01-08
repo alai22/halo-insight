@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye } from 'lucide-react';
+import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3 } from 'lucide-react';
 import axios from 'axios';
 
 const SurveyManager = () => {
@@ -13,6 +13,8 @@ const SurveyManager = () => {
   const [loadingResponses, setLoadingResponses] = useState(false);
   const [surveyFiles, setSurveyFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'files', 'questions', 'responses'
+  const [surveysWithFiles, setSurveysWithFiles] = useState(new Set()); // Track which surveys have files
 
   const [error, setError] = useState(null);
 
@@ -97,7 +99,18 @@ const SurveyManager = () => {
     try {
       const response = await axios.get(`/api/survicate/surveys/${surveyId}/files`);
       if (response.data.success) {
-        setSurveyFiles(response.data.files || []);
+        const files = response.data.files || [];
+        setSurveyFiles(files);
+        // Update tracking of surveys with files
+        if (files.length > 0) {
+          setSurveysWithFiles(prev => new Set(prev).add(surveyId));
+        } else {
+          setSurveysWithFiles(prev => {
+            const next = new Set(prev);
+            next.delete(surveyId);
+            return next;
+          });
+        }
       } else {
         console.error('Failed to fetch files:', response.data.error);
         setSurveyFiles([]);
@@ -116,9 +129,16 @@ const SurveyManager = () => {
     setSurveyQuestions([]);
     setSurveyResponses([]);
     setSurveyFiles([]);
+    setActiveTab('overview');
     fetchSurveyQuestions(survey.id);
     fetchSurveyResponses(survey.id);
     fetchSurveyFiles(survey.id);
+  };
+
+  // Handle back to list
+  const handleBackToList = () => {
+    setSelectedSurvey(null);
+    setActiveTab('overview');
   };
 
   // Handle download
@@ -161,7 +181,11 @@ const SurveyManager = () => {
                 } else {
                   alert(`Download completed for "${surveyName}"`);
                   // Refresh files list for this survey
-                  fetchSurveyFiles(surveyId);
+                  if (selectedSurvey && selectedSurvey.id === surveyId) {
+                    fetchSurveyFiles(surveyId);
+                  }
+                  // Update tracking
+                  setSurveysWithFiles(prev => new Set(prev).add(surveyId));
                 }
               }
             }
@@ -205,6 +229,262 @@ const SurveyManager = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // If a survey is selected, show detail view
+  if (selectedSurvey) {
+    return (
+      <div className="p-6 max-w-7xl mx-auto">
+        {/* Header with Back Button */}
+        <div className="mb-6">
+          <button
+            onClick={handleBackToList}
+            className="mb-4 flex items-center space-x-2 text-gray-600 hover:text-gray-900 transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back to Surveys</span>
+          </button>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">{selectedSurvey.name}</h1>
+          <p className="text-gray-600">Survey ID: {selectedSurvey.id} • {selectedSurvey.responses_count?.toLocaleString() || 0} responses</p>
+        </div>
+
+        {/* Tabs */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+          <div className="flex space-x-1 border-b border-gray-200 p-1">
+            {[
+              { id: 'overview', name: 'Overview', icon: Eye },
+              { id: 'files', name: 'Downloaded Files', icon: FileDown },
+              { id: 'questions', name: 'Questions', icon: FileText },
+              { id: 'responses', name: 'Sample Responses', icon: BarChart3 }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span>{tab.name}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tab Content */}
+          <div className="p-6">
+            {activeTab === 'overview' && (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Survey Information</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <div className="text-sm text-gray-600">Survey ID</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedSurvey.id}</div>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <div className="text-sm text-gray-600">Status</div>
+                      <div className="text-lg font-medium text-gray-900">
+                        <span className={`px-2 py-1 rounded text-sm ${
+                          selectedSurvey.status === 'active' ? 'bg-green-100 text-green-700' :
+                          selectedSurvey.status === 'draft' ? 'bg-yellow-100 text-yellow-700' :
+                          'bg-gray-100 text-gray-700'
+                        }`}>
+                          {selectedSurvey.status || 'unknown'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <div className="text-sm text-gray-600">Total Responses</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedSurvey.responses_count?.toLocaleString() || 0}</div>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <div className="text-sm text-gray-600">Created</div>
+                      <div className="text-lg font-medium text-gray-900">
+                        {selectedSurvey.created_at ? new Date(selectedSurvey.created_at).toLocaleDateString() : 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+                  <div className="flex space-x-3">
+                    <button
+                      onClick={() => {
+                        handleDownload(selectedSurvey.id, selectedSurvey.name);
+                      }}
+                      disabled={downloadingSurveys.has(selectedSurvey.id)}
+                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors"
+                    >
+                      {downloadingSurveys.has(selectedSurvey.id) ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span>Downloading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4" />
+                          <span>Download All Responses</span>
+                        </>
+                      )}
+                    </button>
+                    {surveyFiles.length > 0 && (
+                      <button
+                        onClick={() => setActiveTab('files')}
+                        className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
+                      >
+                        <FileDown className="h-4 w-4" />
+                        <span>View Downloads ({surveyFiles.length})</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'files' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">Downloaded Files</h3>
+                  <button
+                    onClick={() => fetchSurveyFiles(selectedSurvey.id)}
+                    className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+                    title="Refresh files"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${loadingFiles ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+                {loadingFiles ? (
+                  <div className="text-sm text-gray-500 py-8 text-center">Loading files...</div>
+                ) : surveyFiles.length === 0 ? (
+                  <div className="text-center py-8">
+                    <FileDown className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 mb-4">No files downloaded yet</p>
+                    <button
+                      onClick={() => handleDownload(selectedSurvey.id, selectedSurvey.name)}
+                      disabled={downloadingSurveys.has(selectedSurvey.id)}
+                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors mx-auto"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Download Responses</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {surveyFiles.map((file) => (
+                      <div key={file.key} className="p-4 bg-gray-50 rounded-lg border border-gray-200 flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="font-medium text-gray-900 mb-2">{file.display_name}</div>
+                          <div className="text-sm text-gray-600 space-y-1">
+                            {file.response_count !== undefined && (
+                              <div>{file.response_count.toLocaleString()} responses</div>
+                            )}
+                            {file.last_modified && (
+                              <div>Downloaded: {new Date(file.last_modified).toLocaleString()}</div>
+                            )}
+                            {file.file_size && (
+                              <div>Size: {(file.file_size / 1024).toFixed(2)} KB</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="ml-4">
+                          <a
+                            href={`/api/survicate/surveys/${selectedSurvey.id}/files/download?file_key=${encodeURIComponent(file.key)}`}
+                            download={file.display_name}
+                            className="px-4 py-2 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
+                            title="Download CSV file"
+                          >
+                            <FileDown className="h-4 w-4" />
+                            <span>Download</span>
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'questions' && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Survey Questions</h3>
+                {loadingQuestions ? (
+                  <div className="text-sm text-gray-500 py-8 text-center">Loading questions...</div>
+                ) : surveyQuestions.length === 0 ? (
+                  <div className="text-sm text-gray-500 py-8 text-center">No questions found</div>
+                ) : (
+                  <div className="space-y-3">
+                    {surveyQuestions.map((q, index) => (
+                      <div key={q.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="text-sm font-medium text-gray-700 mb-2">
+                          Question {index + 1} (ID: {q.id})
+                        </div>
+                        <div className="text-sm text-gray-900">{q.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'responses' && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Sample Responses (First 10)</h3>
+                {loadingResponses ? (
+                  <div className="text-sm text-gray-500 py-8 text-center">Loading responses...</div>
+                ) : surveyResponses.length === 0 ? (
+                  <div className="text-sm text-gray-500 py-8 text-center">No responses found</div>
+                ) : (
+                  <div className="space-y-4">
+                    {surveyResponses.map((response, index) => (
+                      <div key={response.id || index} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="text-xs text-gray-500 mb-3 flex items-center justify-between">
+                          <span>Response {index + 1} • ID: {response.id || 'N/A'}</span>
+                          {response.created_at && (
+                            <span>{new Date(response.created_at).toLocaleString()}</span>
+                          )}
+                        </div>
+                        {response.answers && response.answers.length > 0 ? (
+                          <div className="space-y-2">
+                            {response.answers.map((answer, aIndex) => {
+                              let answerText = 'N/A';
+                              if (answer && answer.answer !== undefined && answer.answer !== null) {
+                                if (typeof answer.answer === 'string') {
+                                  answerText = answer.answer;
+                                } else if (typeof answer.answer === 'object') {
+                                  answerText = answer.answer.content || answer.answer.text || JSON.stringify(answer.answer);
+                                } else {
+                                  answerText = String(answer.answer);
+                                }
+                              }
+                              
+                              return (
+                                <div key={aIndex} className="text-sm border-l-2 border-blue-200 pl-3">
+                                  <span className="font-medium text-gray-700">Q{answer.question_id || '?'}:</span>{' '}
+                                  <span className="text-gray-600">{answerText}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-gray-500">No answers available</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Default: Show survey list
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6">
@@ -213,7 +493,7 @@ const SurveyManager = () => {
       </div>
 
       {/* Surveys List */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
             <List className="h-5 w-5" />
@@ -255,21 +535,27 @@ const SurveyManager = () => {
           <div className="space-y-3">
             {surveys.map((survey) => {
               const isDownloading = downloadingSurveys.has(survey.id);
-              const isSelected = selectedSurvey && selectedSurvey.id === survey.id;
+              const hasFiles = surveysWithFiles.has(survey.id);
               
               return (
                 <div
                   key={survey.id}
                   className={`p-4 rounded-lg border-2 transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-blue-50 border-blue-300'
-                      : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                    'bg-gray-50 border-gray-200 hover:border-gray-300 hover:shadow-md'
                   }`}
                   onClick={() => handleSurveySelect(survey)}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <div className="font-medium text-gray-900 mb-1">{survey.name}</div>
+                      <div className="flex items-center space-x-2 mb-1">
+                        <span className="font-medium text-gray-900">{survey.name}</span>
+                        {hasFiles && (
+                          <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center space-x-1">
+                            <CheckCircle className="h-3 w-3" />
+                            <span>Has Downloads</span>
+                          </span>
+                        )}
+                      </div>
                       <div className="text-sm text-gray-600 space-y-1">
                         {survey.description && (
                           <div>{survey.description}</div>
@@ -327,140 +613,6 @@ const SurveyManager = () => {
           </div>
         )}
       </div>
-
-      {/* Survey Details */}
-      {selectedSurvey && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
-              <Eye className="h-5 w-5" />
-              <span>Survey Details: {selectedSurvey.name}</span>
-            </h2>
-          </div>
-
-          {/* Questions Section */}
-          <div className="mb-6">
-            <h3 className="text-md font-medium text-gray-900 mb-3">Questions</h3>
-            {loadingQuestions ? (
-              <div className="text-sm text-gray-500 py-4">Loading questions...</div>
-            ) : surveyQuestions.length === 0 ? (
-              <div className="text-sm text-gray-500 py-4">No questions found</div>
-            ) : (
-              <div className="space-y-2">
-                {surveyQuestions.map((q, index) => (
-                  <div key={q.id} className="p-3 bg-gray-50 rounded border border-gray-200">
-                    <div className="text-sm font-medium text-gray-700 mb-1">
-                      Question {q.id}
-                    </div>
-                    <div className="text-sm text-gray-600">{q.text}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Downloaded Files Section */}
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-md font-medium text-gray-900">Downloaded Files</h3>
-              <button
-                onClick={() => fetchSurveyFiles(selectedSurvey.id)}
-                className="p-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-                title="Refresh files"
-              >
-                <RefreshCw className={`h-4 w-4 ${loadingFiles ? 'animate-spin' : ''}`} />
-              </button>
-            </div>
-            {loadingFiles ? (
-              <div className="text-sm text-gray-500 py-4">Loading files...</div>
-            ) : surveyFiles.length === 0 ? (
-              <div className="text-sm text-gray-500 py-4">No files downloaded yet. Click "Download" above to download responses.</div>
-            ) : (
-              <div className="space-y-2">
-                {surveyFiles.map((file) => (
-                  <div key={file.key} className="p-3 bg-gray-50 rounded border border-gray-200 flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="font-medium text-gray-900 mb-1">{file.display_name}</div>
-                      <div className="text-sm text-gray-600 space-y-1">
-                        {file.response_count !== undefined && (
-                          <div>{file.response_count.toLocaleString()} responses</div>
-                        )}
-                        {file.last_modified && (
-                          <div>Downloaded: {new Date(file.last_modified).toLocaleString()}</div>
-                        )}
-                        {file.file_size && (
-                          <div>Size: {(file.file_size / 1024).toFixed(2)} KB</div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="ml-4">
-                      <a
-                        href={`/api/survicate/surveys/${selectedSurvey.id}/files/download?file_key=${encodeURIComponent(file.key)}`}
-                        download={file.display_name}
-                        className="px-3 py-2 text-sm bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
-                        title="Download CSV file"
-                      >
-                        <FileDown className="h-4 w-4" />
-                        <span>Download</span>
-                      </a>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Sample Responses Section */}
-          <div>
-            <h3 className="text-md font-medium text-gray-900 mb-3">Sample Responses (First 10)</h3>
-            {loadingResponses ? (
-              <div className="text-sm text-gray-500 py-4">Loading responses...</div>
-            ) : surveyResponses.length === 0 ? (
-              <div className="text-sm text-gray-500 py-4">No responses found</div>
-            ) : (
-              <div className="space-y-3">
-                {surveyResponses.map((response, index) => (
-                  <div key={response.id || index} className="p-3 bg-gray-50 rounded border border-gray-200">
-                    <div className="text-xs text-gray-500 mb-2">
-                      Response ID: {response.id || 'N/A'}
-                      {response.created_at && (
-                        <span className="ml-2">
-                          • {new Date(response.created_at).toLocaleString()}
-                        </span>
-                      )}
-                    </div>
-                    {response.answers && response.answers.length > 0 && (
-                      <div className="space-y-1">
-                        {response.answers.map((answer, aIndex) => {
-                          // Safely extract answer text (handle objects, null, undefined)
-                          let answerText = 'N/A';
-                          if (answer && answer.answer !== undefined && answer.answer !== null) {
-                            if (typeof answer.answer === 'string') {
-                              answerText = answer.answer;
-                            } else if (typeof answer.answer === 'object') {
-                              // If it's still an object, try to extract content or stringify
-                              answerText = answer.answer.content || answer.answer.text || JSON.stringify(answer.answer);
-                            } else {
-                              answerText = String(answer.answer);
-                            }
-                          }
-                          
-                          return (
-                            <div key={aIndex} className="text-sm">
-                              <span className="font-medium text-gray-700">Q{answer.question_id || '?'}:</span>{' '}
-                              <span className="text-gray-600">{answerText}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 };
