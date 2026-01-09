@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import axios from 'axios';
 
 const SurveyManager = () => {
@@ -21,6 +21,8 @@ const SurveyManager = () => {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
+  const [sortBy, setSortBy] = useState('created_at'); // 'name', 'created_at', 'responses_count', 'status'
+  const [sortDirection, setSortDirection] = useState('desc'); // 'asc' or 'desc'
 
   const [error, setError] = useState(null);
 
@@ -259,6 +261,42 @@ const SurveyManager = () => {
     }
   };
 
+  // Sort surveys based on current sort settings
+  const sortedSurveys = useMemo(() => {
+    const sorted = [...surveys];
+    
+    sorted.sort((a, b) => {
+      let aValue, bValue;
+      
+      switch (sortBy) {
+        case 'name':
+          aValue = (a.name || '').toLowerCase();
+          bValue = (b.name || '').toLowerCase();
+          break;
+        case 'created_at':
+          aValue = a.created_at ? new Date(a.created_at).getTime() : 0;
+          bValue = b.created_at ? new Date(b.created_at).getTime() : 0;
+          break;
+        case 'responses_count':
+          aValue = a.responses_count || 0;
+          bValue = b.responses_count || 0;
+          break;
+        case 'status':
+          aValue = (a.status || '').toLowerCase();
+          bValue = (b.status || '').toLowerCase();
+          break;
+        default:
+          return 0;
+      }
+      
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+    
+    return sorted;
+  }, [surveys, sortBy, sortDirection]);
+
   useEffect(() => {
     fetchSurveys();
     
@@ -296,10 +334,10 @@ const SurveyManager = () => {
           <div className="flex space-x-1 border-b border-gray-200 p-1">
             {[
               { id: 'overview', name: 'Overview', icon: Eye },
-              { id: 'files', name: 'Downloaded Files', icon: FileDown },
+              { id: 'chat', name: 'Ask Claude', icon: MessageSquare, highlight: true },
               { id: 'questions', name: 'Questions', icon: FileText },
               { id: 'responses', name: 'Sample Responses', icon: BarChart3 },
-              { id: 'chat', name: 'Ask Claude', icon: MessageSquare }
+              { id: 'files', name: 'Downloaded Files', icon: FileDown }
             ].map((tab) => {
               const Icon = tab.icon;
               return (
@@ -308,12 +346,19 @@ const SurveyManager = () => {
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center space-x-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                     activeTab === tab.id
-                      ? 'bg-blue-50 text-blue-700'
+                      ? tab.highlight
+                        ? 'bg-gradient-to-r from-purple-50 to-blue-50 text-purple-700 border-2 border-purple-300'
+                        : 'bg-blue-50 text-blue-700'
+                      : tab.highlight
+                      ? 'text-purple-600 hover:text-purple-700 hover:bg-purple-50 border-2 border-transparent hover:border-purple-200'
                       : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
                 >
                   <Icon className="h-4 w-4" />
                   <span>{tab.name}</span>
+                  {tab.highlight && activeTab !== tab.id && (
+                    <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full font-medium">AI</span>
+                  )}
                 </button>
               );
             })}
@@ -603,6 +648,31 @@ const SurveyManager = () => {
                     <p className="text-sm text-gray-500">Download responses to see summary statistics</p>
                   </div>
                 ) : null}
+
+                {/* Ask Claude Prominent Card */}
+                {surveyFiles.length > 0 && (
+                  <div className="mb-6 p-6 bg-gradient-to-r from-purple-50 via-blue-50 to-purple-50 rounded-lg border-2 border-purple-200 shadow-sm">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                          <MessageSquare className="h-5 w-5 text-purple-600" />
+                          <h3 className="text-lg font-semibold text-gray-900">Ask Claude About This Survey</h3>
+                          <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full font-medium">AI</span>
+                        </div>
+                        <p className="text-sm text-gray-700 mb-4">
+                          Get AI-powered insights about this survey's responses. Ask questions, analyze trends, and discover patterns in your data.
+                        </p>
+                        <button
+                          onClick={() => setActiveTab('chat')}
+                          className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 flex items-center space-x-2 transition-all shadow-md hover:shadow-lg"
+                        >
+                          <MessageSquare className="h-4 w-4" />
+                          <span>Start Chatting with Claude</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
@@ -956,14 +1026,50 @@ const SurveyManager = () => {
             <List className="h-5 w-5" />
             <span>All Surveys</span>
           </h2>
-          <button
-            onClick={fetchSurveys}
-            disabled={loading}
-            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
-            title="Refresh surveys"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+          <div className="flex items-center space-x-3">
+            {/* Sort Controls */}
+            <div className="flex items-center space-x-2">
+              <label className="text-sm text-gray-600 flex items-center space-x-1">
+                <ArrowUpDown className="h-4 w-4" />
+                <span>Sort:</span>
+              </label>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="created_at">Created Date</option>
+                <option value="name">Name</option>
+                <option value="responses_count">Response Count</option>
+                <option value="status">Status</option>
+              </select>
+              <button
+                onClick={() => setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')}
+                className="p-1.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+                title={`Sort ${sortDirection === 'asc' ? 'Descending' : 'Ascending'}`}
+              >
+                {sortDirection === 'asc' ? (
+                  <ArrowUp className="h-4 w-4" />
+                ) : (
+                  <ArrowDown className="h-4 w-4" />
+                )}
+              </button>
+              <span className="text-xs text-gray-500">
+                {sortBy === 'created_at' && (sortDirection === 'desc' ? 'Newest first' : 'Oldest first')}
+                {sortBy === 'name' && (sortDirection === 'asc' ? 'A-Z' : 'Z-A')}
+                {sortBy === 'responses_count' && (sortDirection === 'desc' ? 'Most responses' : 'Least responses')}
+                {sortBy === 'status' && (sortDirection === 'asc' ? 'Status A-Z' : 'Status Z-A')}
+              </span>
+            </div>
+            <button
+              onClick={fetchSurveys}
+              disabled={loading}
+              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+              title="Refresh surveys"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
         
         {loading ? (
@@ -990,7 +1096,7 @@ const SurveyManager = () => {
           </div>
         ) : (
           <div className="space-y-3">
-            {surveys.map((survey) => {
+            {sortedSurveys.map((survey) => {
               const isDownloading = downloadingSurveys.has(survey.id);
               const hasFiles = surveysWithFiles.has(survey.id);
               
@@ -1009,7 +1115,7 @@ const SurveyManager = () => {
                         {hasFiles && (
                           <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center space-x-1">
                             <CheckCircle className="h-3 w-3" />
-                            <span>Has Downloads</span>
+                            <span>Data Available</span>
                           </span>
                         )}
                       </div>
