@@ -4,7 +4,7 @@ Utility functions
 
 import json
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .pii_protection import create_pii_protector
 from .config import Config
 
@@ -259,5 +259,94 @@ IMPORTANT: Format your response using proper Markdown formatting:
 - Use ## for main headings and ### for sub-headings
 - Use `code formatting` for response UUIDs and specific terms when needed
 - Use tables when comparing data across time periods or categories
+
+Make your response well-structured and easy to read with clear visual hierarchy."""
+
+
+def format_unified_data_for_claude(data_items: list, sources: List[str], max_items_per_source: int = 50) -> str:
+    """Format unified data items from multiple sources for Claude analysis"""
+    if not data_items:
+        return "No data was retrieved from the search. This could mean:\n- The search terms did not match any data\n- The data sources have not been loaded yet\n\nPlease inform the user that no data was found and suggest they try different search terms or check if data has been loaded."
+    
+    # Group by source
+    from ..models.unified_data import UnifiedDataItem
+    by_source = {}
+    for item in data_items:
+        if isinstance(item, UnifiedDataItem):
+            source = item.source
+        elif isinstance(item, dict):
+            source = item.get('source', 'unknown')
+        else:
+            continue
+        
+        if source not in by_source:
+            by_source[source] = []
+        by_source[source].append(item)
+    
+    formatted_parts = []
+    for source in sources:
+        if source in by_source:
+            source_data = by_source[source]
+            formatted_parts.append(f"\n{'='*60}")
+            formatted_parts.append(f"{source.upper()} DATA ({len(source_data)} items)")
+            formatted_parts.append(f"{'='*60}\n")
+            
+            # Limit items per source for performance
+            items_to_show = source_data[:max_items_per_source]
+            for item in items_to_show:
+                if isinstance(item, UnifiedDataItem):
+                    timestamp = item.timestamp or 'No timestamp'
+                    text_preview = item.searchable_text[:200] if item.searchable_text else 'No content'
+                    formatted_parts.append(f"[{timestamp}] {item.source}: {text_preview}")
+                elif isinstance(item, dict):
+                    timestamp = item.get('timestamp', 'No timestamp')
+                    text_preview = str(item.get('searchable_text', item.get('content', {})))[:200]
+                    formatted_parts.append(f"[{timestamp}] {source}: {text_preview}")
+            
+            if len(source_data) > max_items_per_source:
+                formatted_parts.append(f"\n[Note: Showing first {max_items_per_source} items of {len(source_data)} total for {source} source]")
+    
+    return "\n".join(formatted_parts)
+
+
+def create_unified_rag_system_prompt(summary: str, data_text: str, plan: Dict[str, Any], 
+                                     question: str, sources: List[str]) -> str:
+    """Create system prompt for unified RAG analysis across multiple sources"""
+    sources_list = ", ".join(sources)
+    cross_source_note = ""
+    if plan.get('cross_source_analysis', False) and len(sources) > 1:
+        cross_source_note = """
+IMPORTANT: This query requires cross-source analysis. Look for:
+- Patterns and relationships across different data sources
+- How issues appear in different contexts (support vs surveys vs chats)
+- Customer journey across touchpoints
+- Correlations between support issues and churn reasons
+"""
+    
+    return f"""You are a data analysis assistant with access to customer data from multiple sources: {sources_list}.
+
+DATA SUMMARY:
+{summary}
+{cross_source_note}
+RETRIEVED DATA:
+{data_text}
+
+ANALYSIS PLAN:
+- Focus: {plan.get('analysis_focus', 'general analysis')}
+- Sources: {sources}
+- Cross-source analysis: {plan.get('cross_source_analysis', False)}
+
+QUESTION: {question}
+
+Analyze the retrieved data to answer the question. If cross-source analysis is enabled, look for patterns and relationships across different data sources. Provide insights that leverage the combined data from all sources.
+
+IMPORTANT: Format your response using proper Markdown formatting:
+- Use **bold** for headings and important terms
+- Use bullet points (- or *) for lists
+- Use proper indentation for sub-items
+- Use numbered lists (1., 2., 3.) for sequential items
+- Use ## for main headings and ### for sub-headings
+- Use `code formatting` for IDs and specific terms when needed
+- Use tables when comparing data across sources or time periods
 
 Make your response well-structured and easy to read with clear visual hierarchy."""

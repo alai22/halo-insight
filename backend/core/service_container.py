@@ -11,8 +11,9 @@ if TYPE_CHECKING:
     # Type hints only - avoids circular imports
     from ..core.interfaces import (
         ICacheService, IStorageService, IClaudeService, IConversationService,
-        IRAGService, ISurvicateRAGService, ISurveyService, IGladlyDownloadService,
-        IZoomDownloadService, ITopicExtractionService, ITopicStorageService, IAuthService
+        IRAGService, ISurvicateRAGService, IUnifiedRAGService, ISurveyService, 
+        IGladlyDownloadService, IZoomDownloadService, ITopicExtractionService, 
+        ITopicStorageService, IAuthService
     )
 
 from ..utils.logging import get_logger
@@ -36,6 +37,7 @@ class ServiceContainer:
         self._claude_service: Optional['IClaudeService'] = None
         self._conversation_service: Optional['IConversationService'] = None
         self._rag_service: Optional['IRAGService'] = None
+        self._unified_rag_service: Optional['IUnifiedRAGService'] = None
         self._gladly_download_service: Optional['IGladlyDownloadService'] = None
         self._zoom_download_service: Optional['IZoomDownloadService'] = None
         self._survey_service: Optional['ISurveyService'] = None
@@ -220,6 +222,50 @@ class ServiceContainer:
         
         return self._rag_service
     
+    # Unified RAG Service
+    def get_unified_rag_service(self, override: Optional['IUnifiedRAGService'] = None) -> Optional['IUnifiedRAGService']:
+        """
+        Get or create the UnifiedRAGService instance.
+        
+        Requires ClaudeService, ConversationService, and SurveyService to be available.
+        
+        Args:
+            override: Optional service instance to use instead (for testing)
+            
+        Returns:
+            UnifiedRAGService instance or None if dependencies are unavailable
+        """
+        if override is not None:
+            self._overrides['unified_rag_service'] = override
+            self._unified_rag_service = override
+            return override
+        
+        if 'unified_rag_service' in self._overrides:
+            return self._overrides.get('unified_rag_service')
+        
+        if self._unified_rag_service is None:
+            # Lazy import to avoid circular dependencies
+            from ..services.unified_rag_service import UnifiedRAGService
+            claude_service = self.get_claude_service()
+            if claude_service is None:
+                logger.warning("UnifiedRAGService not initialized - ClaudeService unavailable")
+                return None
+            
+            conversation_service = self.get_conversation_service()
+            survey_service = self.get_survey_service()
+            # TODO: Add zoom service when available
+            
+            logger.debug("Creating UnifiedRAGService instance")
+            self._unified_rag_service = UnifiedRAGService(
+                claude_service=claude_service,
+                conversation_service=conversation_service,
+                survey_service=survey_service,
+                zoom_service=None  # TODO: Add when available
+            )
+            logger.info("UnifiedRAGService initialized")
+        
+        return self._unified_rag_service
+    
     # Gladly Download Service
     def get_gladly_download_service(self, override: Optional['IGladlyDownloadService'] = None) -> Optional['IGladlyDownloadService']:
         """
@@ -388,6 +434,7 @@ class ServiceContainer:
         self._claude_service = None
         self._conversation_service = None
         self._rag_service = None
+        self._unified_rag_service = None
         self._gladly_download_service = None
         self._zoom_download_service = None
         self._survey_service = None

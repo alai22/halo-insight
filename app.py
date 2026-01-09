@@ -24,6 +24,7 @@ load_dotenv()
 from backend.api.routes.claude_routes import claude_bp
 from backend.api.routes.conversation_routes import conversation_bp
 from backend.api.routes.rag_routes import rag_bp
+from backend.api.routes.unified_rag_routes import unified_rag_bp
 from backend.api.routes.health_routes import health_bp
 from backend.api.routes.download_routes import download_bp
 from backend.api.routes.zoom_routes import zoom_bp
@@ -111,6 +112,7 @@ def create_app():
     app.register_blueprint(claude_bp)
     app.register_blueprint(conversation_bp)
     app.register_blueprint(rag_bp)
+    app.register_blueprint(unified_rag_bp)  # Unified RAG across all sources
     app.register_blueprint(download_bp)
     app.register_blueprint(zoom_bp)
     app.register_blueprint(survicate_bp)

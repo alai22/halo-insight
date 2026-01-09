@@ -103,6 +103,28 @@ class IRAGService(ABC):
         pass
 
 
+class IUnifiedRAGService(ABC):
+    """Interface for unified RAG service across all data sources"""
+    
+    @abstractmethod
+    def process_query(self, 
+                     question: str, 
+                     model: str = None, 
+                     max_tokens: int = 2000,
+                     sources: Optional[List[str]] = None,
+                     conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        """Process a RAG query across multiple data sources
+        
+        Args:
+            question: The question to answer
+            model: Claude model to use
+            max_tokens: Maximum tokens for response
+            sources: List of sources to query ('gladly', 'survicate', 'zoom', or None for all)
+            conversation_history: Optional conversation history
+        """
+        pass
+
+
 class ISurvicateRAGService(ABC):
     """Interface for Survicate RAG service"""
     
