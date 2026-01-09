@@ -107,8 +107,15 @@ class ISurvicateRAGService(ABC):
     """Interface for Survicate RAG service"""
     
     @abstractmethod
-    def process_query(self, question: str, model: str = None, max_tokens: int = 2000) -> Dict[str, Any]:
-        """Process a RAG query for survey data and return analysis results"""
+    def process_query(self, question: str, model: str = None, max_tokens: int = 2000, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        """Process a RAG query for survey data and return analysis results
+        
+        Args:
+            question: The current question
+            model: Claude model to use
+            max_tokens: Maximum tokens for response
+            conversation_history: Optional list of previous messages in format [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+        """
         pass
 
 
@@ -174,13 +181,18 @@ class IGladlyDownloadService(ABC):
     
     @abstractmethod
     def filter_conversations_by_date(self, csv_file: str, conversation_ids: List[str], 
-                                   start_date: str, end_date: str) -> List[str]:
+                                   start_date: str = None, end_date: str = None) -> List[str]:
         """Filter conversation IDs by date range"""
         pass
     
     @abstractmethod
     def get_processed_ids(self, output_file: str) -> set:
         """Get set of already processed conversation IDs"""
+        pass
+    
+    @abstractmethod
+    def get_download_statistics(self) -> Dict:
+        """Get download statistics"""
         pass
 
 
