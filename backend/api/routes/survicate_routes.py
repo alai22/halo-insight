@@ -2549,6 +2549,181 @@ Be concise but specific. Focus on actionable insights."""
         }), 500
 
 
+@survicate_bp.route('/surveys/<survey_id>/ask', methods=['POST'])
+def ask_survey_question(survey_id):
+    """Ask Claude questions about a specific survey's responses"""
+    try:
+        import pandas as pd
+        import io
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        
+        # Get services
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            return jsonify({
+                'success': False,
+                'error': 'Service container not available'
+            }), 500
+        
+        claude_service = service_container.get_claude_service()
+        if not claude_service:
+            return jsonify({
+                'success': False,
+                'error': 'Claude API service not available. Please check ANTHROPIC_API_KEY configuration.'
+            }), 503
+        
+        data = request.get_json() or {}
+        question = data.get('question')
+        model = data.get('model', Config.CLAUDE_MODEL)
+        max_tokens = data.get('max_tokens', 2000)
+        conversation_history = data.get('conversation_history')
+        file_key = data.get('file_key')  # Optional: specific file to analyze
+        
+        if not question:
+            return jsonify({
+                'success': False,
+                'error': 'Question is required'
+            }), 400
+        
+        # Load the survey's CSV file
+        cache_service = SurvicateS3CacheService()
+        csv_content = None
+        
+        if cache_service.use_local_storage:
+            if file_key:
+                filename = file_key.split('/')[-1]
+                file_path = cache_service.local_cache_dir / f'surveys/{survey_id}' / filename
+                if file_path.exists():
+                    csv_content = file_path.read_text(encoding='utf-8')
+            else:
+                # Get most recent file
+                survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+                if survey_dir.exists():
+                    csv_files = list(survey_dir.glob('raw_*.csv'))
+                    if csv_files:
+                        latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                        csv_content = latest_file.read_text(encoding='utf-8')
+        else:
+            # Load from S3
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available'
+                }), 503
+            
+            if file_key:
+                try:
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=file_key
+                    )
+                    csv_content = response['Body'].read().decode('utf-8')
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found'
+                    }), 404
+            else:
+                # Get most recent file
+                prefix = f'surveys/{survey_id}/'
+                response = cache_service.s3_client.list_objects_v2(
+                    Bucket=cache_service.bucket_name,
+                    Prefix=prefix
+                )
+                if 'Contents' in response and response['Contents']:
+                    latest_obj = max(response['Contents'], key=lambda x: x['LastModified'])
+                    file_response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=latest_obj['Key']
+                    )
+                    csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': f'No downloaded files found for survey {survey_id}. Please download responses first.'
+            }), 404
+        
+        # Parse CSV and prepare data summary
+        df = pd.read_csv(io.StringIO(csv_content))
+        total_responses = len(df)
+        
+        # Get question columns
+        import re
+        question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
+        questions_info = []
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(3) == 'Answer':
+                q_num = match.group(1)
+                q_text = match.group(2).strip()
+                questions_info.append(f"Q{q_num}: {q_text}")
+        
+        # Create a summary of the data for Claude
+        data_summary = f"""Survey Data Summary:
+- Total Responses: {total_responses}
+- Questions: {len(questions_info)}
+- Question List: {', '.join(questions_info[:10])}{'...' if len(questions_info) > 10 else ''}
+"""
+        
+        # Sample a few responses for context (limit to avoid token limits)
+        sample_size = min(20, total_responses)
+        sample_df = df.head(sample_size)
+        
+        # Format sample responses for Claude
+        sample_responses_text = "Sample Responses:\n\n"
+        for idx, row in sample_df.iterrows():
+            sample_responses_text += f"Response {idx + 1}:\n"
+            for col in df.columns:
+                if pd.notna(row[col]) and str(row[col]).strip():
+                    sample_responses_text += f"  {col}: {row[col]}\n"
+            sample_responses_text += "\n"
+        
+        # Create system prompt
+        system_prompt = f"""You are analyzing survey response data from a specific survey. 
+
+{data_summary}
+
+You have access to {total_responses} total responses. Here are {sample_size} sample responses to help you understand the data structure:
+
+{sample_responses_text}
+
+Answer questions about this survey's data. Be specific and reference actual response patterns, counts, and examples when possible. If asked about trends or patterns, analyze the available data and provide insights."""
+        
+        # Send to Claude
+        response = claude_service.send_message(
+            message=question,
+            model=model,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history
+        )
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'response': {
+                'content': [{'type': 'text', 'text': response.content}],
+                'usage': {'output_tokens': response.tokens_used}
+            },
+            'data_summary': {
+                'total_responses': total_responses,
+                'questions_count': len(questions_info),
+                'sample_size': sample_size
+            }
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to process survey question: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to process question for survey {survey_id}'
+        }), 500
+
+
 @survicate_bp.route('/surveys/<survey_id>/questions', methods=['GET'])
 def get_survey_questions_endpoint(survey_id):
     """Get questions for a specific survey"""

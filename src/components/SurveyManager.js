@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send } from 'lucide-react';
 import axios from 'axios';
 
 const SurveyManager = () => {
@@ -17,6 +17,10 @@ const SurveyManager = () => {
   const [surveysWithFiles, setSurveysWithFiles] = useState(new Set()); // Track which surveys have files
   const [surveySummary, setSurveySummary] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
 
   const [error, setError] = useState(null);
 
@@ -152,6 +156,7 @@ const SurveyManager = () => {
     setSurveyResponses([]);
     setSurveyFiles([]);
     setSurveySummary(null);
+    setChatMessages([]); // Reset chat when switching surveys
     setActiveTab('overview');
     fetchSurveyQuestions(survey.id);
     fetchSurveyResponses(survey.id);
@@ -262,6 +267,13 @@ const SurveyManager = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, chatLoading]);
+
   // If a survey is selected, show detail view
   if (selectedSurvey) {
     return (
@@ -286,7 +298,8 @@ const SurveyManager = () => {
               { id: 'overview', name: 'Overview', icon: Eye },
               { id: 'files', name: 'Downloaded Files', icon: FileDown },
               { id: 'questions', name: 'Questions', icon: FileText },
-              { id: 'responses', name: 'Sample Responses', icon: BarChart3 }
+              { id: 'responses', name: 'Sample Responses', icon: BarChart3 },
+              { id: 'chat', name: 'Ask Claude', icon: MessageSquare }
             ].map((tab) => {
               const Icon = tab.icon;
               return (
@@ -771,6 +784,154 @@ const SurveyManager = () => {
                       </div>
                     ))}
                   </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'chat' && (
+              <div className="flex flex-col h-[600px]">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Ask Claude About This Survey</h3>
+                  <p className="text-sm text-gray-600">
+                    Ask questions about the responses from "{selectedSurvey.name}". Claude will analyze the downloaded data.
+                  </p>
+                </div>
+                
+                {surveyFiles.length === 0 ? (
+                  <div className="flex-1 flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200">
+                    <div className="text-center">
+                      <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                      <p className="text-gray-600 mb-2">No data available for analysis</p>
+                      <p className="text-sm text-gray-500">Please download responses first to ask questions about this survey.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Chat Messages */}
+                    <div className="flex-1 overflow-y-auto mb-4 space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      {chatMessages.length === 0 ? (
+                        <div className="text-center text-gray-500 py-8">
+                          <MessageSquare className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                          <p className="text-sm">Start a conversation by asking a question about this survey's responses.</p>
+                          <p className="text-xs mt-2 text-gray-400">Example: "What are the most common themes in the feedback?"</p>
+                        </div>
+                      ) : (
+                        chatMessages.map((msg, idx) => (
+                          <div
+                            key={idx}
+                            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                          >
+                            <div
+                              className={`max-w-[80%] rounded-lg p-3 ${
+                                msg.role === 'user'
+                                  ? 'bg-blue-500 text-white'
+                                  : 'bg-white text-gray-900 border border-gray-200'
+                              }`}
+                            >
+                              <div className="text-sm whitespace-pre-wrap">{msg.content}</div>
+                              {msg.tokens && (
+                                <div className="text-xs mt-2 opacity-70">
+                                  {msg.tokens} tokens
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                      {chatLoading && (
+                        <div className="flex justify-start">
+                          <div className="bg-white rounded-lg p-3 border border-gray-200">
+                            <div className="flex items-center space-x-2">
+                              <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
+                              <span className="text-sm text-gray-500">Claude is thinking...</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      <div ref={chatEndRef} />
+                    </div>
+
+                    {/* Chat Input */}
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!chatInput.trim() || chatLoading) return;
+
+                        const userMessage = chatInput.trim();
+                        setChatInput('');
+                        setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+                        setChatLoading(true);
+
+                        try {
+                          // Build conversation history
+                          const conversationHistory = chatMessages
+                            .filter(msg => msg.role !== 'system')
+                            .map(msg => ({
+                              role: msg.role,
+                              content: msg.content
+                            }));
+
+                          const response = await axios.post(
+                            `/api/survicate/surveys/${selectedSurvey.id}/ask`,
+                            {
+                              question: userMessage,
+                              conversation_history: conversationHistory.length > 0 ? conversationHistory : undefined,
+                              max_tokens: 2000
+                            },
+                            {
+                              timeout: 120000 // 2 minutes
+                            }
+                          );
+
+                          if (response.data.success) {
+                            const assistantContent = response.data.response.content[0]?.text || 'No response';
+                            const tokens = response.data.response.usage?.output_tokens || 0;
+                            
+                            setChatMessages(prev => [
+                              ...prev,
+                              {
+                                role: 'assistant',
+                                content: assistantContent,
+                                tokens: tokens
+                              }
+                            ]);
+                          } else {
+                            throw new Error(response.data.error || 'Failed to get response');
+                          }
+                        } catch (error) {
+                          const errorMessage = error.response?.data?.error || error.message || 'Failed to get response';
+                          setChatMessages(prev => [
+                            ...prev,
+                            {
+                              role: 'assistant',
+                              content: `Error: ${errorMessage}`,
+                              error: true
+                            }
+                          ]);
+                        } finally {
+                          setChatLoading(false);
+                        }
+                      }}
+                      className="flex space-x-2"
+                    >
+                      <input
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder="Ask a question about this survey's responses..."
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        disabled={chatLoading}
+                      />
+                      <button
+                        type="submit"
+                        disabled={!chatInput.trim() || chatLoading}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors"
+                      >
+                        <Send className="h-4 w-4" />
+                        <span>Send</span>
+                      </button>
+                    </form>
+                  </>
                 )}
               </div>
             )}
