@@ -127,6 +127,13 @@ class Config:
     SURVICATE_S3_AUGMENTED_CACHE_KEY: str = os.getenv('SURVICATE_S3_AUGMENTED_CACHE_KEY', 'survicate-cache/api_responses_augmented.csv')
     SURVICATE_S3_AUGMENTED_PREFIX: str = os.getenv('SURVICATE_S3_AUGMENTED_PREFIX', 'survicate-cache/augmented/')
     SURVICATE_S3_METADATA_KEY: str = os.getenv('SURVICATE_S3_METADATA_KEY', 'survicate-cache/api_cache_meta.json')
+    
+    # Survicate Data Source Default
+    # Default data source for Survicate/Churn analysis: 'api' (live API data) or 'file' (CSV file)
+    # NOTE: This should match src/utils/constants.js: DEFAULT_SURVICATE_DATA_SOURCE
+    # The frontend always sends data_source in API calls, so this is only used as a fallback
+    # for direct API calls or edge cases. Keep both values in sync.
+    SURVICATE_DEFAULT_DATA_SOURCE: str = os.getenv('SURVICATE_DEFAULT_DATA_SOURCE', 'api')
     SURVICATE_S3_AUGMENTED_METADATA_KEY: str = os.getenv('SURVICATE_S3_AUGMENTED_METADATA_KEY', 'survicate-cache/augmented_files_meta.json')
     
     # Survicate Chart Configuration

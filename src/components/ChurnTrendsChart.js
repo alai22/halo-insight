@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import { RefreshCw, AlertCircle, Download, Presentation } from 'lucide-react';
 import axios from 'axios';
 import QuestionTrendsChart from './QuestionTrendsChart';
+import { getSurvicateDataSource } from '../utils/constants';
 
 const ChurnTrendsChart = () => {
   const [data, setData] = useState([]);
@@ -96,7 +97,7 @@ const ChurnTrendsChart = () => {
   const fetchAvailableQuestions = async () => {
     setQuestionsLoading(true);
     try {
-      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const dataSource = getSurvicateDataSource();
       const fileKey = localStorage.getItem('survicate_selected_file_key');
       const url = `/api/survicate/available-questions?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
       const response = await axios.get(url);
@@ -116,7 +117,7 @@ const ChurnTrendsChart = () => {
     setError(null);
     try {
       // Get data source and file key from localStorage (set by Sidebar)
-      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const dataSource = getSurvicateDataSource();
       const fileKey = localStorage.getItem('survicate_selected_file_key');
       const url = `/api/survicate/churn-trends?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
       const response = await axios.get(url);
@@ -148,7 +149,7 @@ const ChurnTrendsChart = () => {
     setWeeklyError(null);
     try {
       // Get data source and file key from localStorage (set by Sidebar)
-      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const dataSource = getSurvicateDataSource();
       const fileKey = localStorage.getItem('survicate_selected_file_key');
       const url = `/api/survicate/churn-trends-weekly?data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
       const response = await axios.get(url);
@@ -194,9 +195,9 @@ const ChurnTrendsChart = () => {
     window.addEventListener('survicate-file-changed', handleFileChange);
     // Poll for data source changes (since localStorage events don't fire in same window)
     const interval = setInterval(() => {
-      const currentSource = localStorage.getItem('survicate_data_source') || 'file';
+      const currentSource = getSurvicateDataSource();
       const currentFileKey = localStorage.getItem('survicate_selected_file_key') || 'latest';
-      const lastSource = localStorage.getItem('_last_data_source') || 'file';
+      const lastSource = localStorage.getItem('_last_data_source') || 'api';
       const lastFileKey = localStorage.getItem('_last_file_key') || 'latest';
       if (currentSource !== lastSource || currentFileKey !== lastFileKey) {
         localStorage.setItem('_last_data_source', currentSource);

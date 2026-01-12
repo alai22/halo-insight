@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { RefreshCw, AlertCircle } from 'lucide-react';
 import axios from 'axios';
+import { getSurvicateDataSource } from '../utils/constants';
 
 const QuestionTrendsChart = ({ question, questionText }) => {
   const [data, setData] = useState([]);
@@ -25,7 +26,7 @@ const QuestionTrendsChart = ({ question, questionText }) => {
     setError(null);
     try {
       // Get data source and file key from localStorage (set by Sidebar)
-      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const dataSource = getSurvicateDataSource();
       const fileKey = localStorage.getItem('survicate_selected_file_key');
       const url = `/api/survicate/question-trends?question=${question}&data_source=${dataSource}${fileKey && fileKey !== 'latest' ? `&file_key=${encodeURIComponent(fileKey)}` : ''}`;
       const response = await axios.get(url);
@@ -61,9 +62,9 @@ const QuestionTrendsChart = ({ question, questionText }) => {
     window.addEventListener('survicate-file-changed', handleFileChange);
     // Poll for data source changes (since localStorage events don't fire in same window)
     const interval = setInterval(() => {
-      const currentSource = localStorage.getItem('survicate_data_source') || 'file';
+      const currentSource = getSurvicateDataSource();
       const currentFileKey = localStorage.getItem('survicate_selected_file_key') || 'latest';
-      const lastSource = localStorage.getItem('_last_question_data_source') || 'file';
+      const lastSource = localStorage.getItem('_last_question_data_source') || 'api';
       const lastFileKey = localStorage.getItem('_last_question_file_key') || 'latest';
       if (currentSource !== lastSource || currentFileKey !== lastFileKey) {
         localStorage.setItem('_last_question_data_source', currentSource);

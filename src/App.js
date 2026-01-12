@@ -17,6 +17,7 @@ import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
+import { getSurvicateDataSource } from './utils/constants';
 
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
@@ -517,7 +518,7 @@ function App() {
 
     try {
       // Get data source from localStorage (set by Sidebar)
-      const dataSource = localStorage.getItem('survicate_data_source') || 'file';
+      const dataSource = getSurvicateDataSource();
       
       // Build conversation history from previous survicate conversations
       const survicateConversations = conversations.survicate || [];

@@ -37,7 +37,7 @@ def survicate_ask():
     # Default to configured model (falls back to working model via fallback system if needed)
     model = data.get('model', Config.CLAUDE_MODEL)
     max_tokens = data.get('max_tokens', 2000)
-    data_source = data.get('data_source', 'file')  # Get data source
+    data_source = data.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)  # Get data source
     conversation_history = data.get('conversation_history')  # Optional conversation history
     
     # Validate required fields
@@ -88,7 +88,7 @@ def refresh_surveys():
         )
     
     data = request.get_json() or {}
-    data_source = data.get('data_source', 'file')  # Default to 'file' for backward compatibility
+    data_source = data.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)  # Default data source
     
     survey_service = service_container.get_survey_service()
     survey_service.refresh_surveys(data_source=data_source)
@@ -118,7 +118,7 @@ def get_survey_summary():
         )
     
     # Get data source from query parameter
-    data_source = request.args.get('data_source', 'file')
+    data_source = request.args.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)
     
     # Reload surveys with specified data source
     survey_service = service_container.get_survey_service()
@@ -602,7 +602,7 @@ def get_churn_trends():
         import io
         
         # Check if we should use API mode (S3 cache) or file mode
-        data_source = request.args.get('data_source', 'file')
+        data_source = request.args.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)
         file_key = request.args.get('file_key')  # Optional: specific file to use
         
         if data_source == 'api':
@@ -790,7 +790,7 @@ def get_churn_trends_weekly():
         from datetime import datetime
         
         # Check if we should use API mode (S3 cache) or file mode
-        data_source = request.args.get('data_source', 'file')
+        data_source = request.args.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)
         file_key = request.args.get('file_key')  # Optional: specific file to use
         
         if data_source == 'api':
@@ -1136,7 +1136,7 @@ def get_available_questions():
         import re
         
         # Check if we should use API mode (S3 cache) or file mode
-        data_source = request.args.get('data_source', 'file')
+        data_source = request.args.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)
         file_key = request.args.get('file_key')  # Optional: specific file to use
         
         if data_source == 'api':
@@ -1239,7 +1239,7 @@ def get_question_trends():
         import io
         
         # Check if we should use API mode (S3 cache) or file mode
-        data_source = request.args.get('data_source', 'file')
+        data_source = request.args.get('data_source', Config.SURVICATE_DEFAULT_DATA_SOURCE)
         file_key = request.args.get('file_key')  # Optional: specific file to use
         
         if data_source == 'api':

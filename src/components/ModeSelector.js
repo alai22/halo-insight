@@ -7,11 +7,18 @@ const ModeSelector = ({ currentMode, setCurrentMode }) => {
 
   const modes = [
     {
-      id: 'claude',
-      name: 'Claude Chat',
-      description: 'Direct Claude API interaction',
-      icon: Bot,
-      color: 'text-blue-600'
+      id: 'churn-trends',
+      name: 'Churn Trends',
+      description: 'Visualize cancellation trends and patterns',
+      icon: BarChart3,
+      color: 'text-red-600'
+    },
+    {
+      id: 'survicate',
+      name: 'Survicate Surveys',
+      description: 'RAG-powered analysis of cancellation surveys',
+      icon: FileText,
+      color: 'text-teal-600'
     },
     {
       id: 'conversations',
@@ -28,6 +35,13 @@ const ModeSelector = ({ currentMode, setCurrentMode }) => {
       color: 'text-purple-600'
     },
     {
+      id: 'claude',
+      name: 'Claude Chat',
+      description: 'Direct Claude API interaction',
+      icon: Bot,
+      color: 'text-blue-600'
+    },
+    {
       id: 'download',
       name: 'Download Manager',
       description: 'Download conversation data from Gladly',
@@ -40,20 +54,6 @@ const ModeSelector = ({ currentMode, setCurrentMode }) => {
       description: 'Download chat messages from Zoom',
       icon: Video,
       color: 'text-indigo-600'
-    },
-    {
-      id: 'survicate',
-      name: 'Survicate Surveys',
-      description: 'RAG-powered analysis of cancellation surveys',
-      icon: FileText,
-      color: 'text-teal-600'
-    },
-    {
-      id: 'churn-trends',
-      name: 'Churn Trends',
-      description: 'Visualize cancellation trends and patterns',
-      icon: BarChart3,
-      color: 'text-red-600'
     },
     {
       id: 'analytics',

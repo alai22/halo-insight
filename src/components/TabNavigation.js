@@ -15,8 +15,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       return 'tools';
     }
-    // Default to gladly if mode doesn't match
-    return 'gladly';
+    // Default to churn if mode doesn't match
+    return 'churn';
   });
 
   // Update active tab when currentMode or adminMode changes externally
@@ -29,6 +29,9 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       setActiveTab('surveys');
     } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       setActiveTab('tools');
+    } else {
+      // Default to churn if mode doesn't match
+      setActiveTab('churn');
     }
   }, [currentMode, adminMode]);
 
@@ -94,24 +97,6 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
         <button
           onClick={() => {
-            setActiveTab('gladly');
-            // Switch to first mode of the tab if current mode is from other tab
-            if (!['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
-              const defaultMode = 'conversation-trends';
-              setCurrentMode(defaultMode);
-              setSearchParams({ mode: defaultMode });
-            }
-          }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            activeTab === 'gladly'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
-        >
-          Gladly Conversations
-        </button>
-        <button
-          onClick={() => {
             setActiveTab('churn');
             // Switch to first mode of the tab if current mode is from other tab
             if (!['churn-trends', 'survicate'].includes(currentMode)) {
@@ -145,6 +130,24 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           }`}
         >
           Survicate Surveys
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('gladly');
+            // Switch to first mode of the tab if current mode is from other tab
+            if (!['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
+              const defaultMode = 'conversation-trends';
+              setCurrentMode(defaultMode);
+              setSearchParams({ mode: defaultMode });
+            }
+          }}
+          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            activeTab === 'gladly'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Gladly Conversations
         </button>
         <button
           onClick={() => {

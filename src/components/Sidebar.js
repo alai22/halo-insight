@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp } from 'lucide-react';
+import { getSurvicateDataSource } from '../utils/constants';
 
 const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
   const [downloadStats, setDownloadStats] = useState(null);
   const [surveyStats, setSurveyStats] = useState(null);
-  const [dataSource, setDataSource] = useState(
-    localStorage.getItem('survicate_data_source') || 'file'
-  );
+  const [dataSource, setDataSource] = useState(getSurvicateDataSource());
   const [cacheStatus, setCacheStatus] = useState(null);
   const [isDataManagementExpanded, setIsDataManagementExpanded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -540,8 +539,8 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
               onChange={(e) => handleDataSourceChange(e.target.value)}
               className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="file">File (CSV)</option>
               <option value="api">API (Live)</option>
+              <option value="file">File (CSV)</option>
             </select>
           </div>
         </div>
