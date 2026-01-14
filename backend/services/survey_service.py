@@ -57,24 +57,51 @@ class SurveyService(ISurveyService):
             self.surveys = []
     
     def load_from_api(self):
-        """Load surveys from S3 cache (API mode)"""
+        """Load surveys from S3 cache (API mode) - uses augmented CSV if available (same as graphs)"""
         try:
+            import tempfile
+            import os
             from .survicate_s3_cache_service import SurvicateS3CacheService
             
             cache_service = SurvicateS3CacheService()
             
-            # Check if S3 is available
-            if not cache_service.s3_client:
+            # Check if S3 or local storage is available
+            if not cache_service.s3_client and not cache_service.use_local_storage:
                 logger.debug("S3 client not available, using file mode (expected in local development)")
                 self.load_from_file()
                 return
             
+            # Try to load from augmented CSV first (same as graphs use)
+            try:
+                augmented_csv_content = cache_service.load_augmented_csv_from_s3(file_key=None)
+                if augmented_csv_content:
+                    # Parse augmented CSV using existing parser
+                    # Create temporary file for parser
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f:
+                        f.write(augmented_csv_content)
+                        temp_path = f.name
+                    
+                    try:
+                        parser = SurveyParserService(temp_path)
+                        self.surveys = parser.parse_csv()
+                        logger.info(f"Surveys loaded from augmented CSV: {len(self.surveys)} responses")
+                        return
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                else:
+                    logger.info("No augmented CSV found, falling back to raw CSV")
+            except Exception as e:
+                logger.warning(f"Failed to load augmented CSV: {e}. Falling back to raw CSV.")
+            
+            # Fallback to raw CSV if augmented CSV not available
             # Check if cache is fresh
             if cache_service.is_cache_fresh():
-                logger.info("Cache is fresh, loading from S3")
+                logger.info("Cache is fresh, loading from S3 (raw CSV)")
                 try:
                     self.surveys = cache_service.load_from_s3()
-                    logger.debug(f"Surveys loaded from S3 cache: {len(self.surveys)}")
+                    logger.debug(f"Surveys loaded from S3 cache (raw): {len(self.surveys)}")
                 except ValueError as e:
                     # S3 credential error - fallback to file
                     logger.warning(f"S3 access error: {e}. Falling back to file mode.")
