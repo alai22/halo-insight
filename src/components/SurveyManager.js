@@ -23,6 +23,7 @@ const SurveyManager = () => {
   const chatEndRef = useRef(null);
   const [sortBy, setSortBy] = useState('created_at'); // 'name', 'created_at', 'responses_count', 'status'
   const [sortDirection, setSortDirection] = useState('desc'); // 'asc' or 'desc'
+  const [hideZeroResponses, setHideZeroResponses] = useState(false); // Filter out surveys with 0 responses
 
   const [error, setError] = useState(null);
 
@@ -261,11 +262,14 @@ const SurveyManager = () => {
     }
   };
 
-  // Sort surveys based on current sort settings
+  // Sort and filter surveys based on current settings
   const sortedSurveys = useMemo(() => {
-    const sorted = [...surveys];
+    // Apply filter first
+    let filtered = hideZeroResponses 
+      ? surveys.filter(s => (s.responses_count || 0) > 0)
+      : [...surveys];
     
-    sorted.sort((a, b) => {
+    filtered.sort((a, b) => {
       let aValue, bValue;
       
       switch (sortBy) {
@@ -294,8 +298,8 @@ const SurveyManager = () => {
       return 0;
     });
     
-    return sorted;
-  }, [surveys, sortBy, sortDirection]);
+    return filtered;
+  }, [surveys, sortBy, sortDirection, hideZeroResponses]);
 
   useEffect(() => {
     fetchSurveys();
@@ -1024,9 +1028,25 @@ const SurveyManager = () => {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
             <List className="h-5 w-5" />
-            <span>All Surveys</span>
+            <span>
+              {hideZeroResponses 
+                ? `Surveys with Responses (${sortedSurveys.length} of ${surveys.length})`
+                : `All Surveys (${surveys.length})`
+              }
+            </span>
           </h2>
           <div className="flex items-center space-x-3">
+            {/* Filter Controls */}
+            <label className="flex items-center space-x-2 text-sm text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hideZeroResponses}
+                onChange={(e) => setHideZeroResponses(e.target.checked)}
+                className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span>With responses only</span>
+            </label>
+            <div className="h-5 border-l border-gray-300"></div>
             {/* Sort Controls */}
             <div className="flex items-center space-x-2">
               <label className="text-sm text-gray-600 flex items-center space-x-1">
