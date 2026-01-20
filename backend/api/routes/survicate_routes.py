@@ -3062,6 +3062,424 @@ Be concise and focus on actionable insights."""
         }), 500
 
 
+@survicate_bp.route('/surveys/<survey_id>/analyze-comment-topics', methods=['POST'])
+@require_admin_auth
+def analyze_comment_topics(survey_id):
+    """
+    Analyze comments and tag each with applicable topics (multi-label classification).
+    This processes comments in batches and saves the results to an augmented CSV.
+    """
+    try:
+        import pandas as pd
+        import io
+        import re
+        from datetime import datetime
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        from ...utils.comment_topics import COMMENT_TOPICS, get_topic_definitions_for_prompt, TOPIC_IDS
+        
+        # Get request parameters
+        data = request.get_json() or {}
+        question_key = data.get('question', 'Q1')  # Default to Q1
+        batch_size = data.get('batch_size', 20)  # Process comments in batches
+        
+        # Get services
+        service_container = getattr(g, 'service_container', None)
+        if not service_container:
+            return jsonify({
+                'success': False,
+                'error': 'Service container not available'
+            }), 500
+        
+        claude_service = service_container.get_claude_service()
+        if not claude_service:
+            return jsonify({
+                'success': False,
+                'error': 'Claude API service not available. Please check ANTHROPIC_API_KEY configuration.'
+            }), 503
+        
+        cache_service = SurvicateS3CacheService()
+        
+        # Load the CSV file
+        csv_content = None
+        source_file_key = None
+        if cache_service.use_local_storage:
+            survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+            if survey_dir.exists():
+                csv_files = list(survey_dir.glob('raw_*.csv'))
+                if csv_files:
+                    latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                    csv_content = latest_file.read_text(encoding='utf-8')
+                    source_file_key = str(latest_file)
+        else:
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available'
+                }), 503
+            
+            prefix = f'surveys/{survey_id}/'
+            response = cache_service.s3_client.list_objects_v2(
+                Bucket=cache_service.bucket_name,
+                Prefix=prefix
+            )
+            if 'Contents' in response and response['Contents']:
+                csv_objects = [obj for obj in response['Contents'] if obj['Key'].endswith('.csv') and 'raw_' in obj['Key']]
+                if csv_objects:
+                    latest_obj = max(csv_objects, key=lambda x: x['LastModified'])
+                    source_file_key = latest_obj['Key']
+                    file_response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=source_file_key
+                    )
+                    csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': 'No data found',
+                'details': f'No downloaded files found for survey {survey_id}. Please download responses first.'
+            }), 404
+        
+        # Parse CSV
+        df = pd.read_csv(io.StringIO(csv_content))
+        
+        # Find the Comment column for the specified question
+        question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
+        q_num_match = re.match(r'Q(\d+)', question_key)
+        if not q_num_match:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid question format',
+                'details': 'Question should be in format Q1, Q2, etc.'
+            }), 400
+        
+        target_q_num = q_num_match.group(1)
+        comment_col = None
+        question_text = None
+        
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(1) == target_q_num and match.group(3) == 'Comment':
+                comment_col = col
+                question_text = match.group(2).strip()
+                break
+        
+        if not comment_col:
+            return jsonify({
+                'success': False,
+                'error': 'Comment column not found',
+                'details': f'Could not find comment column for question {question_key}'
+            }), 404
+        
+        # Get non-empty comments with their indices
+        comments_df = df[[comment_col]].copy()
+        comments_df['_original_index'] = comments_df.index
+        comments_df = comments_df[comments_df[comment_col].notna() & (comments_df[comment_col].astype(str).str.strip() != '')]
+        
+        if len(comments_df) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No comments found',
+                'details': f'No comments found for question {question_key}'
+            }), 400
+        
+        logger.info(f"Analyzing {len(comments_df)} comments for survey {survey_id}, question {question_key}")
+        
+        # Build the topic definitions for the prompt
+        topic_definitions = get_topic_definitions_for_prompt()
+        topic_ids_str = ", ".join(TOPIC_IDS)
+        
+        # Function to analyze a batch of comments
+        def analyze_batch(comments_batch):
+            """Analyze a batch of comments and return topic tags for each"""
+            comments_text = "\n".join([f"{i+1}. {c}" for i, c in enumerate(comments_batch)])
+            
+            system_prompt = f"""You are analyzing customer support survey comments. For each comment, identify ALL applicable topics from the predefined list below. A comment can have multiple topics.
+
+TOPIC CATEGORIES:
+{topic_definitions}
+
+RULES:
+1. A comment can have MULTIPLE topics - tag all that apply
+2. Use ONLY topic IDs from this list: {topic_ids_str}
+3. If a comment is too short or unclear, use "other"
+4. "positive_feedback" can be combined with other topics (e.g., positive feedback about customer service)
+5. Return ONLY valid JSON, no explanations
+
+Return a JSON array where each element corresponds to a comment (in order) and contains an array of applicable topic IDs.
+Example: [["battery_charging", "customer_service_experience"], ["positive_feedback"], ["warranty_replacement", "shipping_delivery"]]"""
+
+            message = f"Analyze these {len(comments_batch)} comments and tag each with applicable topics:\n\n{comments_text}"
+            
+            try:
+                response = claude_service.send_message(
+                    message=message,
+                    model=None,
+                    max_tokens=2000,
+                    system_prompt=system_prompt
+                )
+                
+                response_text = response.content.strip()
+                
+                # Extract JSON array from response
+                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group(0))
+                    # Validate each entry is a list of valid topic IDs
+                    validated = []
+                    for topics in result:
+                        if isinstance(topics, list):
+                            valid_topics = [t for t in topics if t in TOPIC_IDS]
+                            validated.append(valid_topics if valid_topics else ["other"])
+                        else:
+                            validated.append(["other"])
+                    return validated
+                else:
+                    logger.warning(f"Could not parse JSON from response: {response_text[:200]}")
+                    return [["other"]] * len(comments_batch)
+            except Exception as e:
+                logger.error(f"Error analyzing batch: {e}")
+                return [["other"]] * len(comments_batch)
+        
+        # Process comments in batches
+        all_comments = comments_df[comment_col].astype(str).tolist()
+        all_indices = comments_df['_original_index'].tolist()
+        all_topics = []
+        
+        for i in range(0, len(all_comments), batch_size):
+            batch = all_comments[i:i + batch_size]
+            logger.info(f"Processing batch {i // batch_size + 1} of {(len(all_comments) + batch_size - 1) // batch_size}")
+            batch_topics = analyze_batch(batch)
+            all_topics.extend(batch_topics)
+        
+        # Create topic columns in the original DataFrame
+        # Initialize all topic columns with empty values
+        topic_col_prefix = f'{question_key}_topics'
+        df[f'{topic_col_prefix}_list'] = ''
+        
+        # Also create individual boolean columns for each topic (for easier filtering/analysis)
+        for topic in TOPIC_IDS:
+            df[f'{topic_col_prefix}_{topic}'] = False
+        
+        # Fill in the topics for rows that have comments
+        for idx, original_idx in enumerate(all_indices):
+            if idx < len(all_topics):
+                topics = all_topics[idx]
+                df.at[original_idx, f'{topic_col_prefix}_list'] = '|'.join(topics)
+                for topic in topics:
+                    df.at[original_idx, f'{topic_col_prefix}_{topic}'] = True
+        
+        # Save the augmented CSV
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_csv = df.to_csv(index=False)
+        
+        if cache_service.use_local_storage:
+            augmented_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+            augmented_dir.mkdir(parents=True, exist_ok=True)
+            output_file = augmented_dir / f'topics_augmented_{question_key}_{timestamp}.csv'
+            output_file.write_text(output_csv, encoding='utf-8')
+            saved_key = str(output_file)
+        else:
+            saved_key = f'surveys/{survey_id}/topics_augmented_{question_key}_{timestamp}.csv'
+            cache_service.s3_client.put_object(
+                Bucket=cache_service.bucket_name,
+                Key=saved_key,
+                Body=output_csv.encode('utf-8'),
+                ContentType='text/csv'
+            )
+        
+        # Calculate topic distribution summary
+        topic_counts = {}
+        for topics in all_topics:
+            for topic in topics:
+                topic_counts[topic] = topic_counts.get(topic, 0) + 1
+        
+        # Sort by count
+        sorted_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'question': question_key,
+            'comments_analyzed': len(all_comments),
+            'output_file': saved_key,
+            'topic_distribution': dict(sorted_topics),
+            'topics_defined': len(TOPIC_IDS)
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to analyze comment topics: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to analyze comment topics for survey {survey_id}'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/comment-topic-trends', methods=['GET'])
+def get_comment_topic_trends(survey_id):
+    """
+    Get monthly trends for comment topics.
+    Requires topics to have been analyzed first via /analyze-comment-topics.
+    """
+    try:
+        import pandas as pd
+        import io
+        import re
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        from ...utils.comment_topics import TOPIC_IDS, TOPIC_NAMES, TOPIC_COLORS
+        
+        # Get request parameters
+        question_key = request.args.get('question', 'Q1')
+        
+        cache_service = SurvicateS3CacheService()
+        
+        # Find the most recent topics-augmented CSV for this question
+        csv_content = None
+        if cache_service.use_local_storage:
+            survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+            if survey_dir.exists():
+                # Look for topics_augmented files for this question
+                pattern = f'topics_augmented_{question_key}_*.csv'
+                csv_files = list(survey_dir.glob(pattern))
+                if csv_files:
+                    latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                    csv_content = latest_file.read_text(encoding='utf-8')
+        else:
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available'
+                }), 503
+            
+            prefix = f'surveys/{survey_id}/topics_augmented_{question_key}_'
+            response = cache_service.s3_client.list_objects_v2(
+                Bucket=cache_service.bucket_name,
+                Prefix=prefix
+            )
+            if 'Contents' in response and response['Contents']:
+                csv_objects = [obj for obj in response['Contents'] if obj['Key'].endswith('.csv')]
+                if csv_objects:
+                    latest_obj = max(csv_objects, key=lambda x: x['LastModified'])
+                    file_response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=latest_obj['Key']
+                    )
+                    csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': 'No topic analysis found',
+                'details': f'Please run topic analysis first for survey {survey_id}, question {question_key}'
+            }), 404
+        
+        # Parse CSV
+        df = pd.read_csv(io.StringIO(csv_content))
+        
+        # Parse date column
+        date_col = 'Date & Time (UTC)'
+        if date_col not in df.columns:
+            return jsonify({
+                'success': False,
+                'error': 'Date column not found'
+            }), 400
+        
+        df['_parsed_date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df['year_month'] = df['_parsed_date'].dt.strftime('%Y-%m')
+        
+        # Filter to rows that have topic data
+        topic_col_prefix = f'{question_key}_topics'
+        topics_list_col = f'{topic_col_prefix}_list'
+        
+        if topics_list_col not in df.columns:
+            return jsonify({
+                'success': False,
+                'error': 'Topic columns not found',
+                'details': 'The CSV does not contain topic analysis data'
+            }), 400
+        
+        # Filter to rows with topics
+        df_with_topics = df[df[topics_list_col].notna() & (df[topics_list_col] != '')].copy()
+        df_with_topics = df_with_topics[df_with_topics['year_month'].notna()]
+        
+        if len(df_with_topics) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No topic data found'
+            }), 400
+        
+        # Calculate monthly topic counts
+        months = sorted(df_with_topics['year_month'].unique())
+        monthly_data = []
+        
+        for month in months:
+            month_df = df_with_topics[df_with_topics['year_month'] == month]
+            total_comments = len(month_df)
+            
+            month_entry = {
+                'month': month,
+                'total_comments': total_comments,
+                'topics': {}
+            }
+            
+            # Count each topic
+            for topic_id in TOPIC_IDS:
+                topic_col = f'{topic_col_prefix}_{topic_id}'
+                if topic_col in month_df.columns:
+                    count = month_df[topic_col].sum()
+                    percentage = (count / total_comments * 100) if total_comments > 0 else 0
+                    month_entry['topics'][topic_id] = {
+                        'count': int(count),
+                        'percentage': round(percentage, 2)
+                    }
+            
+            monthly_data.append(month_entry)
+        
+        # Calculate overall topic distribution
+        total_comments = len(df_with_topics)
+        overall_distribution = {}
+        for topic_id in TOPIC_IDS:
+            topic_col = f'{topic_col_prefix}_{topic_id}'
+            if topic_col in df_with_topics.columns:
+                count = df_with_topics[topic_col].sum()
+                percentage = (count / total_comments * 100) if total_comments > 0 else 0
+                if count > 0:  # Only include topics that appear
+                    overall_distribution[topic_id] = {
+                        'count': int(count),
+                        'percentage': round(percentage, 2),
+                        'name': TOPIC_NAMES.get(topic_id, topic_id),
+                        'color': TOPIC_COLORS.get(topic_id, '#6B7280')
+                    }
+        
+        # Sort by count
+        sorted_distribution = dict(sorted(overall_distribution.items(), key=lambda x: x[1]['count'], reverse=True))
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'question': question_key,
+            'total_comments': total_comments,
+            'months': months,
+            'monthly_data': monthly_data,
+            'overall_distribution': sorted_distribution,
+            'topic_names': TOPIC_NAMES,
+            'topic_colors': TOPIC_COLORS
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to get comment topic trends: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to get comment topic trends for survey {survey_id}'
+        }), 500
+
+
 @survicate_bp.route('/surveys/<survey_id>/ask', methods=['POST'])
 def ask_survey_question(survey_id):
     """Ask Claude questions about a specific survey's responses"""

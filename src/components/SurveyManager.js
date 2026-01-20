@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown, TrendingUp } from 'lucide-react';
 import axios from 'axios';
 import SurveyQuestionTrendsChart from './SurveyQuestionTrendsChart';
+import CommentTopicTrendsChart from './CommentTopicTrendsChart';
 
 const SurveyManager = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -810,6 +811,28 @@ const SurveyManager = () => {
                             ))}
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {/* Comment Topic Trends Section */}
+                    {surveySummary.questions && Object.entries(surveySummary.questions).some(([_, qData]) => qData.comments && qData.comments.total_comments > 0) && (
+                      <div className="mt-6">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
+                          <MessageSquare className="h-5 w-5 text-amber-600" />
+                          <span>Comment Topic Analysis</span>
+                        </h3>
+                        <div className="space-y-4">
+                          {Object.entries(surveySummary.questions)
+                            .filter(([_, qData]) => qData.comments && qData.comments.total_comments > 0)
+                            .map(([qKey, qData]) => (
+                              <CommentTopicTrendsChart
+                                key={`topics-${qKey}`}
+                                surveyId={selectedSurvey.id}
+                                questionKey={qKey}
+                                questionText={`${qKey}: ${qData.question_text}`}
+                              />
+                            ))}
+                        </div>
                       </div>
                     )}
                   </div>
