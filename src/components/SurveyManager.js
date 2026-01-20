@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown, TrendingUp } from 'lucide-react';
 import axios from 'axios';
 import SurveyQuestionTrendsChart from './SurveyQuestionTrendsChart';
 
 const SurveyManager = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [surveys, setSurveys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [downloadingSurveys, setDownloadingSurveys] = useState(new Set());
@@ -157,6 +159,9 @@ const SurveyManager = () => {
   // Handle survey selection
   const handleSurveySelect = (survey) => {
     setSelectedSurvey(survey);
+    // Update URL with survey ID
+    setSearchParams({ mode: 'survey-manager', surveyId: survey.id });
+    
     setSurveyQuestions([]);
     setSurveyResponses([]);
     setSurveyFiles([]);
@@ -179,6 +184,8 @@ const SurveyManager = () => {
   const handleBackToList = () => {
     setSelectedSurvey(null);
     setActiveTab('overview');
+    // Remove surveyId from URL, keep mode
+    setSearchParams({ mode: 'survey-manager' });
   };
 
   // Handle download
@@ -310,6 +317,31 @@ const SurveyManager = () => {
     const interval = setInterval(fetchSurveys, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-select survey from URL parameter
+  useEffect(() => {
+    const surveyIdFromUrl = searchParams.get('surveyId');
+    if (surveyIdFromUrl && surveys.length > 0 && !selectedSurvey) {
+      const survey = surveys.find(s => s.id === surveyIdFromUrl);
+      if (survey) {
+        // Manually set selected survey and load data (don't call handleSurveySelect to avoid URL update loop)
+        setSelectedSurvey(survey);
+        setSurveyQuestions([]);
+        setSurveyResponses([]);
+        setSurveyFiles([]);
+        setSurveySummary(null);
+        setChatMessages([]);
+        setActiveTab('overview');
+        fetchSurveyQuestions(survey.id);
+        fetchSurveyResponses(survey.id);
+        fetchSurveyFiles(survey.id);
+        // Fetch summary after files are loaded
+        setTimeout(() => {
+          fetchSurveySummary(survey.id);
+        }, 500);
+      }
+    }
+  }, [surveys, searchParams]);
 
   // Auto-scroll chat to bottom when new messages arrive
   useEffect(() => {
