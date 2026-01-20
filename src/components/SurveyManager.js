@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown, TrendingUp } from 'lucide-react';
 import axios from 'axios';
+import SurveyQuestionTrendsChart from './SurveyQuestionTrendsChart';
 
 const SurveyManager = () => {
   const [surveys, setSurveys] = useState([]);
@@ -24,6 +25,7 @@ const SurveyManager = () => {
   const [sortBy, setSortBy] = useState('created_at'); // 'name', 'created_at', 'responses_count', 'status'
   const [sortDirection, setSortDirection] = useState('desc'); // 'asc' or 'desc'
   const [hideZeroResponses, setHideZeroResponses] = useState(false); // Filter out surveys with 0 responses
+  const [showTrends, setShowTrends] = useState(true); // Toggle for time series charts
 
   const [error, setError] = useState(null);
 
@@ -642,6 +644,40 @@ const SurveyManager = () => {
                             </div>
                           )}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Time Series Trends Section */}
+                    {surveySummary.questions && Object.keys(surveySummary.questions).length > 0 && (
+                      <div className="mt-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
+                            <TrendingUp className="h-5 w-5 text-blue-600" />
+                            <span>Trends Over Time</span>
+                          </h3>
+                          <label className="flex items-center space-x-2 text-sm text-gray-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={showTrends}
+                              onChange={(e) => setShowTrends(e.target.checked)}
+                              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                            <span>Show monthly charts</span>
+                          </label>
+                        </div>
+                        
+                        {showTrends && (
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            {Object.entries(surveySummary.questions).map(([qKey, qData]) => (
+                              <SurveyQuestionTrendsChart
+                                key={qKey}
+                                surveyId={selectedSurvey.id}
+                                questionKey={qKey}
+                                questionText={`${qKey}: ${qData.question_text}`}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

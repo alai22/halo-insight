@@ -2549,6 +2549,217 @@ Be concise but specific. Focus on actionable insights."""
         }), 500
 
 
+@survicate_bp.route('/surveys/<survey_id>/question-trends', methods=['GET'])
+def get_survey_question_trends(survey_id):
+    """Get monthly trends for a specific question in a survey"""
+    try:
+        import pandas as pd
+        import io
+        import re
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        
+        # Get question parameter
+        question = request.args.get('question')
+        if not question:
+            return jsonify({
+                'success': False,
+                'error': 'Question parameter required',
+                'details': 'Please provide a question parameter (e.g., Q1, Q2)'
+            }), 400
+        
+        # Get optional file_key parameter
+        file_key = request.args.get('file_key')
+        
+        cache_service = SurvicateS3CacheService()
+        
+        # Load the CSV file
+        csv_content = None
+        if cache_service.use_local_storage:
+            if file_key:
+                filename = file_key.split('/')[-1]
+                file_path = cache_service.local_cache_dir / f'surveys/{survey_id}' / filename
+                if file_path.exists():
+                    csv_content = file_path.read_text(encoding='utf-8')
+            else:
+                # Get most recent file
+                survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+                if survey_dir.exists():
+                    csv_files = list(survey_dir.glob('raw_*.csv'))
+                    if csv_files:
+                        latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                        csv_content = latest_file.read_text(encoding='utf-8')
+        else:
+            # Load from S3
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available',
+                    'details': 'S3 client not configured'
+                }), 503
+            
+            if file_key:
+                try:
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=file_key
+                    )
+                    csv_content = response['Body'].read().decode('utf-8')
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found'
+                    }), 404
+            else:
+                # Get most recent file
+                prefix = f'surveys/{survey_id}/'
+                response = cache_service.s3_client.list_objects_v2(
+                    Bucket=cache_service.bucket_name,
+                    Prefix=prefix
+                )
+                if 'Contents' in response and response['Contents']:
+                    # Filter for raw CSV files
+                    csv_objects = [obj for obj in response['Contents'] if obj['Key'].endswith('.csv') and 'raw_' in obj['Key']]
+                    if csv_objects:
+                        latest_obj = max(csv_objects, key=lambda x: x['LastModified'])
+                        file_response = cache_service.s3_client.get_object(
+                            Bucket=cache_service.bucket_name,
+                            Key=latest_obj['Key']
+                        )
+                        csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': 'No data found',
+                'details': f'No downloaded files found for survey {survey_id}. Please download responses first.'
+            }), 404
+        
+        # Parse CSV
+        df = pd.read_csv(io.StringIO(csv_content))
+        
+        # Parse the date column and extract year-month
+        date_col = 'Date & Time (UTC)'
+        if date_col not in df.columns:
+            return jsonify({
+                'success': False,
+                'error': 'Date column not found',
+                'details': 'CSV does not contain expected date column'
+            }), 400
+        
+        df['_parsed_date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df['year_month'] = df['_parsed_date'].dt.strftime('%Y-%m')
+        
+        # Find the matching question column
+        question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
+        column_name = None
+        question_text = None
+        
+        # Extract question number from the question parameter (e.g., "Q1" -> "1")
+        q_num_match = re.match(r'Q(\d+)', question)
+        if not q_num_match:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid question format',
+                'details': 'Question should be in format Q1, Q2, etc.'
+            }), 400
+        
+        target_q_num = q_num_match.group(1)
+        
+        # Find the matching Answer column
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(1) == target_q_num and match.group(3) == 'Answer':
+                column_name = col
+                question_text = match.group(2).strip()
+                break
+        
+        if not column_name:
+            return jsonify({
+                'success': False,
+                'error': 'Question not found',
+                'details': f'Could not find column for question {question}'
+            }), 404
+        
+        # Filter out rows with missing year_month or missing answers
+        df = df[df['year_month'].notna()]
+        df_with_responses = df[df[column_name].notna() & (df[column_name].astype(str).str.strip() != '')].copy()
+        
+        if len(df_with_responses) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No responses found',
+                'details': f'No responses found for question {question}'
+            }), 400
+        
+        # Get unique answers
+        df_with_responses['answer'] = df_with_responses[column_name].astype(str).str.strip()
+        unique_answers = df_with_responses['answer'].unique().tolist()
+        
+        # Group by month and answer to get counts
+        grouped = df_with_responses.groupby(['year_month', 'answer']).size().reset_index(name='count')
+        
+        # Get total responses per month (for this question only)
+        monthly_totals = df_with_responses.groupby('year_month').size()
+        
+        # Calculate percentages
+        grouped['percentage'] = grouped.apply(
+            lambda row: (row['count'] / monthly_totals[row['year_month']]) * 100 if monthly_totals[row['year_month']] > 0 else 0,
+            axis=1
+        )
+        
+        # Get unique months sorted
+        months = sorted(grouped['year_month'].unique())
+        
+        # Build response data structure
+        data = []
+        for month in months:
+            month_data = {'month': month, '_total': int(monthly_totals.get(month, 0))}
+            month_df = grouped[grouped['year_month'] == month]
+            
+            for answer in unique_answers:
+                answer_data = month_df[month_df['answer'] == answer]
+                if len(answer_data) > 0:
+                    month_data[answer] = int(answer_data['count'].values[0])
+                    month_data[f'{answer}_percentage'] = round(answer_data['percentage'].values[0], 2)
+                else:
+                    month_data[answer] = 0
+                    month_data[f'{answer}_percentage'] = 0
+            
+            data.append(month_data)
+        
+        # Sort answers by total count to show most common first
+        answer_totals = {}
+        for answer in unique_answers:
+            answer_totals[answer] = int(grouped[grouped['answer'] == answer]['count'].sum())
+        
+        sorted_answers = sorted(unique_answers, key=lambda x: answer_totals.get(x, 0), reverse=True)
+        
+        # Limit to top 10 answers to keep charts readable
+        if len(sorted_answers) > 10:
+            sorted_answers = sorted_answers[:10]
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'question': question,
+            'question_text': question_text,
+            'data': data,
+            'answers': sorted_answers,
+            'total_responses': int(len(df_with_responses)),
+            'months': months
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to get survey question trends: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to get question trends for survey {survey_id}'
+        }), 500
+
+
 @survicate_bp.route('/surveys/<survey_id>/ask', methods=['POST'])
 def ask_survey_question(survey_id):
     """Ask Claude questions about a specific survey's responses"""
