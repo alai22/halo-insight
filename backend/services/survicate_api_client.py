@@ -52,58 +52,80 @@ class SurvicateAPIClient:
         logger.info(f"SurvicateAPIClient init - Auth method: {self._auth_method}, Base URL: {self.base_url}")
     
     def list_surveys(self) -> List[Dict[str, Any]]:
-        """List all surveys"""
+        """List all surveys (handles pagination automatically)"""
         try:
+            all_surveys = []
             url = f"{self.base_url}/surveys"
-            logger.info(f"Requesting {url} with auth method: {self._auth_method}")
-            logger.info(f"Authorization header: {self.headers.get('Authorization', 'NOT SET')[:20]}...")
-            response = requests.get(url, headers=self.headers, timeout=30)
+            next_url = None
             
-            # Log response details for debugging
-            logger.info(f"Response status: {response.status_code}")
-            
-            # If Basic auth fails with 403, log error (no fallback - Basic is the correct method)
-            if response.status_code == 403:
-                logger.error("Basic auth failed with 403 - check API key permissions and Data Export API access")
-            
-            # Log response body for 403 errors to see what Survicate says
-            if response.status_code == 403:
-                try:
-                    error_body = response.text[:1000]  # First 1000 chars to see full HTML
-                    logger.error(f"Survicate API 403 error response (first 1000 chars): {error_body}")
-                    # Try to extract meaningful error from HTML if possible
-                    if '<html' in error_body.lower() or '<body' in error_body.lower():
-                        logger.error("Survicate returned HTML instead of JSON - this may indicate wrong endpoint or authentication format")
-                except:
-                    pass
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # According to Survicate API docs, response structure is:
-            # {
-            #   "pagination_data": {...},
-            #   "data": [...]
-            # }
-            if isinstance(data, dict):
-                surveys = data.get('data', [])
-                if isinstance(surveys, list):
-                    logger.info(f"Survicate API returned {len(surveys)} surveys")
-                    # Check for pagination
-                    pagination = data.get('pagination_data', {})
-                    if pagination.get('has_more', False):
-                        logger.info(f"More surveys available (pagination: {pagination.get('next_url')})")
-                    return surveys
+            while True:
+                if next_url:
+                    if next_url.startswith('http'):
+                        request_url = next_url
+                    else:
+                        request_url = f"{self.base_url}{next_url}"
+                    params = {}
                 else:
-                    logger.warning(f"Expected 'data' to be a list, got {type(surveys)}")
-                    return []
-            elif isinstance(data, list):
-                # Fallback: API might return surveys directly as a list
-                logger.info(f"Survicate API returned {len(data)} surveys (as list)")
-                return data
-            else:
-                logger.error(f"Unexpected response type from Survicate API: {type(data)}")
-                return []
+                    request_url = url
+                    params = {'items_per_page': 100}  # Request max per page
+                
+                logger.info(f"Requesting {request_url} with auth method: {self._auth_method}")
+                if not next_url:
+                    logger.info(f"Authorization header: {self.headers.get('Authorization', 'NOT SET')[:20]}...")
+                
+                response = requests.get(request_url, headers=self.headers, params=params, timeout=30)
+                
+                # Log response details for debugging
+                logger.info(f"Response status: {response.status_code}")
+                
+                # If Basic auth fails with 403, log error
+                if response.status_code == 403:
+                    logger.error("Basic auth failed with 403 - check API key permissions and Data Export API access")
+                    try:
+                        error_body = response.text[:1000]
+                        logger.error(f"Survicate API 403 error response (first 1000 chars): {error_body}")
+                        if '<html' in error_body.lower() or '<body' in error_body.lower():
+                            logger.error("Survicate returned HTML instead of JSON - this may indicate wrong endpoint or authentication format")
+                    except:
+                        pass
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                # According to Survicate API docs, response structure is:
+                # {
+                #   "pagination_data": {...},
+                #   "data": [...]
+                # }
+                if isinstance(data, dict):
+                    surveys = data.get('data', [])
+                    if isinstance(surveys, list):
+                        all_surveys.extend(surveys)
+                        logger.info(f"Fetched {len(surveys)} surveys (total: {len(all_surveys)})")
+                        
+                        # Check for more pages
+                        pagination = data.get('pagination_data', {})
+                        if pagination.get('has_more', False):
+                            next_url = pagination.get('next_url')
+                            if next_url:
+                                logger.info(f"More surveys available, fetching next page...")
+                                continue  # Fetch next page
+                        break  # No more pages
+                    else:
+                        logger.warning(f"Expected 'data' to be a list, got {type(surveys)}")
+                        break
+                elif isinstance(data, list):
+                    # Fallback: API might return surveys directly as a list
+                    all_surveys.extend(data)
+                    logger.info(f"Survicate API returned {len(data)} surveys (as list)")
+                    break  # No pagination info in this format
+                else:
+                    logger.error(f"Unexpected response type from Survicate API: {type(data)}")
+                    break
+            
+            logger.info(f"Successfully fetched {len(all_surveys)} total surveys")
+            return all_surveys
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to list surveys: {e}")
             if hasattr(e, 'response') and e.response is not None:
