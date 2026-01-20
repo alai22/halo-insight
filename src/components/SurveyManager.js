@@ -668,6 +668,106 @@ const SurveyManager = () => {
                                   ))}
                                 </div>
                               )}
+
+                              {/* Comment Analysis Section */}
+                              {qData.comments && qData.comments.total_comments > 0 && (
+                                <div className="mt-4 p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-200">
+                                  <div className="flex items-center space-x-2 mb-3">
+                                    <MessageSquare className="h-4 w-4 text-amber-600" />
+                                    <div className="text-sm font-semibold text-amber-900">Comment Analysis</div>
+                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">
+                                      {qData.comments.total_comments.toLocaleString()} comments
+                                    </span>
+                                  </div>
+                                  
+                                  <div className="text-xs text-gray-600 mb-3">
+                                    {qData.comments.comment_rate}% of respondents left a comment • Avg length: {qData.comments.average_comment_length?.toFixed(0) || 0} chars
+                                  </div>
+                                  
+                                  {qData.comments.llm_insights && (
+                                    <div className="space-y-3">
+                                      {/* Sentiment for Comments */}
+                                      {qData.comments.llm_insights.sentiment && (
+                                        <div>
+                                          <div className="text-xs font-medium text-gray-700 mb-2">Comment Sentiment</div>
+                                          <div className="flex space-x-2">
+                                            {qData.comments.llm_insights.sentiment.positive !== undefined && (
+                                              <div className="flex-1">
+                                                <div className="flex justify-between text-xs mb-1">
+                                                  <span className="text-green-700">Positive</span>
+                                                  <span className="text-gray-600">{qData.comments.llm_insights.sentiment.positive}%</span>
+                                                </div>
+                                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                                  <div className="bg-green-500 h-2 rounded-full" style={{ width: `${qData.comments.llm_insights.sentiment.positive}%` }} />
+                                                </div>
+                                              </div>
+                                            )}
+                                            {qData.comments.llm_insights.sentiment.neutral !== undefined && (
+                                              <div className="flex-1">
+                                                <div className="flex justify-between text-xs mb-1">
+                                                  <span className="text-gray-700">Neutral</span>
+                                                  <span className="text-gray-600">{qData.comments.llm_insights.sentiment.neutral}%</span>
+                                                </div>
+                                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                                  <div className="bg-gray-500 h-2 rounded-full" style={{ width: `${qData.comments.llm_insights.sentiment.neutral}%` }} />
+                                                </div>
+                                              </div>
+                                            )}
+                                            {qData.comments.llm_insights.sentiment.negative !== undefined && (
+                                              <div className="flex-1">
+                                                <div className="flex justify-between text-xs mb-1">
+                                                  <span className="text-red-700">Negative</span>
+                                                  <span className="text-gray-600">{qData.comments.llm_insights.sentiment.negative}%</span>
+                                                </div>
+                                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                                  <div className="bg-red-500 h-2 rounded-full" style={{ width: `${qData.comments.llm_insights.sentiment.negative}%` }} />
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                      
+                                      {/* Themes from Comments */}
+                                      {qData.comments.llm_insights.themes && qData.comments.llm_insights.themes.length > 0 && (
+                                        <div>
+                                          <div className="text-xs font-medium text-gray-700 mb-2">Common Themes in Comments</div>
+                                          <div className="flex flex-wrap gap-2">
+                                            {qData.comments.llm_insights.themes.slice(0, 8).map((theme, idx) => (
+                                              <span key={idx} className="px-2 py-1 bg-white rounded border border-amber-200 text-xs text-gray-800">
+                                                {typeof theme === 'object' ? theme.theme : theme}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      
+                                      {/* Key Points */}
+                                      {qData.comments.llm_insights.key_points && qData.comments.llm_insights.key_points.length > 0 && (
+                                        <div>
+                                          <div className="text-xs font-medium text-gray-700 mb-2">Key Points</div>
+                                          <ul className="text-xs text-gray-700 space-y-1">
+                                            {qData.comments.llm_insights.key_points.slice(0, 5).map((point, idx) => (
+                                              <li key={idx} className="flex items-start">
+                                                <span className="text-amber-500 mr-2">•</span>
+                                                <span>{point}</span>
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      
+                                      {/* Summary */}
+                                      {qData.comments.llm_insights.summary && (
+                                        <div className="p-2 bg-white rounded border border-amber-100">
+                                          <div className="text-xs font-medium text-gray-700 mb-1">Summary</div>
+                                          <div className="text-sm text-gray-800">{qData.comments.llm_insights.summary}</div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           ))}
                           {Object.keys(surveySummary.questions).length > 5 && (

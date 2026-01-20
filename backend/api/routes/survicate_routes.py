@@ -2466,6 +2466,7 @@ Be concise but specific. Focus on actionable insights."""
         except Exception as e:
             logger.debug(f"Claude service not available for text analysis: {e}")
         
+        # First pass: Process Answer columns
         for col in df.columns:
             match = question_pattern.match(str(col))
             if match and match.group(3) == 'Answer':  # Only process Answer columns
@@ -2517,6 +2518,56 @@ Be concise but specific. Focus on actionable insights."""
                             question_data['llm_insights'] = llm_insights
                     
                     question_stats[f'Q{q_num}'] = question_data
+        
+        # Second pass: Process Comment columns and add to existing question data
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(3) == 'Comment':  # Process Comment columns
+                q_num = match.group(1)
+                q_text = match.group(2).strip()
+                q_key = f'Q{q_num}'
+                
+                # Get non-null, non-empty comments
+                comments = df[col].dropna()
+                comments = comments[comments.astype(str).str.strip() != '']
+                
+                if len(comments) > 0:
+                    total_comments = len(comments)
+                    avg_comment_length = comments.astype(str).str.len().mean() if len(comments) > 0 else 0
+                    
+                    comment_data = {
+                        'total_comments': int(total_comments),
+                        'comment_rate': round((total_comments / total_responses) * 100, 2) if total_responses > 0 else 0,
+                        'average_comment_length': float(round(avg_comment_length, 1)) if avg_comment_length else 0.0
+                    }
+                    
+                    # Always analyze comments with LLM since they are free-form text
+                    if claude_service and total_comments >= 5:  # Only analyze if we have enough comments
+                        comments_list = comments.astype(str).tolist()
+                        comment_insights = analyze_text_responses_with_llm(
+                            f"Comments for: {q_text}", 
+                            comments_list, 
+                            claude_service
+                        )
+                        if comment_insights:
+                            comment_data['llm_insights'] = comment_insights
+                    
+                    # Add comment data to the question stats
+                    if q_key in question_stats:
+                        question_stats[q_key]['comments'] = comment_data
+                    else:
+                        # Create a new entry if there's no Answer column but there are comments
+                        question_stats[q_key] = {
+                            'question_number': int(q_num),
+                            'question_text': q_text,
+                            'total_responses': 0,
+                            'response_rate': 0,
+                            'top_answers': {},
+                            'unique_answers_count': 0,
+                            'is_text_question': False,
+                            'average_answer_length': 0.0,
+                            'comments': comment_data
+                        }
         
         # Sort questions by question number
         sorted_questions = sorted(question_stats.items(), key=lambda x: x[1]['question_number'])
@@ -2757,6 +2808,257 @@ def get_survey_question_trends(survey_id):
             'success': False,
             'error': str(e),
             'details': f'Failed to get question trends for survey {survey_id}'
+        }), 500
+
+
+@survicate_bp.route('/surveys/<survey_id>/comment-trends', methods=['GET'])
+def get_survey_comment_trends(survey_id):
+    """Get monthly trends for comments on a specific question with LLM analysis"""
+    try:
+        import pandas as pd
+        import io
+        import re
+        from ...services.survicate_s3_cache_service import SurvicateS3CacheService
+        
+        # Get question parameter
+        question = request.args.get('question')
+        if not question:
+            return jsonify({
+                'success': False,
+                'error': 'Question parameter required',
+                'details': 'Please provide a question parameter (e.g., Q1, Q2)'
+            }), 400
+        
+        # Get optional file_key parameter
+        file_key = request.args.get('file_key')
+        
+        cache_service = SurvicateS3CacheService()
+        
+        # Load the CSV file (same logic as question-trends)
+        csv_content = None
+        if cache_service.use_local_storage:
+            if file_key:
+                filename = file_key.split('/')[-1]
+                file_path = cache_service.local_cache_dir / f'surveys/{survey_id}' / filename
+                if file_path.exists():
+                    csv_content = file_path.read_text(encoding='utf-8')
+            else:
+                survey_dir = cache_service.local_cache_dir / f'surveys/{survey_id}'
+                if survey_dir.exists():
+                    csv_files = list(survey_dir.glob('raw_*.csv'))
+                    if csv_files:
+                        latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+                        csv_content = latest_file.read_text(encoding='utf-8')
+        else:
+            if not cache_service.s3_client:
+                return jsonify({
+                    'success': False,
+                    'error': 'S3 not available',
+                    'details': 'S3 client not configured'
+                }), 503
+            
+            if file_key:
+                try:
+                    response = cache_service.s3_client.get_object(
+                        Bucket=cache_service.bucket_name,
+                        Key=file_key
+                    )
+                    csv_content = response['Body'].read().decode('utf-8')
+                except cache_service.s3_client.exceptions.NoSuchKey:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found'
+                    }), 404
+            else:
+                prefix = f'surveys/{survey_id}/'
+                response = cache_service.s3_client.list_objects_v2(
+                    Bucket=cache_service.bucket_name,
+                    Prefix=prefix
+                )
+                if 'Contents' in response and response['Contents']:
+                    csv_objects = [obj for obj in response['Contents'] if obj['Key'].endswith('.csv') and 'raw_' in obj['Key']]
+                    if csv_objects:
+                        latest_obj = max(csv_objects, key=lambda x: x['LastModified'])
+                        file_response = cache_service.s3_client.get_object(
+                            Bucket=cache_service.bucket_name,
+                            Key=latest_obj['Key']
+                        )
+                        csv_content = file_response['Body'].read().decode('utf-8')
+        
+        if not csv_content:
+            return jsonify({
+                'success': False,
+                'error': 'No data found',
+                'details': f'No downloaded files found for survey {survey_id}. Please download responses first.'
+            }), 404
+        
+        # Parse CSV
+        df = pd.read_csv(io.StringIO(csv_content))
+        
+        # Parse the date column and extract year-month
+        date_col = 'Date & Time (UTC)'
+        if date_col not in df.columns:
+            return jsonify({
+                'success': False,
+                'error': 'Date column not found',
+                'details': 'CSV does not contain expected date column'
+            }), 400
+        
+        df['_parsed_date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df['year_month'] = df['_parsed_date'].dt.strftime('%Y-%m')
+        
+        # Find the matching Comment column
+        question_pattern = re.compile(r'Q#(\d+):\s*(.+?)\s*\((Answer|Comment)\)')
+        column_name = None
+        question_text = None
+        
+        # Extract question number from the question parameter (e.g., "Q1" -> "1")
+        q_num_match = re.match(r'Q(\d+)', question)
+        if not q_num_match:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid question format',
+                'details': 'Question should be in format Q1, Q2, etc.'
+            }), 400
+        
+        target_q_num = q_num_match.group(1)
+        
+        # Find the matching Comment column
+        for col in df.columns:
+            match = question_pattern.match(str(col))
+            if match and match.group(1) == target_q_num and match.group(3) == 'Comment':
+                column_name = col
+                question_text = match.group(2).strip()
+                break
+        
+        if not column_name:
+            return jsonify({
+                'success': False,
+                'error': 'Comment column not found',
+                'details': f'Could not find comment column for question {question}'
+            }), 404
+        
+        # Filter out rows with missing year_month or empty comments
+        df = df[df['year_month'].notna()]
+        df_with_comments = df[df[column_name].notna() & (df[column_name].astype(str).str.strip() != '')].copy()
+        
+        if len(df_with_comments) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No comments found',
+                'details': f'No comments found for question {question}'
+            }), 400
+        
+        df_with_comments['comment'] = df_with_comments[column_name].astype(str).str.strip()
+        
+        # Get Claude service for LLM analysis
+        claude_service = None
+        try:
+            service_container = getattr(g, 'service_container', None)
+            if service_container:
+                claude_service = service_container.get_claude_service()
+        except Exception as e:
+            logger.debug(f"Claude service not available for comment analysis: {e}")
+        
+        # Helper function for LLM analysis (reuse the same logic)
+        def analyze_comments_with_llm(question_text, comments_list, claude_service):
+            if not claude_service or len(comments_list) == 0:
+                return None
+            
+            try:
+                # Limit to first 50 comments per month to avoid token limits
+                sample_comments = comments_list[:50]
+                comments_text = "\n".join([f"- {c}" for c in sample_comments])
+                
+                system_prompt = f"""You are analyzing customer comments from a survey. Provide a concise analysis.
+
+Question: "{question_text}"
+
+Analyze these {len(sample_comments)} comments and provide:
+1. Overall sentiment (positive/neutral/negative percentages)
+2. Top 3-5 themes or topics mentioned
+3. Key issues or praise mentioned
+4. A brief 1-2 sentence summary
+
+Format your response as JSON:
+{{
+  "sentiment": {{"positive": 40, "neutral": 30, "negative": 30}},
+  "themes": ["theme1", "theme2", "theme3"],
+  "key_points": ["point1", "point2"],
+  "summary": "Brief summary here"
+}}
+
+Be concise and focus on actionable insights."""
+
+                message = f"Analyze these comments:\n\n{comments_text}"
+                
+                response = claude_service.send_message(
+                    message=message,
+                    model=None,
+                    max_tokens=1000,
+                    system_prompt=system_prompt
+                )
+                
+                response_text = response.content.strip()
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        return json.loads(json_match.group(0))
+                    except json.JSONDecodeError:
+                        return {'summary': response_text, 'raw_analysis': True}
+                else:
+                    return {'summary': response_text, 'raw_analysis': True}
+            except Exception as e:
+                logger.warning(f"Failed to analyze comments with LLM: {e}")
+                return None
+        
+        # Group by month and analyze each month's comments
+        months = sorted(df_with_comments['year_month'].unique())
+        monthly_data = []
+        
+        for month in months:
+            month_df = df_with_comments[df_with_comments['year_month'] == month]
+            comments_list = month_df['comment'].tolist()
+            
+            month_entry = {
+                'month': month,
+                'comment_count': len(comments_list),
+                'avg_length': round(month_df['comment'].str.len().mean(), 1)
+            }
+            
+            # Only do LLM analysis if we have enough comments (5+)
+            if claude_service and len(comments_list) >= 5:
+                llm_insights = analyze_comments_with_llm(question_text, comments_list, claude_service)
+                if llm_insights:
+                    month_entry['llm_insights'] = llm_insights
+            
+            monthly_data.append(month_entry)
+        
+        # Also provide an aggregate analysis across all months
+        all_comments = df_with_comments['comment'].tolist()
+        aggregate_insights = None
+        if claude_service and len(all_comments) >= 5:
+            aggregate_insights = analyze_comments_with_llm(question_text, all_comments, claude_service)
+        
+        return jsonify({
+            'success': True,
+            'survey_id': survey_id,
+            'question': question,
+            'question_text': question_text,
+            'total_comments': len(df_with_comments),
+            'months': months,
+            'monthly_data': monthly_data,
+            'aggregate_insights': aggregate_insights
+        })
+    
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to get survey comment trends: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': f'Failed to get comment trends for survey {survey_id}'
         }), 500
 
 
