@@ -114,7 +114,7 @@ const ApiDataManager = () => {
       } else {
         setIsRefreshing(false);
         setRefreshProgress(null);
-        alert(`Failed to start API refresh: ${data.error || 'Unknown error'}`);
+        alert(`Failed to start API refresh: ${response.data.error || 'Unknown error'}`);
       }
     } catch (error) {
       setIsRefreshing(false);

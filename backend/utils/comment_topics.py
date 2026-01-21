@@ -7,6 +7,7 @@ Each comment can be tagged with multiple topics.
 
 # Topic taxonomy for comment classification
 # Each topic has a name, description, and keywords to help LLM identify it
+# Note: We focus on actionable issue categories, not sentiment (positive/negative)
 COMMENT_TOPICS = [
     {
         "id": "battery_charging",
@@ -69,10 +70,10 @@ COMMENT_TOPICS = [
         "keywords": ["dog", "training", "respond", "behavior", "doesn't work on dog", "collar effectiveness"]
     },
     {
-        "id": "customer_service_experience",
-        "name": "Customer Service Experience",
-        "description": "Agent interactions, response quality, wait times",
-        "keywords": ["service", "helpful", "wait time", "response", "agent", "support", "friendly", "rude", "slow"]
+        "id": "wait_time",
+        "name": "Wait Time & Response Delay",
+        "description": "Long wait times, slow response, delayed callbacks",
+        "keywords": ["wait", "hold", "long time", "slow", "delayed", "took forever", "hours"]
     },
     {
         "id": "life_situation_change",
@@ -91,12 +92,6 @@ COMMENT_TOPICS = [
         "name": "Phone Support Request",
         "description": "Wants to speak to someone by phone",
         "keywords": ["phone", "call", "speak to someone", "talk to", "call back"]
-    },
-    {
-        "id": "positive_feedback",
-        "name": "Positive Feedback",
-        "description": "Praise, satisfaction, compliments",
-        "keywords": ["great", "amazing", "excellent", "thank", "helpful", "wonderful", "awesome", "best", "love"]
     },
     {
         "id": "other",
@@ -133,10 +128,9 @@ TOPIC_COLORS = {
     "account_login": "#06B6D4",          # Cyan
     "feature_howto": "#0EA5E9",          # Sky
     "dog_training": "#3B82F6",           # Blue
-    "customer_service_experience": "#6366F1",  # Indigo
+    "wait_time": "#6366F1",              # Indigo
     "life_situation_change": "#8B5CF6",  # Violet
     "product_recommendation": "#A855F7", # Purple
     "phone_support": "#D946EF",          # Fuchsia
-    "positive_feedback": "#EC4899",      # Pink
     "other": "#6B7280",                  # Gray
 }

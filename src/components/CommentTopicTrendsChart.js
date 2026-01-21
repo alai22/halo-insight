@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { RefreshCw, AlertCircle, Play, MessageSquare } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { RefreshCw, AlertCircle, Play, MessageSquare, Filter } from 'lucide-react';
 import axios from 'axios';
 
 const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText }) => {
@@ -9,6 +9,8 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState(null);
   const [needsAnalysis, setNeedsAnalysis] = useState(false);
+  const [selectedTopics, setSelectedTopics] = useState(new Set());
+  const [showFilters, setShowFilters] = useState(false);
 
   const fetchTopicTrends = async () => {
     setLoading(true);
@@ -18,6 +20,10 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
       const response = await axios.get(`/api/survicate/surveys/${surveyId}/comment-topic-trends?question=${questionKey}`);
       if (response.data.success) {
         setData(response.data);
+        // Initialize all topics as selected (except 'other' by default)
+        const topicIds = Object.keys(response.data.overall_distribution || {});
+        const initialSelected = new Set(topicIds.filter(id => id !== 'other'));
+        setSelectedTopics(initialSelected);
       } else {
         if (response.data.error?.includes('No topic analysis found') || response.data.error?.includes('run topic analysis')) {
           setNeedsAnalysis(true);
@@ -62,6 +68,28 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
       fetchTopicTrends();
     }
   }, [surveyId, questionKey]);
+
+  const toggleTopic = (topicId) => {
+    setSelectedTopics(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(topicId)) {
+        newSet.delete(topicId);
+      } else {
+        newSet.add(topicId);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllTopics = () => {
+    if (data?.overall_distribution) {
+      setSelectedTopics(new Set(Object.keys(data.overall_distribution)));
+    }
+  };
+
+  const deselectAllTopics = () => {
+    setSelectedTopics(new Set());
+  };
 
   if (loading) {
     return (
@@ -156,11 +184,13 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
     return entry;
   });
 
-  // Get topics that have data, sorted by overall frequency
-  const activeTopics = Object.entries(data.overall_distribution)
+  // Get topics sorted by overall frequency (for legend ordering)
+  const sortedTopics = Object.entries(data.overall_distribution)
     .filter(([_, d]) => d.count > 0)
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, 10); // Top 10 topics
+    .sort((a, b) => b[1].count - a[1].count);
+
+  // Filter to only selected topics for the chart
+  const visibleTopics = sortedTopics.filter(([topicId]) => selectedTopics.has(topicId));
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6">
@@ -173,6 +203,15 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
           </span>
         </div>
         <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`px-3 py-1 text-sm rounded flex items-center space-x-1 transition-colors ${
+              showFilters ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            <Filter className="h-3 w-3" />
+            <span>Filter Topics</span>
+          </button>
           <button
             onClick={runTopicAnalysis}
             disabled={analyzing}
@@ -193,11 +232,65 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
         <p className="text-sm text-gray-600 mb-4">{questionText}</p>
       )}
 
-      {/* Topic Distribution Summary */}
+      {/* Topic Filter Panel */}
+      {showFilters && (
+        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-gray-700">Select topics to display:</span>
+            <div className="flex space-x-2">
+              <button
+                onClick={selectAllTopics}
+                className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+              >
+                Select All
+              </button>
+              <button
+                onClick={deselectAllTopics}
+                className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+            {sortedTopics.map(([topicId, topicData]) => (
+              <label
+                key={topicId}
+                className={`flex items-center space-x-2 p-2 rounded cursor-pointer transition-colors ${
+                  selectedTopics.has(topicId) ? 'bg-white border border-gray-300' : 'bg-gray-100 border border-transparent'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedTopics.has(topicId)}
+                  onChange={() => toggleTopic(topicId)}
+                  className="h-4 w-4 rounded"
+                  style={{ accentColor: topicData.color }}
+                />
+                <div
+                  className="w-3 h-3 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: topicData.color }}
+                />
+                <span className="text-xs text-gray-700 truncate" title={topicData.name}>
+                  {topicData.name}
+                </span>
+                <span className="text-xs text-gray-500">({topicData.percentage.toFixed(1)}%)</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Topic Distribution Summary - Only show selected topics */}
       <div className="mb-6">
-        <h4 className="text-sm font-medium text-gray-700 mb-3">Overall Topic Distribution</h4>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">
+          Overall Topic Distribution 
+          <span className="text-gray-500 font-normal ml-2">
+            ({selectedTopics.size} of {sortedTopics.length} topics selected)
+          </span>
+        </h4>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-          {activeTopics.map(([topicId, topicData]) => (
+          {visibleTopics.slice(0, 8).map(([topicId, topicData]) => (
             <div 
               key={topicId} 
               className="p-2 rounded-lg border"
@@ -211,99 +304,121 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
                   {topicData.percentage.toFixed(1)}%
                 </span>
                 <span className="text-xs text-gray-500">
-                  ({topicData.count})
+                  ({topicData.count.toLocaleString()})
                 </span>
               </div>
             </div>
           ))}
         </div>
+        {visibleTopics.length > 8 && (
+          <p className="text-xs text-gray-500 mt-2">
+            +{visibleTopics.length - 8} more topics (use filter to see all)
+          </p>
+        )}
       </div>
 
-      {/* Monthly Trends Chart */}
+      {/* Monthly Trends Line Chart */}
       <div className="mb-4">
-        <h4 className="text-sm font-medium text-gray-700 mb-3">Monthly Trends (% of comments mentioning each topic)</h4>
+        <h4 className="text-sm font-medium text-gray-700 mb-3">
+          Monthly Trends (% of comments mentioning each topic)
+        </h4>
       </div>
       
-      <div style={{ height: '400px' }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={chartData}
-            margin={{ top: 10, right: 20, left: 10, bottom: 60 }}
-          >
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis 
-              dataKey="month" 
-              angle={-45}
-              textAnchor="end"
-              height={80}
-              tick={{ fontSize: 11 }}
-            />
-            <YAxis 
-              label={{ value: '% of Comments', angle: -90, position: 'insideLeft', fontSize: 11 }}
-              tickFormatter={(value) => `${value}%`}
-              tick={{ fontSize: 11 }}
-            />
-            <Tooltip 
-              contentStyle={{ 
-                backgroundColor: '#ffffff',
-                border: '1px solid #e5e7eb',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
-              }}
-              content={({ active, payload, label }) => {
-                if (!active || !payload || payload.length === 0) return null;
-                
-                const monthData = chartData.find(d => d.month === label);
-                if (!monthData) return null;
-                
-                return (
-                  <div className="p-3 bg-white rounded-lg shadow-lg border max-w-xs">
-                    <div className="font-semibold text-gray-900 mb-2 border-b pb-2">
-                      {label} ({monthData._total} comments)
-                    </div>
-                    <div className="space-y-1">
-                      {payload
-                        .filter(p => p.value > 0)
-                        .sort((a, b) => b.value - a.value)
-                        .slice(0, 8)
-                        .map((entry, idx) => (
-                          <div key={idx} className="flex items-center justify-between text-sm">
-                            <div className="flex items-center space-x-2">
-                              <div 
-                                className="w-3 h-3 rounded"
-                                style={{ backgroundColor: entry.color }}
-                              />
-                              <span className="text-gray-700 truncate max-w-32">
-                                {data.topic_names[entry.dataKey] || entry.dataKey}
+      {visibleTopics.length === 0 ? (
+        <div className="h-64 flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200">
+          <div className="text-center">
+            <Filter className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+            <p className="text-gray-600">No topics selected</p>
+            <p className="text-sm text-gray-500">Use the filter above to select topics to display</p>
+          </div>
+        </div>
+      ) : (
+        <div style={{ height: '400px' }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={chartData}
+              margin={{ top: 10, right: 20, left: 10, bottom: 60 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis 
+                dataKey="month" 
+                angle={-45}
+                textAnchor="end"
+                height={80}
+                tick={{ fontSize: 11 }}
+              />
+              <YAxis 
+                label={{ value: '% of Comments', angle: -90, position: 'insideLeft', fontSize: 11 }}
+                tickFormatter={(value) => `${value}%`}
+                tick={{ fontSize: 11 }}
+                domain={[0, 'auto']}
+              />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+                }}
+                content={({ active, payload, label }) => {
+                  if (!active || !payload || payload.length === 0) return null;
+                  
+                  const monthData = chartData.find(d => d.month === label);
+                  if (!monthData) return null;
+                  
+                  // Sort payload by value descending
+                  const sortedPayload = [...payload].sort((a, b) => (b.value || 0) - (a.value || 0));
+                  
+                  return (
+                    <div className="p-3 bg-white rounded-lg shadow-lg border max-w-xs">
+                      <div className="font-semibold text-gray-900 mb-2 border-b pb-2">
+                        {label} ({monthData._total} comments)
+                      </div>
+                      <div className="space-y-1 max-h-48 overflow-y-auto">
+                        {sortedPayload
+                          .filter(p => p.value !== undefined && p.value !== null)
+                          .map((entry, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-sm">
+                              <div className="flex items-center space-x-2">
+                                <div 
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: entry.color }}
+                                />
+                                <span className="text-gray-700 truncate max-w-28">
+                                  {data.topic_names[entry.dataKey] || entry.dataKey}
+                                </span>
+                              </div>
+                              <span className="font-medium ml-2">
+                                {entry.value?.toFixed(1) || 0}%
                               </span>
                             </div>
-                            <span className="font-medium ml-2">
-                              {entry.value.toFixed(1)}%
-                            </span>
-                          </div>
-                        ))}
+                          ))}
+                      </div>
                     </div>
-                  </div>
-                );
-              }}
-            />
-            <Legend 
-              wrapperStyle={{ paddingTop: '20px', fontSize: '10px' }}
-              iconType="rect"
-              iconSize={10}
-            />
-            {activeTopics.map(([topicId, topicData]) => (
-              <Bar
-                key={topicId}
-                dataKey={topicId}
-                name={topicData.name}
-                fill={topicData.color}
-                stackId="topics"
+                  );
+                }}
               />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+              <Legend 
+                wrapperStyle={{ paddingTop: '20px', fontSize: '10px' }}
+                iconType="line"
+                iconSize={12}
+              />
+              {visibleTopics.map(([topicId, topicData]) => (
+                <Line
+                  key={topicId}
+                  type="monotone"
+                  dataKey={topicId}
+                  name={topicData.name}
+                  stroke={topicData.color}
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: topicData.color }}
+                  activeDot={{ r: 5, fill: topicData.color }}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 };
