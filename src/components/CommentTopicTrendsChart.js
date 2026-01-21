@@ -333,7 +333,7 @@ const CommentTopicTrendsChart = ({ surveyId, questionKey = 'Q1', questionText })
           </div>
         </div>
       ) : (
-        <div style={{ height: '400px' }}>
+        <div style={{ height: '560px' }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={chartData}
