@@ -32,6 +32,7 @@ app.secret_key = secret_key
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessions last 24 hours
+app.config['JSON_SORT_KEYS'] = False  # Preserve dict insertion order in JSON responses
 
 # Enable CORS with credentials support (required for session cookies)
 CORS(app, supports_credentials=True)

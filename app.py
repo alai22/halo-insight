@@ -77,6 +77,7 @@ def create_app():
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessions last 24 hours
+    app.config['JSON_SORT_KEYS'] = False  # Preserve dict insertion order in JSON responses
     
     # Enable CORS
     CORS(app, supports_credentials=True)  # Enable credentials for session cookies
