@@ -439,6 +439,55 @@ const SurveyManager = () => {
                   </div>
                 </div>
 
+                {/* Quick Actions */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+                  <div className="flex space-x-3">
+                    <button
+                      onClick={() => {
+                        handleDownload(selectedSurvey.id, selectedSurvey.name);
+                      }}
+                      disabled={downloadingSurveys.has(selectedSurvey.id)}
+                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors"
+                    >
+                      {downloadingSurveys.has(selectedSurvey.id) ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span>Downloading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4" />
+                          <span>Download All Responses</span>
+                        </>
+                      )}
+                    </button>
+                    {surveyFiles.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setActiveTab('files');
+                          fetchSurveySummary(selectedSurvey.id);
+                        }}
+                        className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
+                      >
+                        <FileDown className="h-4 w-4" />
+                        <span>View Downloads ({surveyFiles.length})</span>
+                      </button>
+                    )}
+                    {surveySummary && (
+                      <button
+                        onClick={() => {
+                          fetchSurveySummary(selectedSurvey.id);
+                        }}
+                        className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 flex items-center space-x-2 transition-colors"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span>Refresh Summary</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 {/* Summary Statistics */}
                 {surveyFiles.length > 0 && (
                   <div className="mb-4">
@@ -869,53 +918,6 @@ const SurveyManager = () => {
                   </div>
                 )}
 
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-                  <div className="flex space-x-3">
-                    <button
-                      onClick={() => {
-                        handleDownload(selectedSurvey.id, selectedSurvey.name);
-                      }}
-                      disabled={downloadingSurveys.has(selectedSurvey.id)}
-                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors"
-                    >
-                      {downloadingSurveys.has(selectedSurvey.id) ? (
-                        <>
-                          <RefreshCw className="h-4 w-4 animate-spin" />
-                          <span>Downloading...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Download className="h-4 w-4" />
-                          <span>Download All Responses</span>
-                        </>
-                      )}
-                    </button>
-                    {surveyFiles.length > 0 && (
-                      <button
-                        onClick={() => {
-                          setActiveTab('files');
-                          fetchSurveySummary(selectedSurvey.id);
-                        }}
-                        className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center space-x-2 transition-colors"
-                      >
-                        <FileDown className="h-4 w-4" />
-                        <span>View Downloads ({surveyFiles.length})</span>
-                      </button>
-                    )}
-                    {surveySummary && (
-                      <button
-                        onClick={() => {
-                          fetchSurveySummary(selectedSurvey.id);
-                        }}
-                        className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 flex items-center space-x-2 transition-colors"
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                        <span>Refresh Summary</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
               </div>
             )}
 
