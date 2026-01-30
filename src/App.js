@@ -25,12 +25,12 @@ axios.defaults.withCredentials = true;
 // Add interceptor to include auth token in headers (temporary workaround for session issues)
 axios.interceptors.request.use(
   (config) => {
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('authToken');
     if (authToken) {
       config.headers['X-Auth-Token'] = authToken;
     }
     // Also include admin token for admin routes
-    const adminToken = localStorage.getItem('admin_token');
+    const adminToken = localStorage.getItem('adminToken');
     if (adminToken) {
       config.headers['X-Admin-Token'] = adminToken;
     }
@@ -267,9 +267,9 @@ function App() {
       console.error('Error during logout:', error);
     } finally {
       // Clear localStorage auth token
-      localStorage.removeItem('auth_token');
+      localStorage.removeItem('authToken');
       localStorage.removeItem('auth_method');
-      localStorage.removeItem('admin_token');
+      localStorage.removeItem('adminToken');
       setIsAuthenticated(false);
       setIsAdminAuthenticated(false);
       setAdminMode(null);
