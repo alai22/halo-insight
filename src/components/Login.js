@@ -1,9 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
+// Password login is temporarily available until end of February 2026
+const PASSWORD_LOGIN_EXPIRY = new Date('2026-03-01T00:00:00Z');
+
 function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
   const [error, setError] = useState('');
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  
+  // Check if password login is still available (expires end of Feb 2026)
+  const isPasswordLoginAvailable = new Date() < PASSWORD_LOGIN_EXPIRY;
 
   // Check if Google OAuth is enabled
   useEffect(() => {
@@ -51,6 +60,45 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
     window.location.href = '/api/auth/google/login';
   };
 
+  const handlePasswordLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setIsLoading(true);
+
+    try {
+      const endpoint = requireAdmin ? '/api/auth/admin-login' : '/api/auth/password-login';
+      const response = await axios.post(endpoint, { password });
+
+      if (response.data.success) {
+        // Store auth token if session wasn't available
+        if (response.data.auth_token) {
+          localStorage.setItem('authToken', response.data.auth_token);
+        }
+        if (response.data.admin_token) {
+          localStorage.setItem('adminToken', response.data.admin_token);
+        }
+        
+        // Trigger appropriate login callback
+        if (requireAdmin && onAdminLogin) {
+          onAdminLogin();
+        } else {
+          onLogin();
+        }
+      } else {
+        setError(response.data.error || 'Login failed');
+      }
+    } catch (error) {
+      console.error('Password login error:', error);
+      if (error.response?.data?.error) {
+        setError(error.response.data.error);
+      } else {
+        setError('Login failed. Please try again.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-yellow-300 via-yellow-400 to-yellow-500 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
@@ -75,13 +123,13 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
         {requireAdmin && (
           <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
             <p className="text-orange-600 font-semibold">Admin Access Required</p>
-            <p>Sign in with your admin Google account to access admin tools.</p>
+            <p>Sign in with your admin Google account or use admin password.</p>
           </div>
         )}
         
-        {/* Google SSO Button - only authentication method */}
-        {googleEnabled ? (
-          <div className="mb-6">
+        {/* Google SSO Button */}
+        {googleEnabled && (
+          <div className="mb-4">
             <button
               onClick={handleGoogleLogin}
               className="w-full bg-white border-2 border-gray-300 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-50 transition-colors flex items-center justify-center gap-3 shadow-sm"
@@ -95,10 +143,71 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
               Sign in with Google
             </button>
           </div>
-        ) : (
+        )}
+
+        {/* Divider - show when both options available */}
+        {googleEnabled && isPasswordLoginAvailable && (
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-300"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-2 bg-white text-gray-500">or</span>
+            </div>
+          </div>
+        )}
+
+        {/* Password Login Option */}
+        {isPasswordLoginAvailable && (
+          <div className="mb-4">
+            {!showPasswordLogin ? (
+              <button
+                onClick={() => setShowPasswordLogin(true)}
+                className="w-full text-gray-600 py-2 text-sm hover:text-gray-800 transition-colors"
+              >
+                Use password instead
+              </button>
+            ) : (
+              <form onSubmit={handlePasswordLogin} className="space-y-3">
+                <div>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={requireAdmin ? "Admin password" : "Password"}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={isLoading}
+                    autoFocus
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isLoading || !password}
+                  className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? 'Signing in...' : 'Sign in with Password'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordLogin(false);
+                    setPassword('');
+                    setError('');
+                  }}
+                  className="w-full text-gray-500 py-1 text-sm hover:text-gray-700 transition-colors"
+                >
+                  Back to Google sign in
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* Show message if neither option is available */}
+        {!googleEnabled && !isPasswordLoginAvailable && (
           <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
             <p className="text-yellow-800 text-sm text-center">
-              Google SSO is not configured. Please contact your administrator.
+              No authentication methods available. Please contact your administrator.
             </p>
           </div>
         )}
@@ -110,7 +219,7 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
         )}
         
         <p className="text-xs text-gray-500 text-center mt-6">
-          Secured with Google SSO
+          {googleEnabled ? 'Secured with Google SSO' : 'Halo Insight'}
         </p>
       </div>
     </div>

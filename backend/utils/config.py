@@ -141,9 +141,10 @@ class Config:
     
     # Authentication Configuration
     # Password for password-based login (stored securely on backend)
+    # Temporarily re-enabled as alternative to Google SSO (available until end of Feb 2026)
     AUTH_PASSWORD: str = os.getenv('AUTH_PASSWORD', 'gladly2024')
     # Admin password for admin tools (separate from regular auth)
-    # DEPRECATED: Use ADMIN_EMAIL with Google SSO instead
+    # Temporarily re-enabled as alternative to Google SSO (available until end of Feb 2026)
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     # Admin email(s) for Google SSO admin access (comma-separated for multiple admins)
     ADMIN_EMAIL: Optional[str] = os.getenv('ADMIN_EMAIL', '')
