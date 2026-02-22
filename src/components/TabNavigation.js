@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Wrench, List } from 'lucide-react';
+import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Wrench, List, Bug } from 'lucide-react';
 
 const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
   const [, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => {
     // Determine active tab based on current mode
+    if (currentMode === 'bug-triage') {
+      return 'bug-triage';
+    }
     if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       return 'gladly';
     } else if (['churn-trends', 'survicate'].includes(currentMode)) {
@@ -21,7 +24,9 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
 
   // Update active tab when currentMode or adminMode changes externally
   useEffect(() => {
-    if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
+    if (currentMode === 'bug-triage') {
+      setActiveTab('bug-triage');
+    } else if (['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
       setActiveTab('gladly');
     } else if (['churn-trends', 'survicate'].includes(currentMode)) {
       setActiveTab('churn');
@@ -167,10 +172,27 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
         >
           Tools
         </button>
+        <button
+          onClick={() => {
+            setActiveTab('bug-triage');
+            if (currentMode !== 'bug-triage') {
+              setCurrentMode('bug-triage');
+              setSearchParams({ mode: 'bug-triage' });
+            }
+          }}
+          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+            activeTab === 'bug-triage'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          <Bug className="h-4 w-4" />
+          Bug Triage
+        </button>
       </div>
 
       {/* Sub-options for active tab */}
-      {activeTab !== 'tools' && activeTab !== 'surveys' && (
+      {activeTab !== 'tools' && activeTab !== 'surveys' && activeTab !== 'bug-triage' && (
         <div className="flex space-x-2">
           {(activeTab === 'gladly' ? gladlyModes : churnModes).map((mode) => {
             const Icon = mode.icon;

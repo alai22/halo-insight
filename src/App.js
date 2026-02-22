@@ -14,6 +14,7 @@ import ApiDataManager from './components/ApiDataManager';
 import SurveyManager from './components/SurveyManager';
 import Tools from './components/Tools';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
+import BugTriageCopilot from './components/BugTriageCopilot';
 import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
@@ -733,9 +734,11 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || currentMode === 'bug-triage' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {/* Show actual tool components when active */}
-          {currentMode === 'api-data-manager' ? (
+          {currentMode === 'bug-triage' ? (
+            <BugTriageCopilot />
+          ) : currentMode === 'api-data-manager' ? (
             <ApiDataManager />
           ) : currentMode === 'survey-manager' ? (
             <SurveyManager />
@@ -772,7 +775,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && currentMode !== 'bug-triage' && (
           <div className="bg-white border-t border-gray-200 p-6">
             {/* Clear Conversation Button for Survicate Mode */}
             {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (
