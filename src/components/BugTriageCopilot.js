@@ -4,6 +4,7 @@ import {
   Bug,
   CheckCircle,
   ChevronDown,
+  ChevronRight,
   ClipboardList,
   Filter,
   ArrowUpDown,
@@ -43,6 +44,7 @@ const saveDecisions = (decisions) => {
 const BugTriageCopilot = () => {
   const [issues] = useState(() => mockBugIssues);
   const [selectedIssue, setSelectedIssue] = useState(null);
+  const [miniDetailIssue, setMiniDetailIssue] = useState(null);
   const [decisions, setDecisionsState] = useState(loadDecisions);
 
   const setDecisions = (next) => {
@@ -137,13 +139,13 @@ const BugTriageCopilot = () => {
             <ClipboardList className="h-4 w-4" />
             {clusterLabel} ({items.length})
           </h3>
-          <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {items.map((issue) => (
-              <BacklogRow
+              <BacklogCard
                 key={issue.id}
                 issue={issue}
                 triaged={isTriaged(issue.id)}
-                onClick={() => setSelectedIssue(issue)}
+                onClick={() => setMiniDetailIssue(issue)}
               />
             ))}
           </div>
@@ -151,13 +153,13 @@ const BugTriageCopilot = () => {
       ))}
     </div>
   ) : (
-    <div className="space-y-2">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       {filteredAndSorted.map((issue) => (
-        <BacklogRow
+        <BacklogCard
           key={issue.id}
           issue={issue}
           triaged={isTriaged(issue.id)}
-          onClick={() => setSelectedIssue(issue)}
+          onClick={() => setMiniDetailIssue(issue)}
         />
       ))}
     </div>
@@ -368,9 +370,72 @@ const BugTriageCopilot = () => {
           listContent
         )}
       </div>
+
+      {/* Mini detail drawer */}
+      {miniDetailIssue && (
+        <MiniDetailDrawer
+          issue={miniDetailIssue}
+          decisions={decisions}
+          setDecisions={setDecisions}
+          COMPONENTS={COMPONENTS}
+          onClose={() => setMiniDetailIssue(null)}
+          onFullEdit={() => {
+            setSelectedIssue(miniDetailIssue);
+            setMiniDetailIssue(null);
+          }}
+        />
+      )}
     </div>
   );
 };
+
+function BacklogCard({ issue, triaged, onClick }) {
+  const rec = issue.aiRecommendation || {};
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => e.key === 'Enter' && onClick()}
+      className="p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all cursor-pointer flex flex-col h-full text-left"
+    >
+      <div className="flex items-center gap-2 flex-wrap mb-1">
+        <span className="font-mono text-sm text-gray-500">{issue.key}</span>
+        {triaged && (
+          <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center gap-1">
+            <CheckCircle className="h-3 w-3" /> Triaged
+          </span>
+        )}
+        {issue.gaBlocker && (
+          <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded-full">GA blocker</span>
+        )}
+        {issue.needsMoreInfo && (
+          <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
+        )}
+      </div>
+      <div className="font-medium text-gray-900 line-clamp-2 mb-2">{issue.title}</div>
+      <div className="text-sm text-gray-500 flex flex-wrap gap-x-3 gap-y-1 mb-2">
+        <span>{issue.component}</span>
+        <span>{issue.platform}</span>
+        {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
+        <span>Rank {issue.rank ?? '—'}</span>
+      </div>
+      {(rec.category != null || rec.component != null || rec.priority != null) && (
+        <div className="mt-auto pt-2 border-t border-gray-100">
+          <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>
+          <div className="text-sm text-gray-700 flex flex-wrap gap-x-2 gap-y-0">
+            {rec.category != null && <span className="text-blue-700">Category: {rec.category}</span>}
+            {rec.component != null && <span className="text-blue-700">Component: {rec.component}</span>}
+            {rec.priority != null && <span className="text-gray-600">Priority: {rec.priority}</span>}
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-gray-400 mt-2">
+        {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
+      </div>
+    </div>
+  );
+}
 
 function BacklogRow({ issue, triaged, onClick }) {
   return (
@@ -408,6 +473,225 @@ function BacklogRow({ issue, triaged, onClick }) {
         {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
       </div>
     </div>
+  );
+}
+
+function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit }) {
+  const decision = decisions[issue.id] || {};
+  const rec = issue.aiRecommendation || {};
+  const getValue = (field) => {
+    if (decision[field] !== undefined) return decision[field];
+    if (field === 'category') return rec.category;
+    if (field === 'component') return rec.component;
+    return undefined;
+  };
+  const [showOverride, setShowOverride] = useState({});
+  const [overrideReasons, setOverrideReasons] = useState({});
+  const [overrideValue, setOverrideValue] = useState({ category: '', component: '' });
+
+  const recordAccept = (field, value) => {
+    setDecisions((prev) => ({
+      ...prev,
+      [issue.id]: {
+        ...prev[issue.id],
+        [field]: value,
+        triagedAt: new Date().toISOString(),
+      },
+    }));
+    setShowOverride((s) => ({ ...s, [field]: false }));
+  };
+
+  const recordOverride = (field, value, reason) => {
+    setDecisions((prev) => ({
+      ...prev,
+      [issue.id]: {
+        ...prev[issue.id],
+        [field]: value,
+        reasonForOverride: reason || prev[issue.id]?.reasonForOverride,
+        triagedAt: new Date().toISOString(),
+      },
+    }));
+    setOverrideReasons((r) => ({ ...r, [field]: '' }));
+    setShowOverride((s) => ({ ...s, [field]: false }));
+  };
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/30 z-40"
+        role="button"
+        tabIndex={0}
+        onClick={onClose}
+        onKeyDown={(e) => e.key === 'Escape' && onClose()}
+        aria-label="Close drawer"
+      />
+      <div className="fixed top-0 right-0 bottom-0 w-full max-w-md bg-white shadow-xl z-50 flex flex-col border-l border-gray-200 overflow-hidden">
+        <div className="p-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+          <h2 className="text-lg font-semibold text-gray-900">Quick triage</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div>
+            <p className="font-mono text-sm text-gray-500">{issue.key}</p>
+            <h3 className="font-medium text-gray-900 mt-1">{issue.title}</h3>
+            {issue.description && (
+              <p className="text-sm text-gray-600 mt-2 line-clamp-3">{issue.description}</p>
+            )}
+            <div className="flex flex-wrap gap-2 mt-2">
+              <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.platform}</span>
+              <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.component}</span>
+              {issue.clusterLabel && (
+                <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">{issue.clusterLabel}</span>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 pt-4">
+            <h4 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-1">
+              <AlertCircle className="h-4 w-4 text-blue-600" />
+              Recommended
+            </h4>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-gray-600 w-20">Category</span>
+                <span className="text-sm text-gray-900">{getValue('category') ?? rec.category ?? '—'}</span>
+                {getValue('category') === undefined && rec.category != null && (
+                  <>
+                    {!showOverride.category ? (
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => recordAccept('category', rec.category)}
+                          className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded hover:bg-green-200"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowOverride((s) => ({ ...s, category: true }))}
+                          className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                        >
+                          Override
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="Category"
+                          value={overrideValue.category}
+                          onChange={(e) => setOverrideValue((v) => ({ ...v, category: e.target.value }))}
+                          className="px-2 py-1 text-sm border border-gray-300 rounded w-28"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Reason"
+                          value={overrideReasons.category || ''}
+                          onChange={(e) => setOverrideReasons((r) => ({ ...r, category: e.target.value }))}
+                          className="px-2 py-1 text-sm border border-gray-300 rounded w-24"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => recordOverride('category', overrideValue.category, overrideReasons.category)}
+                          className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowOverride((s) => ({ ...s, category: false }))}
+                          className="p-1 text-gray-500 hover:text-gray-700"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-gray-600 w-20">Component</span>
+                <span className="text-sm text-gray-900">{getValue('component') ?? rec.component ?? '—'}</span>
+                {getValue('component') === undefined && rec.component != null && (
+                  <>
+                    {!showOverride.component ? (
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => recordAccept('component', rec.component)}
+                          className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded hover:bg-green-200"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowOverride((s) => ({ ...s, component: true }))}
+                          className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                        >
+                          Override
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={overrideValue.component}
+                          onChange={(e) => setOverrideValue((v) => ({ ...v, component: e.target.value }))}
+                          className="px-2 py-1 text-sm border border-gray-300 rounded"
+                        >
+                          <option value="">Select...</option>
+                          {COMPONENTS.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          placeholder="Reason"
+                          value={overrideReasons.component || ''}
+                          onChange={(e) => setOverrideReasons((r) => ({ ...r, component: e.target.value }))}
+                          className="px-2 py-1 text-sm border border-gray-300 rounded w-24"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => recordOverride('component', overrideValue.component, overrideReasons.component)}
+                          className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowOverride((s) => ({ ...s, component: false }))}
+                          className="p-1 text-gray-500 hover:text-gray-700"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={onFullEdit}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+            >
+              <ChevronRight className="h-4 w-4" />
+              Full edit
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
