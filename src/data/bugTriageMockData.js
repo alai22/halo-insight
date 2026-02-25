@@ -10,6 +10,7 @@ export const CONFIDENCE_LEVELS = ['Low', 'Med', 'High'];
 
 /**
  * @typedef {Object} AIRecommendation
+ * @property {string} [shortSummary] - AI-generated one-line summary for backlog display
  * @property {string} category
  * @property {string} component
  * @property {string} priority
@@ -78,6 +79,7 @@ export const mockBugIssues = [
     gaBlocker: true,
     rank: 92,
     aiRecommendation: {
+      shortSummary: 'Crash on iOS when completing 2FA login.',
       category: 'Bug',
       component: 'Auth',
       priority: 'P0',
@@ -108,6 +110,7 @@ export const mockBugIssues = [
     gaBlocker: true,
     rank: 88,
     aiRecommendation: {
+      shortSummary: '2FA verification hangs then fails on Android with no error.',
       category: 'Bug',
       component: 'Auth',
       priority: 'P0',
@@ -142,6 +145,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 85,
     aiRecommendation: {
+      shortSummary: 'Subscription renewal charge fails for valid cards.',
       category: 'Bug',
       component: 'Payments',
       priority: 'P0',
@@ -171,6 +175,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 52,
     aiRecommendation: {
+      shortSummary: 'Onboarding step 2 layout broken on small phones.',
       category: 'Bug',
       component: 'Onboarding',
       priority: 'P2',
@@ -197,6 +202,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 78,
     aiRecommendation: {
+      shortSummary: 'Background sync stops after 1000 items with no error.',
       category: 'Bug',
       component: 'Sync',
       priority: 'P1',
@@ -227,6 +233,7 @@ export const mockBugIssues = [
     gaBlocker: true,
     rank: 90,
     aiRecommendation: {
+      shortSummary: 'Android 14: push notifications not received after app restart.',
       category: 'Bug',
       component: 'Notifications',
       priority: 'P0',
@@ -254,6 +261,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 55,
     aiRecommendation: {
+      shortSummary: 'Search returns no results for queries with & or quote.',
       category: 'Bug',
       component: 'Search',
       priority: 'P2',
@@ -279,6 +287,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 70,
     aiRecommendation: {
+      shortSummary: 'Bulk export API returns 500 after ~30s for large payloads.',
       category: 'Bug',
       component: 'API',
       priority: 'P1',
@@ -307,6 +316,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 45,
     aiRecommendation: {
+      shortSummary: 'Dark mode secondary text fails WCAG contrast.',
       category: 'Bug',
       component: 'UI',
       priority: 'P2',
@@ -332,6 +342,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 38,
     aiRecommendation: {
+      shortSummary: 'Same analytics event fires 2–3 times per user action.',
       category: 'Bug',
       component: 'API',
       priority: 'P3',
@@ -359,6 +370,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 28,
     aiRecommendation: {
+      shortSummary: 'Brief white flash on app launch before theme applied.',
       category: 'Bug',
       component: 'UI',
       priority: 'P3',
@@ -383,6 +395,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 72,
     aiRecommendation: {
+      shortSummary: 'Webhook retries cause 429 and block other API traffic.',
       category: 'Bug',
       component: 'API',
       priority: 'P1',
@@ -409,6 +422,7 @@ export const mockBugIssues = [
     gaBlocker: true,
     rank: 86,
     aiRecommendation: {
+      shortSummary: 'Password reset email not received (Gmail).',
       category: 'Bug',
       component: 'Auth',
       priority: 'P0',
@@ -436,6 +450,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 75,
     aiRecommendation: {
+      shortSummary: 'Restore purchases button does nothing on first tap (iOS).',
       category: 'Bug',
       component: 'Payments',
       priority: 'P1',
@@ -460,6 +475,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 68,
     aiRecommendation: {
+      shortSummary: 'Offline queue not sent after reconnect.',
       category: 'Bug',
       component: 'Sync',
       priority: 'P1',
@@ -486,6 +502,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 58,
     aiRecommendation: {
+      shortSummary: 'Notification deep link opens wrong screen.',
       category: 'Bug',
       component: 'Notifications',
       priority: 'P2',
@@ -512,6 +529,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 48,
     aiRecommendation: {
+      shortSummary: 'Changing sort order clears selected filters.',
       category: 'Bug',
       component: 'Search',
       priority: 'P2',
@@ -536,6 +554,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 62,
     aiRecommendation: {
+      shortSummary: 'Sandbox OAuth rejects valid redirect URIs.',
       category: 'Bug',
       component: 'Auth',
       priority: 'P2',
@@ -584,6 +603,7 @@ export const mockBugIssues = [
     gaBlocker: true,
     rank: 84,
     aiRecommendation: {
+      shortSummary: '/v2/me returns 403 for token with user:read scope.',
       category: 'Bug',
       component: 'API',
       priority: 'P0',
@@ -631,6 +651,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 80,
     aiRecommendation: {
+      shortSummary: 'Conflict resolution overwrites local changes without warning.',
       category: 'Bug',
       component: 'Sync',
       priority: 'P1',
@@ -654,6 +675,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 74,
     aiRecommendation: {
+      shortSummary: 'iOS never shows notification permission dialog on first launch.',
       category: 'Bug',
       component: 'Notifications',
       priority: 'P1',
@@ -703,6 +725,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 54,
     aiRecommendation: {
+      shortSummary: 'App crashes when rotating device on Settings > Account.',
       category: 'Bug',
       component: 'UI',
       priority: 'P2',
@@ -753,6 +776,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 76,
     aiRecommendation: {
+      shortSummary: 'After logout, API still accepts old token for a short window.',
       category: 'Bug',
       component: 'Auth',
       priority: 'P1',
@@ -799,6 +823,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 60,
     aiRecommendation: {
+      shortSummary: 'Webhook signature verification fails when payload has trailing newline.',
       category: 'Bug',
       component: 'API',
       priority: 'P2',
@@ -824,6 +849,7 @@ export const mockBugIssues = [
     gaBlocker: false,
     rank: 46,
     aiRecommendation: {
+      shortSummary: 'Onboarding video stays loading on 3G.',
       category: 'Bug',
       component: 'Onboarding',
       priority: 'P2',

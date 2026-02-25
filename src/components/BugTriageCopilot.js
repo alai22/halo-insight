@@ -65,6 +65,7 @@ const BugTriageCopilot = () => {
   const [sortDirection, setSortDirection] = useState('desc');
   const [groupByCluster, setGroupByCluster] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [viewMode, setViewMode] = useState('detailed'); // 'compact' | 'detailed'
 
   const clusters = useMemo(() => {
     const set = new Set();
@@ -145,6 +146,7 @@ const BugTriageCopilot = () => {
                 key={issue.id}
                 issue={issue}
                 triaged={isTriaged(issue.id)}
+                viewMode={viewMode}
                 onClick={() => setMiniDetailIssue(issue)}
               />
             ))}
@@ -159,6 +161,7 @@ const BugTriageCopilot = () => {
           key={issue.id}
           issue={issue}
           triaged={isTriaged(issue.id)}
+          viewMode={viewMode}
           onClick={() => setMiniDetailIssue(issue)}
         />
       ))}
@@ -270,7 +273,7 @@ const BugTriageCopilot = () => {
               {sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
             </button>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer ml-auto">
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
             <input
               type="checkbox"
               checked={groupByCluster}
@@ -279,6 +282,24 @@ const BugTriageCopilot = () => {
             />
             Group by cluster
           </label>
+          <div className="h-5 border-l border-gray-300" />
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600">View:</span>
+            <button
+              type="button"
+              onClick={() => setViewMode('compact')}
+              className={`px-2 py-1 text-sm rounded-md ${viewMode === 'compact' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
+            >
+              Compact
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('detailed')}
+              className={`px-2 py-1 text-sm rounded-md ${viewMode === 'detailed' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
+            >
+              Detailed
+            </button>
+          </div>
         </div>
       </div>
 
@@ -389,8 +410,12 @@ const BugTriageCopilot = () => {
   );
 };
 
-function BacklogCard({ issue, triaged, onClick }) {
+function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick }) {
   const rec = issue.aiRecommendation || {};
+  const primaryText = rec.shortSummary ?? issue.title;
+  const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
+  const isCompact = viewMode === 'compact';
+
   return (
     <div
       role="button"
@@ -413,26 +438,45 @@ function BacklogCard({ issue, triaged, onClick }) {
           <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
         )}
       </div>
-      <div className="font-medium text-gray-900 line-clamp-2 mb-2">{issue.title}</div>
-      <div className="text-sm text-gray-500 flex flex-wrap gap-x-3 gap-y-1 mb-2">
-        <span>{issue.component}</span>
-        <span>{issue.platform}</span>
-        {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
-        <span>Rank {issue.rank ?? '—'}</span>
-      </div>
-      {(rec.category != null || rec.component != null || rec.priority != null) && (
-        <div className="mt-auto pt-2 border-t border-gray-100">
-          <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>
-          <div className="text-sm text-gray-700 flex flex-wrap gap-x-2 gap-y-0">
-            {rec.category != null && <span className="text-blue-700">Category: {rec.category}</span>}
-            {rec.component != null && <span className="text-blue-700">Component: {rec.component}</span>}
-            {rec.priority != null && <span className="text-gray-600">Priority: {rec.priority}</span>}
-          </div>
+      <div className="font-medium text-gray-900 line-clamp-2 mb-0.5">{primaryText}</div>
+      {showTitleSecondary && (
+        <div className="text-xs text-gray-500 line-clamp-1 mb-2" title={issue.title}>
+          {issue.title}
         </div>
       )}
-      <div className="text-xs text-gray-400 mt-2">
-        {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
-      </div>
+      {!showTitleSecondary && !isCompact && <div className="mb-2" />}
+      {isCompact ? (
+        <div className="mt-auto pt-1 flex items-center gap-2">
+          {(rec.component != null || rec.category != null) && (
+            <span className="text-xs text-blue-700">
+              {[rec.category, rec.component].filter(Boolean).join(' · ')}
+            </span>
+          )}
+          <span className="text-xs text-gray-400">Rank {issue.rank ?? '—'}</span>
+        </div>
+      ) : (
+        <>
+          <div className="text-sm text-gray-500 flex flex-wrap gap-x-3 gap-y-1 mb-2">
+            <span>{issue.component}</span>
+            <span>{issue.platform}</span>
+            {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
+            <span>Rank {issue.rank ?? '—'}</span>
+          </div>
+          {(rec.category != null || rec.component != null || rec.priority != null) && (
+            <div className="mt-auto pt-2 border-t border-gray-100">
+              <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>
+              <div className="text-sm text-gray-700 flex flex-wrap gap-x-2 gap-y-0">
+                {rec.category != null && <span className="text-blue-700">Category: {rec.category}</span>}
+                {rec.component != null && <span className="text-blue-700">Component: {rec.component}</span>}
+                {rec.priority != null && <span className="text-gray-600">Priority: {rec.priority}</span>}
+              </div>
+            </div>
+          )}
+          <div className="text-xs text-gray-400 mt-2">
+            {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -540,7 +584,14 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div>
             <p className="font-mono text-sm text-gray-500">{issue.key}</p>
-            <h3 className="font-medium text-gray-900 mt-1">{issue.title}</h3>
+            {rec.shortSummary ? (
+              <>
+                <h3 className="font-medium text-gray-900 mt-1">{rec.shortSummary}</h3>
+                <p className="text-xs text-gray-500 mt-0.5" title={issue.title}>{issue.title}</p>
+              </>
+            ) : (
+              <h3 className="font-medium text-gray-900 mt-1">{issue.title}</h3>
+            )}
             {issue.description && (
               <p className="text-sm text-gray-600 mt-2 line-clamp-3">{issue.description}</p>
             )}
