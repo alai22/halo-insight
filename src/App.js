@@ -15,6 +15,7 @@ import SurveyManager from './components/SurveyManager';
 import Tools from './components/Tools';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import BugTriageCopilot from './components/BugTriageCopilot';
+import JiraStatusView from './components/JiraStatusView';
 import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
@@ -314,7 +315,8 @@ function App() {
       const needsAdminAuth = adminMode === 'claude' || 
                              adminMode === 'download' || 
                              currentMode === 'tools' ||
-                             currentMode === 'api-data-manager';
+                             currentMode === 'api-data-manager' ||
+                             currentMode === 'jira-status';
       
       if (needsAdminAuth) {
         const checkAdminAuth = async () => {
@@ -345,7 +347,7 @@ function App() {
           }
         };
         checkAdminAuth();
-      } else if (!adminMode && currentMode !== 'tools' && currentMode !== 'api-data-manager') {
+      } else if (!adminMode && currentMode !== 'tools' && currentMode !== 'api-data-manager' && currentMode !== 'jira-status') {
         // Not in admin mode or on admin pages, reset admin auth state
         setIsAdminAuthenticated(false);
       }
@@ -358,7 +360,7 @@ function App() {
   }
 
   // If trying to access admin tools or Tools page but not admin authenticated, show admin login
-  if ((adminMode === 'claude' || adminMode === 'download' || currentMode === 'tools' || currentMode === 'api-data-manager') && !isAdminAuthenticated) {
+  if ((adminMode === 'claude' || adminMode === 'download' || currentMode === 'tools' || currentMode === 'api-data-manager' || currentMode === 'jira-status') && !isAdminAuthenticated) {
     return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} requireAdmin={true} />;
   }
 
@@ -734,10 +736,12 @@ function App() {
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || currentMode === 'bug-triage' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || currentMode === 'bug-triage' || currentMode === 'jira-status' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {/* Show actual tool components when active */}
           {currentMode === 'bug-triage' ? (
             <BugTriageCopilot />
+          ) : currentMode === 'jira-status' ? (
+            <JiraStatusView setCurrentMode={setCurrentMode} />
           ) : currentMode === 'api-data-manager' ? (
             <ApiDataManager />
           ) : currentMode === 'survey-manager' ? (
@@ -775,7 +779,7 @@ function App() {
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && currentMode !== 'bug-triage' && (
+        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && currentMode !== 'bug-triage' && currentMode !== 'jira-status' && (
           <div className="bg-white border-t border-gray-200 p-6">
             {/* Clear Conversation Button for Survicate Mode */}
             {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (

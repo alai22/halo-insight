@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Database, Bot, TrendingUp, Wrench, Video, Activity } from 'lucide-react';
+import { Download, Database, Bot, TrendingUp, Wrench, Video, Activity, ExternalLink } from 'lucide-react';
 
 const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const [activeSection, setActiveSection] = useState(() => {
@@ -74,6 +74,19 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
         setCurrentMode('analytics');
         setAdminMode(null);
       }
+    },
+    {
+      id: 'jira-status',
+      name: 'Jira connection',
+      description: 'Check if Jira (HALO) issues can be fetched for Bug Triage',
+      icon: ExternalLink,
+      color: 'text-amber-600',
+      bgColor: 'bg-amber-50',
+      borderColor: 'border-amber-200',
+      action: () => {
+        setCurrentMode('jira-status');
+        setAdminMode(null);
+      }
     }
   ];
 
@@ -119,6 +132,9 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
     }
     if (tool.id === 'analytics') {
       return currentMode === 'analytics';
+    }
+    if (tool.id === 'jira-status') {
+      return currentMode === 'jira-status';
     }
     if (tool.id === 'claude') {
       return adminMode === 'claude';

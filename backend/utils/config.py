@@ -89,6 +89,16 @@ class Config:
     ZOOM_CLIENT_ID: Optional[str] = os.getenv('ZOOM_CLIENT_ID')
     ZOOM_CLIENT_SECRET: Optional[str] = os.getenv('ZOOM_CLIENT_SECRET')
     
+    # Jira API Configuration (Bug Triage Copilot)
+    JIRA_BASE_URL: str = os.getenv('JIRA_BASE_URL', 'https://halocollar.atlassian.net').rstrip('/')
+    JIRA_EMAIL: Optional[str] = os.getenv('JIRA_EMAIL')
+    JIRA_API_TOKEN: Optional[str] = os.getenv('JIRA_API_TOKEN')
+    JIRA_CLIENT_ID: Optional[str] = os.getenv('JIRA_CLIENT_ID')
+    JIRA_CLIENT_SECRET: Optional[str] = os.getenv('JIRA_CLIENT_SECRET')
+    JIRA_OAUTH_TOKENS_FILE: str = os.getenv('JIRA_OAUTH_TOKENS_FILE', 'data/jira_oauth_tokens.json')
+    # App base URL for OAuth callback (e.g. https://insight.halocollar.com). Required for Jira OAuth.
+    APP_BASE_URL: Optional[str] = os.getenv('APP_BASE_URL')
+    
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')
     S3_BUCKET_NAME: Optional[str] = os.getenv('S3_BUCKET_NAME')

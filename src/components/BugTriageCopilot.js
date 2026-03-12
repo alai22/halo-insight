@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Copy,
   X,
+  RefreshCw,
 } from 'lucide-react';
 import {
   mockBugIssues,
@@ -42,10 +43,57 @@ const saveDecisions = (decisions) => {
 };
 
 const BugTriageCopilot = () => {
-  const [issues] = useState(() => mockBugIssues);
+  const [dataSource, setDataSource] = useState('mock'); // 'mock' | 'jira'
+  const [issues, setIssues] = useState(() => mockBugIssues);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [miniDetailIssue, setMiniDetailIssue] = useState(null);
   const [decisions, setDecisionsState] = useState(loadDecisions);
+  const [jiraStatus, setJiraStatus] = useState({ configured: false });
+  const [jiraLoading, setJiraLoading] = useState(false);
+  const [jiraError, setJiraError] = useState(null);
+
+  // Check Jira config on mount
+  useEffect(() => {
+    fetch('/api/jira/status')
+      .then((r) => r.json())
+      .then((data) => setJiraStatus({ configured: data.configured ?? false, base_url: data.base_url }))
+      .catch(() => setJiraStatus({ configured: false }));
+  }, []);
+
+  const fetchJiraIssues = () => {
+    if (!jiraStatus.configured) return;
+    setJiraError(null);
+    setJiraLoading(true);
+    fetch('/api/jira/issues?project=HALO&max_results=100')
+      .then((res) => res.json().then((data) => ({ status: res.status, data })))
+      .then(({ status, data }) => {
+        if (status !== 200 || data.status !== 'success') {
+          setJiraError(data.message || 'Failed to load issues from Jira');
+          setIssues([]);
+          return;
+        }
+        setIssues(Array.isArray(data.data) ? data.data : []);
+      })
+      .catch((err) => {
+        setJiraError(err.message || 'Failed to fetch Jira issues');
+        setIssues([]);
+      })
+      .finally(() => setJiraLoading(false));
+  };
+
+  // When switching to Jira, fetch issues
+  useEffect(() => {
+    if (dataSource !== 'jira' || !jiraStatus.configured) return;
+    fetchJiraIssues();
+  }, [dataSource, jiraStatus.configured]);
+
+  // When switching to Mock, restore mock data
+  useEffect(() => {
+    if (dataSource === 'mock') {
+      setIssues(mockBugIssues);
+      setJiraError(null);
+    }
+  }, [dataSource]);
 
   const setDecisions = (next) => {
     setDecisionsState((prev) => {
@@ -195,7 +243,57 @@ const BugTriageCopilot = () => {
           <Bug className="h-7 w-7 text-amber-600" />
           Bug Triage Copilot
         </h1>
-        <p className="text-gray-600 mt-1">Review and triage bugs with AI suggestions (mock data)</p>
+        <p className="text-gray-600 mt-1">
+          Review and triage bugs with AI suggestions
+          {dataSource === 'jira' ? ' (Jira HALO)' : ' (mock data)'}
+        </p>
+      </div>
+
+      {/* Data source: Mock | Jira */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-gray-700">Data source</span>
+          <button
+            type="button"
+            onClick={() => setDataSource('mock')}
+            className={`px-3 py-1.5 text-sm rounded-md ${dataSource === 'mock' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            Mock
+          </button>
+          <button
+            type="button"
+            onClick={() => jiraStatus.configured && setDataSource('jira')}
+            disabled={!jiraStatus.configured}
+            className={`px-3 py-1.5 text-sm rounded-md ${dataSource === 'jira' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'} ${!jiraStatus.configured ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={!jiraStatus.configured ? 'Set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in .env' : 'Load issues from Jira (HALO)'}
+          >
+            Jira (HALO)
+          </button>
+          {dataSource === 'jira' && jiraLoading && (
+            <span className="text-sm text-gray-500">Loading…</span>
+          )}
+          {dataSource === 'jira' && !jiraLoading && !jiraError && issues.length > 0 && (
+            <span className="text-sm text-green-700">{issues.length} issues loaded from Jira</span>
+          )}
+          {dataSource === 'jira' && jiraError && (
+            <span className="text-sm text-red-600">{jiraError}</span>
+          )}
+          {dataSource === 'jira' && jiraStatus.configured && (
+            <button
+              type="button"
+              onClick={fetchJiraIssues}
+              disabled={jiraLoading}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+              title="Refresh issues from Jira"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          )}
+          {!jiraStatus.configured && (
+            <span className="text-xs text-gray-500">Jira: configure .env to enable</span>
+          )}
+        </div>
       </div>
 
       {/* Filters & sort */}

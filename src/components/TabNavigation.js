@@ -15,7 +15,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       return 'churn';
     } else if (currentMode === 'survey-manager') {
       return 'surveys';
-    } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
+    } else if (['api-data-manager', 'tools', 'analytics', 'jira-status'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       return 'tools';
     }
     // Default to churn if mode doesn't match
@@ -32,7 +32,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
       setActiveTab('churn');
     } else if (currentMode === 'survey-manager') {
       setActiveTab('surveys');
-    } else if (['api-data-manager', 'tools', 'analytics'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
+    } else if (['api-data-manager', 'tools', 'analytics', 'jira-status'].includes(currentMode) || adminMode === 'download' || adminMode === 'claude') {
       setActiveTab('tools');
     } else {
       // Default to churn if mode doesn't match
