@@ -122,6 +122,70 @@ def _frontend_redirect(connected: str = None, error: str = None) -> str:
     return f"{base}{path}?{'&'.join(params)}"
 
 
+@jira_bp.route('/projects', methods=['GET'])
+def get_projects():
+    """
+    List projects visible to the configured Jira user (API token or OAuth).
+    Use this to verify access and see exact project keys (e.g. for Bug Triage).
+    """
+    if not _jira_configured():
+        return jsonify({
+            'status': 'error',
+            'message': 'Jira is not connected. Configure Basic auth or OAuth first.',
+        }), 503
+
+    try:
+        client = JiraClient()
+        projects = client.get_projects()
+        # Normalize to list of { id, key, name }
+        out = []
+        for p in projects:
+            out.append({
+                'id': p.get('id'),
+                'key': p.get('key'),
+                'name': p.get('name'),
+            })
+        return jsonify({
+            'status': 'success',
+            'data': out,
+            'count': len(out),
+        })
+    except Exception as e:
+        logger.exception("Jira projects fetch failed")
+        return jsonify({
+            'status': 'error',
+            'message': str(e) or 'Failed to fetch projects from Jira',
+        }), 500
+
+
+@jira_bp.route('/myself', methods=['GET'])
+def get_myself():
+    """Return current Jira user (validates auth)."""
+    if not _jira_configured():
+        return jsonify({
+            'status': 'error',
+            'message': 'Jira is not connected.',
+        }), 503
+
+    try:
+        client = JiraClient()
+        me = client.get_myself()
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'accountId': me.get('accountId'),
+                'displayName': me.get('displayName'),
+                'emailAddress': me.get('emailAddress'),
+            },
+        })
+    except Exception as e:
+        logger.exception("Jira myself fetch failed")
+        return jsonify({
+            'status': 'error',
+            'message': str(e) or 'Failed to get current user from Jira',
+        }), 500
+
+
 @jira_bp.route('/issues', methods=['GET'])
 def get_issues():
     """

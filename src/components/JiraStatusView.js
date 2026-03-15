@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { CheckCircle, XCircle, AlertCircle, RefreshCw, ExternalLink, Link2 } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, RefreshCw, ExternalLink, Link2, FolderOpen, User } from 'lucide-react';
 
 const JiraStatusView = ({ setCurrentMode }) => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -8,6 +8,10 @@ const JiraStatusView = ({ setCurrentMode }) => {
   const [loading, setLoading] = useState(false);
   const [fetchResult, setFetchResult] = useState(null); // { count, issues, error }
   const [fetching, setFetching] = useState(false);
+  const [projectsResult, setProjectsResult] = useState(null); // { projects, error } or null
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [myselfResult, setMyselfResult] = useState(null); // { displayName, emailAddress } or { error }
+  const [loadingMyself, setLoadingMyself] = useState(false);
   const [oauthMessage, setOauthMessage] = useState(null); // { type: 'success' | 'error', text }
 
   const fetchStatus = () => {
@@ -50,6 +54,39 @@ const JiraStatusView = ({ setCurrentMode }) => {
       setSearchParams({ mode: 'jira-status' }, { replace: true });
     }
   }, [searchParams, setSearchParams]);
+
+  const handleListProjects = () => {
+    setLoadingProjects(true);
+    setProjectsResult(null);
+    fetch('/api/jira/projects')
+      .then((res) => res.json().then((data) => ({ status: res.status, data })))
+      .then(({ status: code, data }) => {
+        if (code !== 200 || data.status !== 'success') {
+          setProjectsResult({ error: data.message || 'Failed to fetch projects' });
+          return;
+        }
+        const list = Array.isArray(data.data) ? data.data : [];
+        setProjectsResult({ projects: list });
+      })
+      .catch((err) => setProjectsResult({ error: err.message || 'Request failed' }))
+      .finally(() => setLoadingProjects(false));
+  };
+
+  const handleWhoAmI = () => {
+    setLoadingMyself(true);
+    setMyselfResult(null);
+    fetch('/api/jira/myself')
+      .then((res) => res.json().then((data) => ({ status: res.status, data })))
+      .then(({ status: code, data }) => {
+        if (code !== 200 || data.status !== 'success') {
+          setMyselfResult({ error: data.message || 'Failed to get current user' });
+          return;
+        }
+        setMyselfResult(data.data || {});
+      })
+      .catch((err) => setMyselfResult({ error: err.message || 'Request failed' }))
+      .finally(() => setLoadingMyself(false));
+  };
 
   const handleFetch = () => {
     setFetching(true);
@@ -151,6 +188,87 @@ const JiraStatusView = ({ setCurrentMode }) => {
                 </a>
               </p>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Who am I */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+          <User className="h-4 w-4" />
+          Current user
+        </h2>
+        <p className="text-sm text-gray-600 mb-3">
+          Verify which Jira user this API is using (same permissions as that user).
+        </p>
+        <button
+          type="button"
+          onClick={handleWhoAmI}
+          disabled={!status.configured || loadingMyself}
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <User className={`h-4 w-4 ${loadingMyself ? 'animate-pulse' : ''}`} />
+          {loadingMyself ? 'Checking…' : 'Who am I?'}
+        </button>
+        {myselfResult && (
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            {myselfResult.error ? (
+              <p className="text-sm text-red-700">{myselfResult.error}</p>
+            ) : (
+              <p className="text-sm text-gray-700">
+                <span className="font-medium">{myselfResult.displayName ?? '—'}</span>
+                {myselfResult.emailAddress && (
+                  <span className="text-gray-500 ml-2">({myselfResult.emailAddress})</span>
+                )}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Projects accessible to API */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+          <FolderOpen className="h-4 w-4" />
+          Projects accessible to this API
+        </h2>
+        <p className="text-sm text-gray-600 mb-3">
+          List projects the current user can see. Use the <strong>key</strong> (e.g. HALO) when fetching issues.
+        </p>
+        <button
+          type="button"
+          onClick={handleListProjects}
+          disabled={!status.configured || loadingProjects}
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <FolderOpen className={`h-4 w-4 ${loadingProjects ? 'animate-pulse' : ''}`} />
+          {loadingProjects ? 'Loading…' : 'List projects'}
+        </button>
+        {projectsResult && (
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            {projectsResult.error ? (
+              <p className="text-sm text-red-700">{projectsResult.error}</p>
+            ) : projectsResult.projects && projectsResult.projects.length > 0 ? (
+              <div className="text-sm">
+                <p className="font-medium text-gray-700 mb-2">
+                  {projectsResult.projects.length} project(s): key → name
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-gray-600">
+                  {projectsResult.projects.map((p) => (
+                    <li key={p.id || p.key}>
+                      <span className="font-mono font-medium text-gray-800">{p.key}</span>
+                      {' → '}
+                      {p.name}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-gray-500 mt-2">
+                  Bug Triage uses project key <strong>HALO</strong>. If you don’t see HALO here, use one of the keys above in your app config or ask an admin for access.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-amber-700">No projects returned (user may have no project access).</p>
+            )}
           </div>
         )}
       </div>

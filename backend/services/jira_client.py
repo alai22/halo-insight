@@ -173,6 +173,19 @@ class JiraClient:
         kwargs.setdefault('timeout', 30)
         return requests.request(method, url, headers=headers, **kwargs)
 
+    def get_myself(self) -> Dict[str, Any]:
+        """Current user (validates auth). GET /rest/api/3/myself."""
+        response = self._request('GET', '/rest/api/3/myself')
+        response.raise_for_status()
+        return response.json()
+
+    def get_projects(self) -> List[Dict[str, Any]]:
+        """Projects visible to the current user. GET /rest/api/3/project."""
+        response = self._request('GET', '/rest/api/3/project')
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else (data.get('values') or [])
+
     def search_issues(
         self,
         project: str = 'HALO',
