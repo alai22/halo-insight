@@ -182,23 +182,26 @@ class JiraClient:
         fields: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Search issues using JQL via /rest/api/3/search/jql (legacy /search returns 410).
-        Returns raw API response with 'issues' list and optional 'nextPageToken'.
+        Search issues using JQL via POST /rest/api/3/search/jql (GET can return 0 issues;
+        legacy /search was removed and returns 410). Returns raw API response with
+        'issues' list and optional 'nextPageToken'.
         """
         if jql is None:
+            # POST accepts project-scoped JQL; GET often returns 0 or "unbounded" for same query
             jql = f"project = {project} ORDER BY updated DESC"
-        params = {
+        field_list = fields or [
+            'summary', 'description', 'issuetype', 'components', 'priority',
+            'labels', 'status', 'created', 'updated',
+        ]
+        payload = {
             'jql': jql,
             'maxResults': min(max_results, 100),
+            'fields': field_list if isinstance(field_list, list) else field_list.split(','),
         }
         if next_page_token:
-            params['nextPageToken'] = next_page_token
-        if fields:
-            params['fields'] = ','.join(fields)
-        else:
-            params['fields'] = 'summary,description,issuetype,components,priority,labels,status,created,updated'
+            payload['nextPageToken'] = next_page_token
 
-        response = self._request('GET', '/rest/api/3/search/jql', params=params)
+        response = self._request('POST', '/rest/api/3/search/jql', json=payload)
         response.raise_for_status()
         return response.json()
 
