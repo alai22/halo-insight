@@ -2,6 +2,7 @@
 Jira API Client for Bug Triage Copilot
 
 Fetches issues from Jira Cloud via REST API v3 using Basic auth (email + API token).
+Uses the JQL search endpoint (legacy /rest/api/3/search was removed and returns 410).
 See: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/
 """
 
@@ -177,25 +178,27 @@ class JiraClient:
         project: str = 'HALO',
         jql: Optional[str] = None,
         max_results: int = 100,
-        start_at: int = 0,
+        next_page_token: Optional[str] = None,
         fields: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Search issues using JQL. Returns raw API response.
+        Search issues using JQL via /rest/api/3/search/jql (legacy /search returns 410).
+        Returns raw API response with 'issues' list and optional 'nextPageToken'.
         """
         if jql is None:
             jql = f"project = {project} ORDER BY updated DESC"
         params = {
             'jql': jql,
             'maxResults': min(max_results, 100),
-            'startAt': start_at,
         }
+        if next_page_token:
+            params['nextPageToken'] = next_page_token
         if fields:
             params['fields'] = ','.join(fields)
         else:
             params['fields'] = 'summary,description,issuetype,components,priority,labels,status,created,updated'
 
-        response = self._request('GET', '/rest/api/3/search', params=params)
+        response = self._request('GET', '/rest/api/3/search/jql', params=params)
         response.raise_for_status()
         return response.json()
 
