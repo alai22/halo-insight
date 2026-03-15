@@ -31,7 +31,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
     fetchStatus();
   }, []);
 
-  // Read OAuth callback result from URL (once on mount)
+  // Read OAuth callback result from URL
   useEffect(() => {
     const connected = searchParams.get('connected');
     const oauthError = searchParams.get('oauth_error');
@@ -49,8 +49,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
       setOauthMessage({ type: 'error', text: messages[oauthError] || oauthError });
       setSearchParams({ mode: 'jira-status' }, { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [searchParams, setSearchParams]);
 
   const handleFetch = () => {
     setFetching(true);

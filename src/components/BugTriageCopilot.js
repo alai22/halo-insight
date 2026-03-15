@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ArrowLeft,
   Bug,
@@ -60,7 +60,7 @@ const BugTriageCopilot = () => {
       .catch(() => setJiraStatus({ configured: false }));
   }, []);
 
-  const fetchJiraIssues = () => {
+  const fetchJiraIssues = useCallback(() => {
     if (!jiraStatus.configured) return;
     setJiraError(null);
     setJiraLoading(true);
@@ -79,13 +79,13 @@ const BugTriageCopilot = () => {
         setIssues([]);
       })
       .finally(() => setJiraLoading(false));
-  };
+  }, [jiraStatus.configured]);
 
   // When switching to Jira, fetch issues
   useEffect(() => {
     if (dataSource !== 'jira' || !jiraStatus.configured) return;
     fetchJiraIssues();
-  }, [dataSource, jiraStatus.configured]);
+  }, [dataSource, jiraStatus.configured, fetchJiraIssues]);
 
   // When switching to Mock, restore mock data
   useEffect(() => {
@@ -162,6 +162,26 @@ const BugTriageCopilot = () => {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filteredAndSorted, groupByCluster]);
 
+  const summaryData = useMemo(() => {
+    const triagedIds = new Set(Object.keys(decisions));
+    const byComponent = {};
+    const byPlatform = {};
+    let gaBlockerCount = 0;
+    const clustersReviewed = new Set();
+    const overrides = [];
+    issues.forEach((i) => {
+      if (i.gaBlocker) gaBlockerCount++;
+      byComponent[i.component] = (byComponent[i.component] || 0) + 1;
+      byPlatform[i.platform] = (byPlatform[i.platform] || 0) + 1;
+      if (triagedIds.has(i.id) && i.clusterLabel) clustersReviewed.add(i.clusterLabel);
+      const d = decisions[i.id];
+      if (d && (d.reasonForOverride || d.priority || d.component || d.gaBlocker !== undefined || d.nextAction)) {
+        overrides.push({ key: i.key, decision: d, issue: i });
+      }
+    });
+    return { byComponent, byPlatform, gaBlockerCount, clustersReviewed: Array.from(clustersReviewed), overrides };
+  }, [issues, decisions]);
+
   const isTriaged = (issueId) => !!decisions[issueId];
 
   // Detail view
@@ -215,26 +235,6 @@ const BugTriageCopilot = () => {
       ))}
     </div>
   );
-
-  const summaryData = useMemo(() => {
-    const triagedIds = new Set(Object.keys(decisions));
-    const byComponent = {};
-    const byPlatform = {};
-    let gaBlockerCount = 0;
-    const clustersReviewed = new Set();
-    const overrides = [];
-    issues.forEach((i) => {
-      if (i.gaBlocker) gaBlockerCount++;
-      byComponent[i.component] = (byComponent[i.component] || 0) + 1;
-      byPlatform[i.platform] = (byPlatform[i.platform] || 0) + 1;
-      if (triagedIds.has(i.id) && i.clusterLabel) clustersReviewed.add(i.clusterLabel);
-      const d = decisions[i.id];
-      if (d && (d.reasonForOverride || d.priority || d.component || d.gaBlocker !== undefined || d.nextAction)) {
-        overrides.push({ key: i.key, decision: d, issue: i });
-      }
-    });
-    return { byComponent, byPlatform, gaBlockerCount, clustersReviewed: Array.from(clustersReviewed), overrides };
-  }, [issues, decisions]);
 
   return (
     <div className="max-w-7xl mx-auto p-6">
@@ -579,45 +579,6 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick }) {
   );
 }
 
-function BacklogRow({ issue, triaged, onClick }) {
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => e.key === 'Enter' && onClick()}
-      className="p-4 rounded-lg border-2 border-gray-200 bg-gray-50 hover:border-gray-300 hover:shadow-md transition-all cursor-pointer flex items-center justify-between gap-4"
-    >
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-mono text-sm text-gray-500">{issue.key}</span>
-          {triaged && (
-            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center gap-1">
-              <CheckCircle className="h-3 w-3" /> Triaged
-            </span>
-          )}
-          {issue.gaBlocker && (
-            <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded-full">GA blocker</span>
-          )}
-          {issue.needsMoreInfo && (
-            <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
-          )}
-        </div>
-        <div className="font-medium text-gray-900 mt-1 truncate">{issue.title}</div>
-        <div className="text-sm text-gray-500 mt-1 flex flex-wrap gap-x-4 gap-y-0">
-          <span>{issue.component}</span>
-          <span>{issue.platform}</span>
-          {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
-          <span>Rank {issue.rank ?? '—'}</span>
-        </div>
-      </div>
-      <div className="text-right text-sm text-gray-500 shrink-0">
-        {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
-      </div>
-    </div>
-  );
-}
-
 function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit }) {
   const decision = decisions[issue.id] || {};
   const rec = issue.aiRecommendation || {};
@@ -846,7 +807,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
 
 function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NEXT_ACTIONS, COMPONENTS }) {
   const decision = decisions[issue.id] || {};
-  const rec = issue.aiRecommendation || {};
+  const rec = useMemo(() => issue.aiRecommendation || {}, [issue.aiRecommendation]);
   const getValue = (field) => {
     if (decision[field] !== undefined) return decision[field];
     if (field === 'category') return rec.category;
