@@ -7,12 +7,43 @@ Provides issue list, status, and OAuth 2.0 (3LO) connect flow.
 import logging
 import secrets
 from flask import Blueprint, jsonify, request, redirect, session
+import requests
 
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
 from backend.utils.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Max chars of response body to include in error_details (avoid huge payloads)
+JIRA_ERROR_SNIPPET_MAX = 800
+
+
+def _jira_http_error_response(e: requests.HTTPError, fallback_message: str):
+    """Build (message, error_details, status_code) from a requests HTTPError for Jira API."""
+    status_code = e.response.status_code if e.response is not None else 500
+    message_parts = [f"Jira returned {status_code}"]
+    response_snippet = None
+    try:
+        if e.response is not None and e.response.text:
+            response_snippet = (e.response.text or "")[:JIRA_ERROR_SNIPPET_MAX]
+            if e.response.headers.get("content-type", "").startswith("application/json"):
+                body = e.response.json()
+                if isinstance(body, dict):
+                    if body.get("errorMessages"):
+                        message_parts.append("; ".join(body["errorMessages"]))
+                    if body.get("errors") and isinstance(body["errors"], dict):
+                        for k, v in body["errors"].items():
+                            message_parts.append(f"{k}: {v}")
+                    elif body.get("errors"):
+                        message_parts.append(str(body["errors"]))
+    except Exception:
+        pass
+    message = " — ".join(message_parts) if len(message_parts) > 1 else (message_parts[0] if message_parts else fallback_message)
+    error_details = {"status_code": status_code}
+    if response_snippet:
+        error_details["response_snippet"] = response_snippet
+    return message, error_details, min(status_code, 599)
 
 jira_bp = Blueprint('jira', __name__, url_prefix='/api/jira')
 
@@ -41,7 +72,7 @@ def _jira_configured() -> bool:
 
 @jira_bp.route('/status', methods=['GET'])
 def get_jira_status():
-    """Return whether Jira is configured and how (Basic vs OAuth)."""
+    """Return whether Jira is configured and how (Basic preferred over OAuth when both set)."""
     basic = _basic_auth_configured()
     oauth_has_tokens = _oauth_configured() and bool(jira_oauth.get_valid_access_token())
     return jsonify({
@@ -150,6 +181,14 @@ def get_projects():
             'data': out,
             'count': len(out),
         })
+    except requests.exceptions.HTTPError as e:
+        logger.warning("Jira projects HTTP error: %s %s", e.response.status_code if e.response else None, getattr(e.response, 'text', '')[:200])
+        message, error_details, status_code = _jira_http_error_response(e, 'Failed to fetch projects from Jira')
+        return jsonify({
+            'status': 'error',
+            'message': message,
+            'error_details': error_details,
+        }), status_code if 400 <= status_code < 600 else 500
     except Exception as e:
         logger.exception("Jira projects fetch failed")
         return jsonify({
@@ -178,6 +217,14 @@ def get_myself():
                 'emailAddress': me.get('emailAddress'),
             },
         })
+    except requests.exceptions.HTTPError as e:
+        logger.warning("Jira myself HTTP error: %s %s", e.response.status_code if e.response else None, getattr(e.response, 'text', '')[:200])
+        message, error_details, status_code = _jira_http_error_response(e, 'Failed to get current user from Jira')
+        return jsonify({
+            'status': 'error',
+            'message': message,
+            'error_details': error_details,
+        }), status_code if 400 <= status_code < 600 else 500
     except Exception as e:
         logger.exception("Jira myself fetch failed")
         return jsonify({
@@ -190,7 +237,7 @@ def get_myself():
 def get_issues():
     """
     Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (default 100).
-    Uses OAuth if connected, else Basic auth.
+    Uses Basic auth (JIRA_EMAIL + JIRA_API_TOKEN) when set; otherwise OAuth.
     """
     if not _jira_configured():
         return jsonify({
@@ -210,6 +257,14 @@ def get_issues():
         })
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
+    except requests.exceptions.HTTPError as e:
+        logger.warning("Jira issues HTTP error: %s %s", e.response.status_code if e.response else None, getattr(e.response, 'text', '')[:200])
+        message, error_details, status_code = _jira_http_error_response(e, 'Failed to fetch issues from Jira')
+        return jsonify({
+            'status': 'error',
+            'message': message,
+            'error_details': error_details,
+        }), status_code if 400 <= status_code < 600 else 500
     except Exception as e:
         logger.exception("Jira fetch failed")
         return jsonify({

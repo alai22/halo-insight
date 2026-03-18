@@ -2,6 +2,27 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { CheckCircle, XCircle, AlertCircle, RefreshCw, ExternalLink, Link2, FolderOpen, User } from 'lucide-react';
 
+function ErrorWithDetails({ error, errorDetails }) {
+  if (!error) return null;
+  const hasDetails = errorDetails && (errorDetails.status_code != null || errorDetails.response_snippet);
+  return (
+    <div>
+      <p className="text-sm text-red-700">{error}</p>
+      {hasDetails && (
+        <details className="mt-2">
+          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">Technical details</summary>
+          <div className="mt-1 p-2 bg-gray-100 rounded text-xs overflow-auto max-h-48 font-mono whitespace-pre-wrap break-all">
+            {errorDetails.status_code != null && <div>HTTP {errorDetails.status_code}</div>}
+            {errorDetails.response_snippet && (
+              <div className="mt-1 border-t border-gray-200 pt-1">Response: {errorDetails.response_snippet}</div>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 const JiraStatusView = ({ setCurrentMode }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [status, setStatus] = useState({ configured: false, oauth_can_connect: false, oauth_connected: false });
@@ -62,7 +83,10 @@ const JiraStatusView = ({ setCurrentMode }) => {
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status: code, data }) => {
         if (code !== 200 || data.status !== 'success') {
-          setProjectsResult({ error: data.message || 'Failed to fetch projects' });
+          setProjectsResult({
+            error: data.message || 'Failed to fetch projects',
+            error_details: data.error_details || null,
+          });
           return;
         }
         const list = Array.isArray(data.data) ? data.data : [];
@@ -79,7 +103,10 @@ const JiraStatusView = ({ setCurrentMode }) => {
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status: code, data }) => {
         if (code !== 200 || data.status !== 'success') {
-          setMyselfResult({ error: data.message || 'Failed to get current user' });
+          setMyselfResult({
+            error: data.message || 'Failed to get current user',
+            error_details: data.error_details || null,
+          });
           return;
         }
         setMyselfResult(data.data || {});
@@ -95,7 +122,10 @@ const JiraStatusView = ({ setCurrentMode }) => {
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status: code, data }) => {
         if (code !== 200 || data.status !== 'success') {
-          setFetchResult({ error: data.message || 'Failed to fetch issues' });
+          setFetchResult({
+            error: data.message || 'Failed to fetch issues',
+            error_details: data.error_details || null,
+          });
           return;
         }
         const list = Array.isArray(data.data) ? data.data : [];
@@ -213,7 +243,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
         {myselfResult && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             {myselfResult.error ? (
-              <p className="text-sm text-red-700">{myselfResult.error}</p>
+              <ErrorWithDetails error={myselfResult.error} errorDetails={myselfResult.error_details} />
             ) : (
               <p className="text-sm text-gray-700">
                 <span className="font-medium">{myselfResult.displayName ?? '—'}</span>
@@ -247,7 +277,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
         {projectsResult && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             {projectsResult.error ? (
-              <p className="text-sm text-red-700">{projectsResult.error}</p>
+              <ErrorWithDetails error={projectsResult.error} errorDetails={projectsResult.error_details} />
             ) : projectsResult.projects && projectsResult.projects.length > 0 ? (
               <div className="text-sm">
                 <p className="font-medium text-gray-700 mb-2">
@@ -294,7 +324,9 @@ const JiraStatusView = ({ setCurrentMode }) => {
             {fetchResult.error ? (
               <div className="flex items-start gap-2 text-red-700">
                 <XCircle className="h-5 w-5 shrink-0 mt-0.5" />
-                <p className="text-sm">{fetchResult.error}</p>
+                <div className="min-w-0 flex-1">
+                  <ErrorWithDetails error={fetchResult.error} errorDetails={fetchResult.error_details} />
+                </div>
               </div>
             ) : (
               <>

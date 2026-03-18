@@ -105,7 +105,7 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class JiraClient:
-    """Client for Jira Cloud REST API v3. Uses OAuth if tokens exist, else Basic auth (email + API token)."""
+    """Client for Jira Cloud REST API v3. Prefers Basic auth (email + API token) when set; otherwise uses OAuth."""
 
     def __init__(
         self,
@@ -119,13 +119,17 @@ class JiraClient:
         self.api_token = (api_token or Config.JIRA_API_TOKEN or '').strip()
 
         if use_oauth is None:
-            from backend.services import jira_oauth
-            self._use_oauth = bool(
-                self.base_url
-                and Config.JIRA_CLIENT_ID
-                and Config.JIRA_CLIENT_SECRET
-                and jira_oauth.get_valid_access_token()
-            )
+            basic_configured = bool(self.base_url and self.email and self.api_token)
+            if basic_configured:
+                self._use_oauth = False
+            else:
+                from backend.services import jira_oauth
+                self._use_oauth = bool(
+                    self.base_url
+                    and Config.JIRA_CLIENT_ID
+                    and Config.JIRA_CLIENT_SECRET
+                    and jira_oauth.get_valid_access_token()
+                )
         else:
             self._use_oauth = use_oauth
 
