@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  ExternalLink,
   Filter,
   ArrowUpDown,
   ArrowUp,
@@ -43,7 +44,7 @@ const saveDecisions = (decisions) => {
 };
 
 const BugTriageCopilot = () => {
-  const [dataSource, setDataSource] = useState('mock'); // 'mock' | 'jira'
+  const [dataSource, setDataSource] = useState('mock'); // 'mock' | 'jira' (switched to 'jira' when status loads and configured)
   const [issues, setIssues] = useState(() => mockBugIssues);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [miniDetailIssue, setMiniDetailIssue] = useState(null);
@@ -52,11 +53,16 @@ const BugTriageCopilot = () => {
   const [jiraLoading, setJiraLoading] = useState(false);
   const [jiraError, setJiraError] = useState(null);
 
-  // Check Jira config on mount
+  // Check Jira config on mount; default to Jira (HALO) tab when configured
   useEffect(() => {
     fetch('/api/jira/status')
       .then((r) => r.json())
-      .then((data) => setJiraStatus({ configured: data.configured ?? false, base_url: data.base_url }))
+      .then((data) => {
+        const configured = data.configured ?? false;
+        const base_url = data.base_url ?? null;
+        setJiraStatus({ configured, base_url });
+        if (configured) setDataSource('jira');
+      })
       .catch(() => setJiraStatus({ configured: false }));
   }, []);
 
@@ -195,6 +201,7 @@ const BugTriageCopilot = () => {
         onBack={() => setSelectedIssue(null)}
         NEXT_ACTIONS={NEXT_ACTIONS}
         COMPONENTS={COMPONENTS}
+        jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${selectedIssue.key}` : null}
       />
     );
   }
@@ -216,6 +223,7 @@ const BugTriageCopilot = () => {
                 triaged={isTriaged(issue.id)}
                 viewMode={viewMode}
                 onClick={() => setMiniDetailIssue(issue)}
+                jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
               />
             ))}
           </div>
@@ -231,6 +239,7 @@ const BugTriageCopilot = () => {
           triaged={isTriaged(issue.id)}
           viewMode={viewMode}
           onClick={() => setMiniDetailIssue(issue)}
+          jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
         />
       ))}
     </div>
@@ -502,13 +511,14 @@ const BugTriageCopilot = () => {
             setSelectedIssue(miniDetailIssue);
             setMiniDetailIssue(null);
           }}
+          jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${miniDetailIssue.key}` : null}
         />
       )}
     </div>
   );
 };
 
-function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick }) {
+function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicketHref }) {
   const rec = issue.aiRecommendation || {};
   const primaryText = rec.shortSummary ?? issue.title;
   const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
@@ -523,7 +533,21 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick }) {
       className="p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all cursor-pointer flex flex-col h-full text-left"
     >
       <div className="flex items-center gap-2 flex-wrap mb-1">
-        <span className="font-mono text-sm text-gray-500">{issue.key}</span>
+        {jiraTicketHref ? (
+          <a
+            href={jiraTicketHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="font-mono text-sm text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1"
+            title="Open in Jira"
+          >
+            {issue.key}
+            <ExternalLink className="h-3 w-3 shrink-0" />
+          </a>
+        ) : (
+          <span className="font-mono text-sm text-gray-500">{issue.key}</span>
+        )}
         {triaged && (
           <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center gap-1">
             <CheckCircle className="h-3 w-3" /> Triaged
@@ -579,7 +603,7 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick }) {
   );
 }
 
-function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit }) {
+function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit, jiraTicketHref }) {
   const decision = decisions[issue.id] || {};
   const rec = issue.aiRecommendation || {};
   const getValue = (field) => {
@@ -642,7 +666,20 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div>
-            <p className="font-mono text-sm text-gray-500">{issue.key}</p>
+            {jiraTicketHref ? (
+              <a
+                href={jiraTicketHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-sm text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1"
+                title="Open in Jira"
+              >
+                {issue.key}
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              </a>
+            ) : (
+              <p className="font-mono text-sm text-gray-500">{issue.key}</p>
+            )}
             {rec.shortSummary ? (
               <>
                 <h3 className="font-medium text-gray-900 mt-1">{rec.shortSummary}</h3>
@@ -805,7 +842,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
   );
 }
 
-function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NEXT_ACTIONS, COMPONENTS }) {
+function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NEXT_ACTIONS, COMPONENTS, jiraTicketHref }) {
   const decision = decisions[issue.id] || {};
   const rec = useMemo(() => issue.aiRecommendation || {}, [issue.aiRecommendation]);
   const getValue = (field) => {
@@ -872,7 +909,20 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
             Summary
           </h2>
           <h1 className="text-xl font-bold text-gray-900 mb-2">{issue.title}</h1>
-          <p className="text-sm text-gray-500 font-mono mb-2">{issue.key}</p>
+          {jiraTicketHref ? (
+            <a
+              href={jiraTicketHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-600 hover:text-blue-800 hover:underline font-mono mb-2 inline-flex items-center gap-1"
+              title="Open in Jira"
+            >
+              {issue.key}
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+            </a>
+          ) : (
+            <p className="text-sm text-gray-500 font-mono mb-2">{issue.key}</p>
+          )}
           {issue.description && (
             <p className="text-gray-700 mb-2">{issue.description}</p>
           )}
