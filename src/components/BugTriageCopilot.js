@@ -66,11 +66,18 @@ const BugTriageCopilot = () => {
       .catch(() => setJiraStatus({ configured: false }));
   }, []);
 
+  const [jiraAncestorKey, setJiraAncestorKey] = useState(''); // e.g. HALO-23306 — only show issues under this (children, grandchildren, etc.)
+  const jiraAncestorKeyRef = useRef(jiraAncestorKey);
+  jiraAncestorKeyRef.current = jiraAncestorKey;
+
   const fetchJiraIssues = useCallback(() => {
     if (!jiraStatus.configured) return;
     setJiraError(null);
     setJiraLoading(true);
-    fetch('/api/jira/issues?project=HALO&max_results=500')
+    const params = new URLSearchParams({ project: 'HALO', max_results: '500' });
+    const ancestor = (jiraAncestorKeyRef.current || '').trim();
+    if (ancestor) params.set('ancestor_key', ancestor);
+    fetch(`/api/jira/issues?${params}`)
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status, data }) => {
         if (status !== 200 || data.status !== 'success') {
@@ -298,6 +305,53 @@ const BugTriageCopilot = () => {
               <RefreshCw className={`h-3.5 w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
               Refresh
             </button>
+          )}
+          {dataSource === 'jira' && jiraStatus.configured && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm text-gray-500">Under issue:</span>
+              <input
+                type="text"
+                value={jiraAncestorKey}
+                onChange={(e) => setJiraAncestorKey(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && fetchJiraIssues()}
+                placeholder="e.g. HALO-23306"
+                className="px-2 py-1 text-sm border border-gray-300 rounded-md w-36 font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                title="Show only children, grandchildren, etc. of this issue"
+              />
+              <button
+                type="button"
+                onClick={fetchJiraIssues}
+                disabled={jiraLoading}
+                className="px-2 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50"
+              >
+                Apply
+              </button>
+              {jiraAncestorKey.trim() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    jiraAncestorKeyRef.current = '';
+                    setJiraAncestorKey('');
+                    fetchJiraIssues();
+                  }}
+                  disabled={jiraLoading}
+                  className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                >
+                  Clear
+                </button>
+              )}
+              {jiraAncestorKey.trim() && jiraStatus.base_url && (
+                <a
+                  href={`${jiraStatus.base_url}/browse/${jiraAncestorKey.trim()}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                >
+                  Open in Jira
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
           )}
           {!jiraStatus.configured && (
             <span className="text-xs text-gray-500">Jira: configure .env to enable</span>
@@ -559,6 +613,16 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
         {issue.needsMoreInfo && (
           <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
         )}
+        {issue.priority && (
+          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-xs rounded font-medium" title="Jira priority">
+            {issue.priority}
+          </span>
+        )}
+        {issue.status && (
+          <span className="px-2 py-0.5 bg-sky-50 text-sky-700 text-xs rounded" title="Workflow state">
+            {issue.status}
+          </span>
+        )}
       </div>
       <div className="font-medium text-gray-900 line-clamp-2 mb-0.5">{primaryText}</div>
       {showTitleSecondary && (
@@ -568,7 +632,9 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
       )}
       {!showTitleSecondary && !isCompact && <div className="mb-2" />}
       {isCompact ? (
-        <div className="mt-auto pt-1 flex items-center gap-2">
+        <div className="mt-auto pt-1 flex items-center gap-2 flex-wrap">
+          {issue.priority && <span className="text-xs text-slate-600">{issue.priority}</span>}
+          {issue.status && <span className="text-xs text-sky-600">{issue.status}</span>}
           {(rec.component != null || rec.category != null) && (
             <span className="text-xs text-blue-700">
               {[rec.category, rec.component].filter(Boolean).join(' · ')}
@@ -579,6 +645,8 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
       ) : (
         <>
           <div className="text-sm text-gray-500 flex flex-wrap gap-x-3 gap-y-1 mb-2">
+            {issue.priority && <span title="Priority">{issue.priority}</span>}
+            {issue.status && <span title="Status">{issue.status}</span>}
             <span>{issue.component}</span>
             <span>{issue.platform}</span>
             {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
@@ -692,6 +760,12 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
               <p className="text-sm text-gray-600 mt-2 line-clamp-3">{issue.description}</p>
             )}
             <div className="flex flex-wrap gap-2 mt-2">
+              {issue.priority && (
+                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-medium" title="Priority">{issue.priority}</span>
+              )}
+              {issue.status && (
+                <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs" title="Workflow state">{issue.status}</span>
+              )}
               <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.platform}</span>
               <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.component}</span>
               {issue.clusterLabel && (
@@ -922,6 +996,16 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
             </a>
           ) : (
             <p className="text-sm text-gray-500 font-mono mb-2">{issue.key}</p>
+          )}
+          {(issue.priority || issue.status) && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {issue.priority && (
+                <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-sm font-medium" title="Priority">{issue.priority}</span>
+              )}
+              {issue.status && (
+                <span className="px-2 py-1 bg-sky-50 text-sky-700 rounded text-sm" title="Workflow state">{issue.status}</span>
+              )}
+            </div>
           )}
           {issue.description && (
             <p className="text-gray-700 mb-2">{issue.description}</p>

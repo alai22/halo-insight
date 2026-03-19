@@ -64,6 +64,8 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     status_name = status_obj.get('name') if isinstance(status_obj, dict) else None
     issuetype_obj = fields.get('issuetype')
     issuetype_name = issuetype_obj.get('name') if isinstance(issuetype_obj, dict) else None
+    parent_obj = fields.get('parent')
+    parent_key = parent_obj.get('key') if isinstance(parent_obj, dict) and parent_obj else None
 
     # Infer platform from labels (e.g. iOS, Android, Backend) or default
     platform_labels = {'iOS', 'Android', 'Backend', 'Other'}
@@ -100,6 +102,7 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
         'status': status_name,
         'issuetype': issuetype_name,
         'priority': priority_name,
+        'parentKey': parent_key,
         'aiRecommendation': {},
     }
 
@@ -208,7 +211,7 @@ class JiraClient:
             jql = f"project = {project} ORDER BY updated DESC"
         field_list = fields or [
             'summary', 'description', 'issuetype', 'components', 'priority',
-            'labels', 'status', 'created', 'updated',
+            'labels', 'status', 'created', 'updated', 'parent',
         ]
         payload = {
             'jql': jql,
@@ -226,10 +229,12 @@ class JiraClient:
         self,
         project: str = 'HALO',
         max_results: int = 100,
+        ancestor_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Fetch issues for the given project and return them in Bug Triage Copilot shape.
         Jira's API returns at most 100 per request; we paginate with nextPageToken to fetch up to max_results.
+        If ancestor_key is set (e.g. HALO-23306), only return issues that are that issue or its descendants.
         """
         all_issues: List[Dict] = []
         next_page_token: Optional[str] = None
@@ -248,4 +253,40 @@ class JiraClient:
             if not next_page_token or len(page) < to_fetch:
                 break
 
-        return [_map_jira_issue_to_triage(issue) for issue in all_issues[:max_results]]
+        mapped = [_map_jira_issue_to_triage(issue) for issue in all_issues[:max_results]]
+        if ancestor_key:
+            mapped = _filter_issues_under_ancestor(mapped, ancestor_key)
+        return mapped
+
+
+def _filter_issues_under_ancestor(issues: List[Dict[str, Any]], ancestor_key: str) -> List[Dict[str, Any]]:
+    """
+    Keep only issues that are the ancestor_key itself or a descendant (child, grandchild, etc.).
+    ancestor_key is the root issue key (e.g. HALO-23306). Uses parentKey on each issue.
+    """
+    if not ancestor_key or not issues:
+        return issues
+    ancestor_key = ancestor_key.strip().upper()
+    # Case-insensitive lookup by normalized key
+    key_to_issue = {((i.get('key') or '').upper()): i for i in issues}
+
+    def is_under_ancestor(issue: Dict[str, Any]) -> bool:
+        current = issue
+        seen = set()
+        while current:
+            k = (current.get('key') or '').upper()
+            if k == ancestor_key:
+                return True
+            if k in seen:
+                break
+            seen.add(k)
+            parent_k = (current.get('parentKey') or '').strip().upper()
+            if not parent_k:
+                return False
+            current = key_to_issue.get(parent_k)
+            if not current:
+                # Parent not in fetched set; can't confirm
+                return False
+        return False
+
+    return [i for i in issues if is_under_ancestor(i)]
