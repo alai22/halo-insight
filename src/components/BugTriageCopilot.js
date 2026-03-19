@@ -25,7 +25,10 @@ import {
 
 const STORAGE_KEY = 'bug_triage_decisions';
 
-// Status (workflow state) → badge color classes
+// Statuses hidden by default; user can check them in the filter to show
+const DEFAULT_HIDDEN_STATUSES = ['Ready for QA', 'Resolved', 'In Progress'];
+
+// Status → badge color classes
 function getStatusBadgeClasses(status) {
   if (!status) return 'bg-sky-50 text-sky-700';
   const s = status.toLowerCase();
@@ -179,8 +182,44 @@ const BugTriageCopilot = () => {
     return Array.from(set).sort();
   }, [issues]);
 
+  const statusOptions = useMemo(() => {
+    const set = new Set();
+    issues.forEach((i) => set.add(i.status != null && i.status !== '' ? i.status : '(No status)'));
+    return Array.from(set).sort((a, b) => (a === '(No status)' ? 1 : b === '(No status)' ? -1 : a.localeCompare(b)));
+  }, [issues]);
+
+  const [hiddenStatuses, setHiddenStatuses] = useState(() => new Set(DEFAULT_HIDDEN_STATUSES));
+  const [showStatusDropdown, setShowStatusDropdown] = useState(false);
+  const statusDropdownRef = useRef(null);
+  const toggleStatusVisibility = useCallback((status) => {
+    const key = status === '(No status)' ? status : status;
+    setHiddenStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!showStatusDropdown) return;
+    const onOutside = (e) => {
+      if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target)) {
+        setShowStatusDropdown(false);
+      }
+    };
+    document.addEventListener('click', onOutside, true);
+    return () => document.removeEventListener('click', onOutside, true);
+  }, [showStatusDropdown]);
+
   const filteredAndSorted = useMemo(() => {
     let list = [...issues];
+    if (hiddenStatuses.size > 0) {
+      list = list.filter((i) => {
+        const s = i.status != null && i.status !== '' ? i.status : '(No status)';
+        return !hiddenStatuses.has(s);
+      });
+    }
     if (filterGaBlocker) list = list.filter((i) => i.gaBlocker);
     if (filterComponent) {
       list = list.filter((i) => {
@@ -205,6 +244,7 @@ const BugTriageCopilot = () => {
     return list;
   }, [
     issues,
+    hiddenStatuses,
     filterGaBlocker,
     filterComponent,
     filterPlatform,
@@ -441,6 +481,43 @@ const BugTriageCopilot = () => {
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
+          <div className="relative" ref={statusDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setShowStatusDropdown((v) => !v)}
+              className="inline-flex items-center gap-1 px-2 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 text-gray-700"
+              title="Show/hide by status"
+            >
+              Status
+              <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${showStatusDropdown ? 'rotate-180' : ''}`} />
+            </button>
+            {showStatusDropdown && (
+              <div className="absolute left-0 top-full mt-1 z-20 min-w-[12rem] max-h-64 overflow-auto py-2 bg-white border border-gray-200 rounded-lg shadow-lg">
+                <div className="px-3 py-1 text-xs font-medium text-gray-500 uppercase">Show issues with status</div>
+                {statusOptions.length > 0 ? (
+                  statusOptions.map((status) => (
+                    <label
+                      key={status}
+                      className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-sm text-gray-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!hiddenStatuses.has(status)}
+                        onChange={() => toggleStatusVisibility(status)}
+                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                      />
+                      {status}
+                    </label>
+                  ))
+                ) : (
+                  <p className="px-3 py-2 text-sm text-gray-500">Load issues to see statuses</p>
+                )}
+                <p className="px-3 pt-2 mt-1 border-t border-gray-100 text-xs text-gray-500">
+                  By default, Ready for QA, Resolved, and In Progress are hidden.
+                </p>
+              </div>
+            )}
+          </div>
           <div className="h-5 border-l border-gray-300" />
           <div className="flex items-center gap-2">
             <ArrowUpDown className="h-4 w-4 text-gray-500" />
@@ -640,7 +717,7 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
           </span>
         )}
         {issue.status && (
-          <span className={`px-2 py-0.5 text-xs rounded ${getStatusBadgeClasses(issue.status)}`} title="Workflow state">
+          <span className={`px-2 py-0.5 text-xs rounded ${getStatusBadgeClasses(issue.status)}`} title="Status">
             {issue.status}
           </span>
         )}
@@ -765,7 +842,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
                 <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-medium" title="Priority">{issue.priority}</span>
               )}
               {issue.status && (
-                <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs" title="Workflow state">{issue.status}</span>
+                <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs" title="Status">{issue.status}</span>
               )}
               <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.platform}</span>
               {(issue.components?.length ? issue.components : (issue.component ? [issue.component] : [])).map((c) => (
@@ -1006,7 +1083,7 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
                 <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-sm font-medium" title="Priority">{issue.priority}</span>
               )}
               {issue.status && (
-                <span className="px-2 py-1 bg-sky-50 text-sky-700 rounded text-sm" title="Workflow state">{issue.status}</span>
+                <span className="px-2 py-1 bg-sky-50 text-sky-700 rounded text-sm" title="Status">{issue.status}</span>
               )}
             </div>
           )}
