@@ -170,10 +170,24 @@ const BugTriageCopilot = () => {
     return Array.from(set).sort();
   }, [issues]);
 
+  const componentOptions = useMemo(() => {
+    const set = new Set();
+    issues.forEach((i) => {
+      const comps = i.components?.length ? i.components : (i.component ? [i.component] : []);
+      comps.forEach((c) => set.add(c));
+    });
+    return Array.from(set).sort();
+  }, [issues]);
+
   const filteredAndSorted = useMemo(() => {
     let list = [...issues];
     if (filterGaBlocker) list = list.filter((i) => i.gaBlocker);
-    if (filterComponent) list = list.filter((i) => i.component === filterComponent);
+    if (filterComponent) {
+      list = list.filter((i) => {
+        const comps = i.components?.length ? i.components : (i.component ? [i.component] : []);
+        return comps.includes(filterComponent);
+      });
+    }
     if (filterPlatform) list = list.filter((i) => i.platform === filterPlatform);
     if (filterCluster) list = list.filter((i) => i.clusterLabel === filterCluster);
     if (filterNeedsMoreInfo) list = list.filter((i) => i.needsMoreInfo);
@@ -220,7 +234,8 @@ const BugTriageCopilot = () => {
     const overrides = [];
     issues.forEach((i) => {
       if (i.gaBlocker) gaBlockerCount++;
-      byComponent[i.component] = (byComponent[i.component] || 0) + 1;
+      const comps = i.components?.length ? i.components : (i.component ? [i.component] : []);
+      comps.forEach((c) => { byComponent[c] = (byComponent[c] || 0) + 1; });
       byPlatform[i.platform] = (byPlatform[i.platform] || 0) + 1;
       if (triagedIds.has(i.id) && i.clusterLabel) clustersReviewed.add(i.clusterLabel);
       const d = decisions[i.id];
@@ -402,7 +417,7 @@ const BugTriageCopilot = () => {
             className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
           >
             <option value="">All components</option>
-            {COMPONENTS.map((c) => (
+            {(componentOptions.length ? componentOptions : COMPONENTS).map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
@@ -753,7 +768,9 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
                 <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs" title="Workflow state">{issue.status}</span>
               )}
               <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.platform}</span>
-              <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">{issue.component}</span>
+              {(issue.components?.length ? issue.components : (issue.component ? [issue.component] : [])).map((c) => (
+                <span key={c} className="px-2 py-0.5 bg-gray-100 rounded text-xs">{c}</span>
+              ))}
               {issue.clusterLabel && (
                 <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">{issue.clusterLabel}</span>
               )}
@@ -1013,7 +1030,9 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
           )}
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
             <span className="px-2 py-1 bg-gray-100 rounded">{issue.platform}</span>
-            <span className="px-2 py-1 bg-gray-100 rounded">{issue.component}</span>
+            {(issue.components?.length ? issue.components : (issue.component ? [issue.component] : [])).map((c) => (
+              <span key={c} className="px-2 py-1 bg-gray-100 rounded">{c}</span>
+            ))}
             {issue.clusterLabel && (
               <span className="px-2 py-1 bg-blue-50 text-blue-700 rounded">{issue.clusterLabel}</span>
             )}

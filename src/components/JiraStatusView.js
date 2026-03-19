@@ -131,7 +131,11 @@ const JiraStatusView = ({ setCurrentMode }) => {
         const list = Array.isArray(data.data) ? data.data : [];
         setFetchResult({
           count: list.length,
-          issues: list.slice(0, 20).map((i) => ({ key: i.key, title: i.title })),
+          issues: list.slice(0, 20).map((i) => ({
+            key: i.key,
+            title: i.title,
+            components: i.components?.length ? i.components : (i.component ? [i.component] : []),
+          })),
         });
       })
       .catch((err) => setFetchResult({ error: err.message || 'Request failed' }))
@@ -341,6 +345,11 @@ const JiraStatusView = ({ setCurrentMode }) => {
                       {fetchResult.issues.map((i) => (
                         <li key={i.key}>
                           <span className="font-mono">{i.key}</span>
+                          {(i.components?.length ? i.components : []).length > 0 && (
+                            <span className="text-gray-500 ml-1">
+                              [{i.components.join(', ')}]
+                            </span>
+                          )}
                           {i.title && ` — ${i.title.length > 50 ? i.title.slice(0, 50) + '…' : i.title}`}
                         </li>
                       ))}

@@ -80,7 +80,8 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     updated = fields.get('updated') or created
     labels = fields.get('labels') or []
     components_list = fields.get('components') or []
-    component = components_list[0]['name'] if components_list else 'Other'
+    components = [c['name'] for c in components_list if isinstance(c, dict) and c.get('name')]
+    component = components[0] if components else 'Other'
     priority_obj = fields.get('priority')
     priority_name = priority_obj.get('name') if isinstance(priority_obj, dict) and priority_obj else None
     status_obj = fields.get('status')
@@ -121,6 +122,7 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
         'description': description[:2000] if description else None,
         'platform': platform,
         'component': component,
+        'components': components,
         'labels': labels,
         'needsMoreInfo': needs_more_info,
         'gaBlocker': ga_blocker,
