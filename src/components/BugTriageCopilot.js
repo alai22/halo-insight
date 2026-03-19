@@ -18,7 +18,6 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import {
-  mockBugIssues,
   PLATFORMS,
   COMPONENTS,
   NEXT_ACTIONS,
@@ -44,8 +43,7 @@ const saveDecisions = (decisions) => {
 };
 
 const BugTriageCopilot = () => {
-  const [dataSource, setDataSource] = useState('mock'); // 'mock' | 'jira' (switched to 'jira' when status loads and configured)
-  const [issues, setIssues] = useState(() => mockBugIssues);
+  const [issues, setIssues] = useState([]);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [miniDetailIssue, setMiniDetailIssue] = useState(null);
   const [decisions, setDecisionsState] = useState(loadDecisions);
@@ -53,7 +51,7 @@ const BugTriageCopilot = () => {
   const [jiraLoading, setJiraLoading] = useState(false);
   const [jiraError, setJiraError] = useState(null);
 
-  // Check Jira config on mount; default to Jira (HALO) tab when configured
+  // Check Jira config on mount and load issues when configured
   useEffect(() => {
     fetch('/api/jira/status')
       .then((r) => r.json())
@@ -61,7 +59,6 @@ const BugTriageCopilot = () => {
         const configured = data.configured ?? false;
         const base_url = data.base_url ?? null;
         setJiraStatus({ configured, base_url });
-        if (configured) setDataSource('jira');
       })
       .catch(() => setJiraStatus({ configured: false }));
   }, []);
@@ -94,19 +91,11 @@ const BugTriageCopilot = () => {
       .finally(() => setJiraLoading(false));
   }, [jiraStatus.configured]);
 
-  // When switching to Jira, fetch issues
+  // Fetch issues when Jira is configured
   useEffect(() => {
-    if (dataSource !== 'jira' || !jiraStatus.configured) return;
+    if (!jiraStatus.configured) return;
     fetchJiraIssues();
-  }, [dataSource, jiraStatus.configured, fetchJiraIssues]);
-
-  // When switching to Mock, restore mock data
-  useEffect(() => {
-    if (dataSource === 'mock') {
-      setIssues(mockBugIssues);
-      setJiraError(null);
-    }
-  }, [dataSource]);
+  }, [jiraStatus.configured, fetchJiraIssues]);
 
   const setDecisions = (next) => {
     setDecisionsState((prev) => {
@@ -122,7 +111,7 @@ const BugTriageCopilot = () => {
   const [filterPlatform, setFilterPlatform] = useState('');
   const [filterCluster, setFilterCluster] = useState('');
   const [filterNeedsMoreInfo, setFilterNeedsMoreInfo] = useState(false);
-  const [sortBy, setSortBy] = useState('rank');
+  const [sortBy, setSortBy] = useState('updated');
   const [sortDirection, setSortDirection] = useState('desc');
   const [groupByCluster, setGroupByCluster] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
@@ -143,15 +132,11 @@ const BugTriageCopilot = () => {
     if (filterNeedsMoreInfo) list = list.filter((i) => i.needsMoreInfo);
 
     const mult = sortDirection === 'asc' ? 1 : -1;
-    if (sortBy === 'rank') {
-      list.sort((a, b) => mult * ((a.rank ?? 0) - (b.rank ?? 0)));
-    } else {
-      list.sort(
-        (a, b) =>
-          mult *
-          (new Date(a.updated || a.created).getTime() - new Date(b.updated || b.created).getTime())
-      );
-    }
+    list.sort(
+      (a, b) =>
+        mult *
+        (new Date(a.updated || a.created).getTime() - new Date(b.updated || b.created).getTime())
+    );
     return list;
   }, [
     issues,
@@ -208,7 +193,7 @@ const BugTriageCopilot = () => {
         onBack={() => setSelectedIssue(null)}
         NEXT_ACTIONS={NEXT_ACTIONS}
         COMPONENTS={COMPONENTS}
-        jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${selectedIssue.key}` : null}
+        jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${selectedIssue.key}` : null}
       />
     );
   }
@@ -230,7 +215,7 @@ const BugTriageCopilot = () => {
                 triaged={isTriaged(issue.id)}
                 viewMode={viewMode}
                 onClick={() => setMiniDetailIssue(issue)}
-                jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
+                jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
               />
             ))}
           </div>
@@ -246,7 +231,7 @@ const BugTriageCopilot = () => {
           triaged={isTriaged(issue.id)}
           viewMode={viewMode}
           onClick={() => setMiniDetailIssue(issue)}
-          jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
+          jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
         />
       ))}
     </div>
@@ -260,98 +245,80 @@ const BugTriageCopilot = () => {
           Bug Triage Copilot
         </h1>
         <p className="text-gray-600 mt-1">
-          Review and triage bugs with AI suggestions
-          {dataSource === 'jira' ? ' (Jira HALO)' : ' (mock data)'}
+          Review and triage bugs with AI suggestions (Jira HALO)
         </p>
       </div>
 
-      {/* Data source: Mock | Jira */}
+      {/* Jira controls */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm font-medium text-gray-700">Data source</span>
-          <button
-            type="button"
-            onClick={() => setDataSource('mock')}
-            className={`px-3 py-1.5 text-sm rounded-md ${dataSource === 'mock' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
-          >
-            Mock
-          </button>
-          <button
-            type="button"
-            onClick={() => jiraStatus.configured && setDataSource('jira')}
-            disabled={!jiraStatus.configured}
-            className={`px-3 py-1.5 text-sm rounded-md ${dataSource === 'jira' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'} ${!jiraStatus.configured ? 'opacity-50 cursor-not-allowed' : ''}`}
-            title={!jiraStatus.configured ? 'Set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in .env' : 'Load issues from Jira (HALO)'}
-          >
-            Jira (HALO)
-          </button>
-          {dataSource === 'jira' && jiraLoading && (
+          {jiraLoading && (
             <span className="text-sm text-gray-500">Loading…</span>
           )}
-          {dataSource === 'jira' && !jiraLoading && !jiraError && issues.length > 0 && (
+          {!jiraLoading && !jiraError && issues.length > 0 && (
             <span className="text-sm text-green-700">{issues.length} issues loaded from Jira</span>
           )}
-          {dataSource === 'jira' && jiraError && (
+          {jiraError && (
             <span className="text-sm text-red-600">{jiraError}</span>
           )}
-          {dataSource === 'jira' && jiraStatus.configured && (
-            <button
-              type="button"
-              onClick={fetchJiraIssues}
-              disabled={jiraLoading}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
-              title="Refresh issues from Jira"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          )}
-          {dataSource === 'jira' && jiraStatus.configured && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-gray-500">Under issue:</span>
-              <input
-                type="text"
-                value={jiraAncestorKey}
-                onChange={(e) => setJiraAncestorKey(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && fetchJiraIssues()}
-                placeholder="e.g. HALO-23306"
-                className="px-2 py-1 text-sm border border-gray-300 rounded-md w-36 font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                title="Show only children, grandchildren, etc. of this issue"
-              />
+          {jiraStatus.configured && (
+            <>
               <button
                 type="button"
                 onClick={fetchJiraIssues}
                 disabled={jiraLoading}
-                className="px-2 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50"
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                title="Refresh issues from Jira"
               >
-                Apply
+                <RefreshCw className={`h-3.5 w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
+                Refresh
               </button>
-              {jiraAncestorKey.trim() && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-gray-500">Under issue:</span>
+                <input
+                  type="text"
+                  value={jiraAncestorKey}
+                  onChange={(e) => setJiraAncestorKey(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && fetchJiraIssues()}
+                  placeholder="e.g. HALO-23306"
+                  className="px-2 py-1 text-sm border border-gray-300 rounded-md w-36 font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  title="Show only children, grandchildren, etc. of this issue"
+                />
                 <button
                   type="button"
-                  onClick={() => {
-                    jiraAncestorKeyRef.current = '';
-                    setJiraAncestorKey('');
-                    fetchJiraIssues();
-                  }}
+                  onClick={fetchJiraIssues}
                   disabled={jiraLoading}
-                  className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                  className="px-2 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50"
                 >
-                  Clear
+                  Apply
                 </button>
-              )}
-              {jiraAncestorKey.trim() && jiraStatus.base_url && (
-                <a
-                  href={`${jiraStatus.base_url}/browse/${jiraAncestorKey.trim()}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
-                >
-                  Open in Jira
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </div>
+                {jiraAncestorKey.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      jiraAncestorKeyRef.current = '';
+                      setJiraAncestorKey('');
+                      fetchJiraIssues();
+                    }}
+                    disabled={jiraLoading}
+                    className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                  >
+                    Clear
+                  </button>
+                )}
+                {jiraAncestorKey.trim() && jiraStatus.base_url && (
+                  <a
+                    href={`${jiraStatus.base_url}/browse/${jiraAncestorKey.trim()}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                  >
+                    Open in Jira
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            </>
           )}
           {!jiraStatus.configured && (
             <span className="text-xs text-gray-500">Jira: configure .env to enable</span>
@@ -422,7 +389,6 @@ const BugTriageCopilot = () => {
               onChange={(e) => setSortBy(e.target.value)}
               className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
             >
-              <option value="rank">Rank</option>
               <option value="updated">Recency</option>
             </select>
             <button
@@ -565,7 +531,7 @@ const BugTriageCopilot = () => {
             setSelectedIssue(miniDetailIssue);
             setMiniDetailIssue(null);
           }}
-          jiraTicketHref={dataSource === 'jira' && jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${miniDetailIssue.key}` : null}
+          jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${miniDetailIssue.key}` : null}
         />
       )}
     </div>
@@ -640,7 +606,6 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
               {[rec.category, rec.component].filter(Boolean).join(' · ')}
             </span>
           )}
-          <span className="text-xs text-gray-400">Rank {issue.rank ?? '—'}</span>
         </div>
       ) : (
         <>
@@ -650,7 +615,6 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
             <span>{issue.component}</span>
             <span>{issue.platform}</span>
             {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
-            <span>Rank {issue.rank ?? '—'}</span>
           </div>
           {(rec.category != null || rec.component != null || rec.priority != null) && (
             <div className="mt-auto pt-2 border-t border-gray-100">

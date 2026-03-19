@@ -200,15 +200,20 @@ class JiraClient:
         max_results: int = 100,
         next_page_token: Optional[str] = None,
         fields: Optional[List[str]] = None,
+        issuetype: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Search issues using JQL via POST /rest/api/3/search/jql (GET can return 0 issues;
         legacy /search was removed and returns 410). Returns raw API response with
-        'issues' list and optional 'nextPageToken'.
+        'issues' list and optional 'nextPageToken'. If jql is not provided, builds
+        project + optional issuetype (e.g. "Bug") and ORDER BY updated DESC.
         """
         if jql is None:
             # POST accepts project-scoped JQL; GET often returns 0 or "unbounded" for same query
-            jql = f"project = {project} ORDER BY updated DESC"
+            base = f"project = {project}"
+            if issuetype:
+                base += f' AND issuetype = "{issuetype}"'
+            jql = f"{base} ORDER BY updated DESC"
         field_list = fields or [
             'summary', 'description', 'issuetype', 'components', 'priority',
             'labels', 'status', 'created', 'updated', 'parent',
@@ -230,11 +235,13 @@ class JiraClient:
         project: str = 'HALO',
         max_results: int = 100,
         ancestor_key: Optional[str] = None,
+        issuetype: Optional[str] = 'Bug',
     ) -> List[Dict[str, Any]]:
         """
         Fetch issues for the given project and return them in Bug Triage Copilot shape.
         Jira's API returns at most 100 per request; we paginate with nextPageToken to fetch up to max_results.
         If ancestor_key is set (e.g. HALO-23306), only return issues that are that issue or its descendants.
+        issuetype filters by Jira issue type (default "Bug"); pass None or empty to fetch all types.
         """
         all_issues: List[Dict] = []
         next_page_token: Optional[str] = None
@@ -246,6 +253,7 @@ class JiraClient:
                 project=project,
                 max_results=to_fetch,
                 next_page_token=next_page_token,
+                issuetype=issuetype,
             )
             page = data.get('issues') or []
             all_issues.extend(page)
