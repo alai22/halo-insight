@@ -236,8 +236,8 @@ def get_myself():
 @jira_bp.route('/issues', methods=['GET'])
 def get_issues():
     """
-    Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (default 100).
-    Uses Basic auth (JIRA_EMAIL + JIRA_API_TOKEN) when set; otherwise OAuth.
+    Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (default 500, max 1000).
+    Uses Basic auth (JIRA_EMAIL + JIRA_API_TOKEN) when set; otherwise OAuth. Paginates Jira API to fetch beyond 100.
     """
     if not _jira_configured():
         return jsonify({
@@ -247,7 +247,7 @@ def get_issues():
 
     try:
         project = request.args.get('project', 'HALO').strip() or 'HALO'
-        max_results = min(int(request.args.get('max_results', 100)), 100)
+        max_results = min(max(int(request.args.get('max_results', 500)), 1), 1000)  # default 500, cap 1000
         client = JiraClient()
         issues = client.fetch_issues_for_triage(project=project, max_results=max_results)
         return jsonify({

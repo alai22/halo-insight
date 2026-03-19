@@ -229,7 +229,23 @@ class JiraClient:
     ) -> List[Dict[str, Any]]:
         """
         Fetch issues for the given project and return them in Bug Triage Copilot shape.
+        Jira's API returns at most 100 per request; we paginate with nextPageToken to fetch up to max_results.
         """
-        data = self.search_issues(project=project, max_results=max_results)
-        issues = data.get('issues') or []
-        return [_map_jira_issue_to_triage(issue) for issue in issues]
+        all_issues: List[Dict] = []
+        next_page_token: Optional[str] = None
+        page_size = 100  # Jira search/jql max per request
+
+        while len(all_issues) < max_results:
+            to_fetch = min(page_size, max_results - len(all_issues))
+            data = self.search_issues(
+                project=project,
+                max_results=to_fetch,
+                next_page_token=next_page_token,
+            )
+            page = data.get('issues') or []
+            all_issues.extend(page)
+            next_page_token = data.get('nextPageToken')
+            if not next_page_token or len(page) < to_fetch:
+                break
+
+        return [_map_jira_issue_to_triage(issue) for issue in all_issues[:max_results]]

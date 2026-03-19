@@ -70,7 +70,7 @@ const BugTriageCopilot = () => {
     if (!jiraStatus.configured) return;
     setJiraError(null);
     setJiraLoading(true);
-    fetch('/api/jira/issues?project=HALO&max_results=100')
+    fetch('/api/jira/issues?project=HALO&max_results=500')
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status, data }) => {
         if (status !== 200 || data.status !== 'success') {

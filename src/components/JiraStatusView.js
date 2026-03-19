@@ -118,7 +118,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
   const handleFetch = () => {
     setFetching(true);
     setFetchResult(null);
-    fetch('/api/jira/issues?project=HALO&max_results=100')
+    fetch('/api/jira/issues?project=HALO&max_results=500')
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status: code, data }) => {
         if (code !== 200 || data.status !== 'success') {
@@ -307,7 +307,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Test fetch</h2>
         <p className="text-sm text-gray-600 mb-3">
-          Fetch up to 100 issues from project HALO to verify the connection.
+          Fetch up to 500 issues from project HALO to verify the connection.
         </p>
         <button
           type="button"
