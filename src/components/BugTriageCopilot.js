@@ -49,6 +49,31 @@ function getIssuetypeBadgeClasses(issuetype) {
   return 'bg-gray-100 text-gray-700';
 }
 
+// Priority → badge color classes
+function getPriorityBadgeClasses(priority) {
+  if (!priority) return 'bg-gray-100 text-gray-700';
+  const p = priority.toLowerCase();
+  if (p === 'blocker' || p === 'highest') return 'bg-red-100 text-red-800';
+  if (p === 'critical') return 'bg-red-200 text-red-900';
+  if (p === 'major' || p === 'high') return 'bg-amber-100 text-amber-800';
+  if (p === 'medium' || p === 'normal') return 'bg-slate-100 text-slate-700';
+  if (p === 'low' || p === 'lowest') return 'bg-gray-100 text-gray-600';
+  return 'bg-gray-100 text-gray-700';
+}
+
+// Priority → sort rank (higher = more urgent)
+function getPriorityRank(priority) {
+  if (!priority) return 0;
+  const p = priority.toLowerCase();
+  if (p === 'blocker' || p === 'highest') return 100;
+  if (p === 'critical') return 90;
+  if (p === 'major' || p === 'high') return 70;
+  if (p === 'medium' || p === 'normal') return 50;
+  if (p === 'low') return 25;
+  if (p === 'lowest') return 10;
+  return 0;
+}
+
 const loadDecisions = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -156,11 +181,15 @@ const BugTriageCopilot = () => {
     if (filterNeedsMoreInfo) list = list.filter((i) => i.needsMoreInfo);
 
     const mult = sortDirection === 'asc' ? 1 : -1;
-    list.sort(
-      (a, b) =>
-        mult *
-        (new Date(a.updated || a.created).getTime() - new Date(b.updated || b.created).getTime())
-    );
+    if (sortBy === 'priority') {
+      list.sort((a, b) => mult * (getPriorityRank(a.priority) - getPriorityRank(b.priority)));
+    } else {
+      list.sort(
+        (a, b) =>
+          mult *
+          (new Date(a.updated || a.created).getTime() - new Date(b.updated || b.created).getTime())
+      );
+    }
     return list;
   }, [
     issues,
@@ -413,6 +442,7 @@ const BugTriageCopilot = () => {
               onChange={(e) => setSortBy(e.target.value)}
               className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
             >
+              <option value="priority">Priority</option>
               <option value="updated">Recency</option>
             </select>
             <button
@@ -609,7 +639,7 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
           </span>
         )}
         {issue.priority && (
-          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-xs rounded font-medium" title="Jira priority">
+          <span className={`px-2 py-0.5 text-xs rounded font-medium ${getPriorityBadgeClasses(issue.priority)}`} title="Jira priority">
             {issue.priority}
           </span>
         )}
@@ -654,9 +684,6 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
               </div>
             </div>
           )}
-          <div className="text-xs text-gray-400 mt-2">
-            {issue.updated ? new Date(issue.updated).toLocaleDateString() : new Date(issue.created).toLocaleDateString()}
-          </div>
         </>
       )}
     </div>
