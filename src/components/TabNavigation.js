@@ -1,9 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Search, MessageSquare, BarChart3, FileText, TrendingUp, Wrench, List, Bug } from 'lucide-react';
+import { getPathFromMode, isPathBasedMode } from '../utils/routes';
 
 const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
-  const [, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  const setModeAndUrl = (modeId) => {
+    setCurrentMode(modeId);
+    const path = getPathFromMode(modeId);
+    if (path) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('mode');
+      navigate({ pathname: path, search: nextParams.toString() }, { replace: true });
+    } else {
+      setSearchParams({ mode: modeId }, { replace: true });
+    }
+  };
   const [activeTab, setActiveTab] = useState(() => {
     // Determine active tab based on current mode
     if (currentMode === 'bug-triage') {
@@ -92,8 +106,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
   ];
 
   const handleModeChange = (modeId) => {
-    setCurrentMode(modeId);
-    setSearchParams({ mode: modeId });
+    setModeAndUrl(modeId);
   };
 
   return (
@@ -103,11 +116,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
         <button
           onClick={() => {
             setActiveTab('churn');
-            // Switch to first mode of the tab if current mode is from other tab
             if (!['churn-trends', 'survicate'].includes(currentMode)) {
-              const defaultMode = 'churn-trends';
-              setCurrentMode(defaultMode);
-              setSearchParams({ mode: defaultMode });
+              setModeAndUrl('churn-trends');
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
@@ -121,11 +131,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
         <button
           onClick={() => {
             setActiveTab('surveys');
-            // Switch to survey manager if current mode is from other tab
             if (currentMode !== 'survey-manager') {
-              const defaultMode = 'survey-manager';
-              setCurrentMode(defaultMode);
-              setSearchParams({ mode: defaultMode });
+              setModeAndUrl('survey-manager');
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
@@ -139,11 +146,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
         <button
           onClick={() => {
             setActiveTab('gladly');
-            // Switch to first mode of the tab if current mode is from other tab
             if (!['conversations', 'ask', 'conversation-trends'].includes(currentMode)) {
-              const defaultMode = 'conversation-trends';
-              setCurrentMode(defaultMode);
-              setSearchParams({ mode: defaultMode });
+              setModeAndUrl('conversation-trends');
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
@@ -157,11 +161,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
         <button
           onClick={() => {
             setActiveTab('tools');
-            // Switch to tools mode if current mode is from other tab
             if (!['api-data-manager', 'tools', 'analytics'].includes(currentMode) && adminMode !== 'download' && adminMode !== 'claude') {
-              const defaultMode = 'tools';
-              setCurrentMode(defaultMode);
-              setSearchParams({ mode: defaultMode });
+              setModeAndUrl('tools');
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
@@ -176,8 +177,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
           onClick={() => {
             setActiveTab('bug-triage');
             if (currentMode !== 'bug-triage') {
-              setCurrentMode('bug-triage');
-              setSearchParams({ mode: 'bug-triage' });
+              setModeAndUrl('bug-triage');
             }
           }}
           className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-1.5 ${

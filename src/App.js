@@ -18,8 +18,9 @@ import BugTriageCopilot from './components/BugTriageCopilot';
 import JiraStatusView from './components/JiraStatusView';
 import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { getSurvicateDataSource } from './utils/constants';
+import { getModeFromPath, getPathFromMode, isPathBasedMode } from './utils/routes';
 
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
@@ -44,6 +45,8 @@ axios.interceptors.request.use(
 );
 
 function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [conversations, setConversations] = useState({
@@ -59,14 +62,13 @@ function App() {
     'tools': [],
     'analytics': []
   });
-  
-  // Initialize currentMode from URL or default
+
+  // Initialize currentMode: path takes precedence, then query mode, then default
   const [currentMode, setCurrentMode] = useState(() => {
-    // Check URL first, then localStorage, then default
+    const pathMode = getModeFromPath(location.pathname);
+    if (pathMode) return pathMode;
     const urlMode = searchParams.get('mode');
-    if (urlMode) {
-      return urlMode;
-    }
+    if (urlMode) return urlMode;
     const savedMode = localStorage.getItem('gladly_current_mode');
     return savedMode || 'churn-trends';
   });
@@ -87,32 +89,77 @@ function App() {
   // Ref to prevent infinite loops when syncing URL and currentMode
   const isSyncingRef = useRef(false);
   
-  // Sync URL when currentMode changes (but not when URL changes)
+  // Sync URL when currentMode changes: use path for path-based modes, else query
   useEffect(() => {
     if (isSyncingRef.current) return;
-    const currentUrlMode = searchParams.get('mode');
-    if (currentMode && currentMode !== currentUrlMode) {
+    const path = getPathFromMode(currentMode);
+    const pathMatches = path && location.pathname === path;
+    const queryMode = searchParams.get('mode');
+    const queryMatches = queryMode === currentMode;
+    if (pathMatches && !queryMode) return; // already on canonical path with no redundant mode param
+    if (!pathMatches && queryMatches) return; // already on query-based URL with correct mode
+    if (!currentMode) return;
+    isSyncingRef.current = true;
+    if (path) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('mode');
+      navigate({ pathname: path, search: nextParams.toString() }, { replace: true });
+    } else {
+      setSearchParams({ mode: currentMode }, { replace: true });
+    }
+    setTimeout(() => { isSyncingRef.current = false; }, 0);
+  }, [currentMode, location.pathname, searchParams, setSearchParams, navigate]);
+
+  // Sync currentMode when URL changes (path first, then query; redirect old ?mode= to path)
+  useEffect(() => {
+    if (isSyncingRef.current) return;
+    const pathMode = getModeFromPath(location.pathname);
+    const queryMode = searchParams.get('mode');
+
+    // Redirect / with path-based ?mode= to canonical path (e.g. ?mode=churn-trends -> /churn)
+    if (location.pathname === '/' && queryMode && isPathBasedMode(queryMode)) {
+      isSyncingRef.current = true;
+      const path = getPathFromMode(queryMode);
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('mode');
+      navigate({ pathname: path, search: nextParams.toString() }, { replace: true });
+      setCurrentMode(queryMode);
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
+      return;
+    }
+
+    // Redirect / with no mode to /churn
+    if (location.pathname === '/' && !queryMode) {
+      isSyncingRef.current = true;
+      navigate('/churn', { replace: true });
+      if (currentMode !== 'churn-trends') setCurrentMode('churn-trends');
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
+      return;
+    }
+
+    if (pathMode && pathMode !== currentMode) {
+      isSyncingRef.current = true;
+      setCurrentMode(pathMode);
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
+      return;
+    }
+    if (!pathMode && queryMode && queryMode !== currentMode) {
+      isSyncingRef.current = true;
+      setCurrentMode(queryMode);
+      setTimeout(() => { isSyncingRef.current = false; }, 0);
+      return;
+    }
+    // URL has no mode and we're not on a path: push current mode to URL (query)
+    if (!pathMode && !queryMode && currentMode && !isPathBasedMode(currentMode)) {
       isSyncingRef.current = true;
       setSearchParams({ mode: currentMode }, { replace: true });
       setTimeout(() => { isSyncingRef.current = false; }, 0);
-    }
-  }, [currentMode, searchParams, setSearchParams]);
-  
-  // Sync currentMode when URL changes (e.g., browser back/forward or direct link)
-  useEffect(() => {
-    if (isSyncingRef.current) return;
-    const urlMode = searchParams.get('mode');
-    if (urlMode && urlMode !== currentMode) {
+    } else if (!pathMode && !queryMode && currentMode && isPathBasedMode(currentMode)) {
       isSyncingRef.current = true;
-      setCurrentMode(urlMode);
-      setTimeout(() => { isSyncingRef.current = false; }, 0);
-    } else if (!urlMode && currentMode) {
-      // If URL has no mode but we have a currentMode, update URL
-      isSyncingRef.current = true;
-      setSearchParams({ mode: currentMode }, { replace: true });
+      navigate(getPathFromMode(currentMode), { replace: true });
       setTimeout(() => { isSyncingRef.current = false; }, 0);
     }
-  }, [searchParams, currentMode, setSearchParams]);
+  }, [location.pathname, searchParams, currentMode, setSearchParams, navigate]);
 
   // Load conversations and settings from localStorage on mount
   useEffect(() => {

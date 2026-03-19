@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Download, RefreshCw, FileDown, CheckCircle, XCircle, Clock, Database, List, Eye, ArrowLeft, FileText, BarChart3, MessageSquare, Send, ArrowUpDown, ArrowUp, ArrowDown, TrendingUp } from 'lucide-react';
 import axios from 'axios';
 import SurveyQuestionTrendsChart from './SurveyQuestionTrendsChart';
@@ -7,6 +7,7 @@ import CommentTopicTrendsChart from './CommentTopicTrendsChart';
 
 const SurveyManager = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [surveys, setSurveys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [downloadingSurveys, setDownloadingSurveys] = useState(new Set());
@@ -160,8 +161,10 @@ const SurveyManager = () => {
   // Handle survey selection
   const handleSurveySelect = (survey) => {
     setSelectedSurvey(survey);
-    // Update URL with survey ID
-    setSearchParams({ mode: 'survey-manager', surveyId: survey.id });
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('surveyId', survey.id);
+    nextParams.delete('mode');
+    navigate({ pathname: '/survicate', search: nextParams.toString() }, { replace: true });
     
     setSurveyQuestions([]);
     setSurveyResponses([]);
@@ -185,8 +188,10 @@ const SurveyManager = () => {
   const handleBackToList = () => {
     setSelectedSurvey(null);
     setActiveTab('overview');
-    // Remove surveyId from URL, keep mode
-    setSearchParams({ mode: 'survey-manager' });
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('surveyId');
+    nextParams.delete('mode');
+    navigate({ pathname: '/survicate', search: nextParams.toString() }, { replace: true });
   };
 
   // Handle download

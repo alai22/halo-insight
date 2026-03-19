@@ -1,0 +1,42 @@
+/**
+ * Path-based URL mapping for Halo Insight.
+ * Memorable paths map to internal mode names; other modes stay query-based (?mode=...).
+ */
+
+export const PATH_TO_MODE = {
+  '/churn': 'churn-trends',
+  '/survicate': 'survey-manager',
+  '/gladly': 'conversation-trends',
+  '/tools': 'tools',
+  '/jira': 'bug-triage',
+};
+
+export const MODE_TO_PATH = {
+  'churn-trends': '/churn',
+  'survey-manager': '/survicate',
+  'conversation-trends': '/gladly',
+  'tools': '/tools',
+  'bug-triage': '/jira',
+};
+
+/** Paths that have a canonical mode (for redirects and path-first logic) */
+export const PATH_BASED_PATHS = Object.keys(PATH_TO_MODE);
+
+/** Modes that use path-based URLs */
+export const PATH_BASED_MODES = Object.keys(MODE_TO_PATH);
+
+export function getModeFromPath(pathname) {
+  return PATH_TO_MODE[pathname] ?? null;
+}
+
+export function getPathFromMode(mode) {
+  return MODE_TO_PATH[mode] ?? null;
+}
+
+export function isPathBasedMode(mode) {
+  return mode in MODE_TO_PATH;
+}
+
+export function isPathBasedPath(pathname) {
+  return pathname in PATH_TO_MODE;
+}

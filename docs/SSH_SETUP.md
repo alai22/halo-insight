@@ -10,9 +10,19 @@ The command uses an SSH alias defined in your local `~/.ssh/config` file (or `C:
 
 ### Step 1: Get the EC2 Key File
 
-You need the private key file (`gladly-key.pem` or similar) that was used when creating the EC2 instance. This file should:
+You need the private key file (`gladly-key.pem` or similar) that was used when creating the EC2 instance.
+
+#### Where to put the key
+
+**Keep the key outside this repo and maintain it separately.**
+
+- **Do not** put it inside the `gladly-conversation-analyzer` project folder. Even though `*.pem` is in `.gitignore`, project folders get copied, shared, and deleted; keys should live in a dedicated place.
+- **Recommended (Linux/Mac):** Put it in your SSH directory with your other keys, e.g. `~/.ssh/gladly-key.pem`. That keeps all keys in one place and makes the path in `~/.ssh/config` simple and consistent across machines.
+- **Windows:** Use a dedicated folder outside any repo, e.g. `C:\Users\<username>\.ssh\gladly-key.pem` or another path you use only for keys.
+
+The file should:
 - **NOT** be committed to git (it's in `.gitignore`)
-- Be stored securely on your machine
+- Be stored securely on your machine (e.g. `~/.ssh/`)
 - Have proper permissions (on Linux/Mac: `chmod 400 gladly-key.pem`)
 
 ### Step 2: Find the EC2 Instance IP Address
@@ -37,17 +47,17 @@ if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
     New-Item -ItemType Directory -Path "$env:USERPROFILE\.ssh"
 }
 
-# Add SSH config entry
+# Add SSH config entry (put gladly-key.pem in .ssh or another folder outside any repo)
 @"
 Host gladly-ec2
     HostName 3.150.69.20
     User ec2-user
-    IdentityFile C:\path\to\your\gladly-key.pem
+    IdentityFile C:\Users\YOUR_USERNAME\.ssh\gladly-key.pem
     StrictHostKeyChecking no
 "@ | Out-File -FilePath "$env:USERPROFILE\.ssh\config" -Append -Encoding utf8
 ```
 
-**Important**: Replace `C:\path\to\your\gladly-key.pem` with the actual path to your key file.
+**Important**: Replace `YOUR_USERNAME` with your Windows username, or use the path where you stored the key (outside any code repo).
 
 #### On Linux/Mac:
 
@@ -56,22 +66,23 @@ Host gladly-ec2
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-# Add SSH config entry
+# Add SSH config entry (uses recommended key location ~/.ssh/gladly-key.pem)
 cat >> ~/.ssh/config << 'EOF'
 Host gladly-ec2
     HostName 3.150.69.20
     User ec2-user
-    IdentityFile ~/path/to/gladly-key.pem
+    IdentityFile ~/.ssh/gladly-key.pem
     StrictHostKeyChecking no
 EOF
 
 # Set proper permissions
 chmod 600 ~/.ssh/config
+chmod 400 ~/.ssh/gladly-key.pem
 ```
 
 **Important**: 
-- Replace `~/path/to/gladly-key.pem` with the actual path to your key file
-- Make sure the key file has correct permissions: `chmod 400 ~/path/to/gladly-key.pem`
+- If you put the key elsewhere, replace `~/.ssh/gladly-key.pem` in the config with that path.
+- Make sure the key file has correct permissions: `chmod 400 ~/.ssh/gladly-key.pem` (or your path).
 
 ### Step 4: Update IP Address When Needed
 
