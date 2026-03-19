@@ -297,9 +297,6 @@ const BugTriageCopilot = () => {
           <Bug className="h-7 w-7 text-amber-600" />
           Bug Triage Copilot
         </h1>
-        <p className="text-gray-600 mt-1">
-          Review and triage bugs with AI suggestions (Jira HALO)
-        </p>
       </div>
 
       {/* Jira controls */}
@@ -562,9 +559,16 @@ const BugTriageCopilot = () => {
       {/* Backlog list */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
-          Backlog ({filteredAndSorted.length} of {issues.length} issues)
+          {jiraLoading
+            ? 'Backlog (Loading…)'
+            : `Backlog (${filteredAndSorted.length} of ${issues.length} issues)`}
         </h2>
-        {filteredAndSorted.length === 0 ? (
+        {jiraLoading ? (
+          <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+            <RefreshCw className="h-8 w-8 animate-spin text-gray-400 mb-3" />
+            <p className="text-sm">Loading tickets…</p>
+          </div>
+        ) : filteredAndSorted.length === 0 ? (
           <div className="text-sm text-gray-500 py-8 text-center">
             No issues match the current filters. Adjust filters to see more.
           </div>
