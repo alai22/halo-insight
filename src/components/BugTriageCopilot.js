@@ -25,6 +25,30 @@ import {
 
 const STORAGE_KEY = 'bug_triage_decisions';
 
+// Status (workflow state) → badge color classes
+function getStatusBadgeClasses(status) {
+  if (!status) return 'bg-sky-50 text-sky-700';
+  const s = status.toLowerCase();
+  if (s.includes('open') && !s.includes('ready')) return 'bg-slate-100 text-slate-700';
+  if (s.includes('ready for qa') || s.includes('in qa')) return 'bg-amber-100 text-amber-800';
+  if (s.includes('ready for merge') || s.includes('merge')) return 'bg-green-100 text-green-800';
+  if (s.includes('in progress') || s.includes('development')) return 'bg-blue-100 text-blue-800';
+  if (s.includes('blocked')) return 'bg-red-100 text-red-800';
+  if (s.includes('done') || s.includes('closed') || s.includes('resolved')) return 'bg-emerald-100 text-emerald-800';
+  return 'bg-sky-50 text-sky-700';
+}
+
+// Issue type → badge color classes
+function getIssuetypeBadgeClasses(issuetype) {
+  if (!issuetype) return 'bg-gray-100 text-gray-700';
+  const t = issuetype.toLowerCase();
+  if (t === 'bug') return 'bg-amber-100 text-amber-800';
+  if (t === 'story') return 'bg-blue-100 text-blue-800';
+  if (t === 'task') return 'bg-slate-100 text-slate-700';
+  if (t === 'epic') return 'bg-purple-100 text-purple-800';
+  return 'bg-gray-100 text-gray-700';
+}
+
 const loadDecisions = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -579,13 +603,18 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
         {issue.needsMoreInfo && (
           <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
         )}
+        {issue.issuetype && (
+          <span className={`px-2 py-0.5 text-xs rounded font-medium ${getIssuetypeBadgeClasses(issue.issuetype)}`} title="Issue type">
+            {issue.issuetype}
+          </span>
+        )}
         {issue.priority && (
           <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-xs rounded font-medium" title="Jira priority">
             {issue.priority}
           </span>
         )}
         {issue.status && (
-          <span className="px-2 py-0.5 bg-sky-50 text-sky-700 text-xs rounded" title="Workflow state">
+          <span className={`px-2 py-0.5 text-xs rounded ${getStatusBadgeClasses(issue.status)}`} title="Workflow state">
             {issue.status}
           </span>
         )}
@@ -598,24 +627,23 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
       )}
       {!showTitleSecondary && !isCompact && <div className="mb-2" />}
       {isCompact ? (
-        <div className="mt-auto pt-1 flex items-center gap-2 flex-wrap">
-          {issue.priority && <span className="text-xs text-slate-600">{issue.priority}</span>}
-          {issue.status && <span className="text-xs text-sky-600">{issue.status}</span>}
+        <div className="mt-auto pt-1 flex items-center gap-2 flex-wrap text-xs text-gray-600">
+          {issue.assignee && <span title="Assignee">{issue.assignee}</span>}
+          {issue.sprint && <span title="Sprint" className="text-violet-600">{issue.sprint}</span>}
           {(rec.component != null || rec.category != null) && (
-            <span className="text-xs text-blue-700">
+            <span className="text-blue-700">
               {[rec.category, rec.component].filter(Boolean).join(' · ')}
             </span>
           )}
         </div>
       ) : (
         <>
-          <div className="text-sm text-gray-500 flex flex-wrap gap-x-3 gap-y-1 mb-2">
-            {issue.priority && <span title="Priority">{issue.priority}</span>}
-            {issue.status && <span title="Status">{issue.status}</span>}
-            <span>{issue.component}</span>
-            <span>{issue.platform}</span>
-            {issue.clusterLabel && <span>{issue.clusterLabel}</span>}
-          </div>
+          {(issue.assignee || issue.sprint) && (
+            <div className="text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+              {issue.assignee && <span title="Assignee">{issue.assignee}</span>}
+              {issue.sprint && <span title="Sprint" className="text-violet-600">{issue.sprint}</span>}
+            </div>
+          )}
           {(rec.category != null || rec.component != null || rec.priority != null) && (
             <div className="mt-auto pt-2 border-t border-gray-100">
               <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>

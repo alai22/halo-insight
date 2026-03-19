@@ -45,6 +45,29 @@ def _adf_to_plain_text(adf: Any) -> str:
     return ' '.join(text_parts).strip() if text_parts else ''
 
 
+def _get_sprint_name(fields: Dict[str, Any]) -> Optional[str]:
+    """Extract sprint name from issue fields. Jira Software uses customfield_10020 or similar."""
+    # Common Jira Software Cloud sprint field
+    sprint = fields.get('customfield_10020')
+    if isinstance(sprint, dict) and sprint.get('name'):
+        return sprint.get('name')
+    if isinstance(sprint, list) and sprint:
+        first = sprint[0]
+        if isinstance(first, dict) and first.get('name'):
+            return first.get('name')
+    if isinstance(sprint, str):
+        return sprint
+    # Fallback: any field with 'sprint' in the key whose value has a name
+    for k, v in fields.items():
+        if 'sprint' not in k.lower():
+            continue
+        if isinstance(v, dict) and v.get('name'):
+            return v.get('name')
+        if isinstance(v, list) and v and isinstance(v[0], dict) and v[0].get('name'):
+            return v[0].get('name')
+    return None
+
+
 def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Map a Jira API issue to Bug Triage Copilot issue shape."""
     key = raw.get('key', '')
@@ -66,6 +89,9 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     issuetype_name = issuetype_obj.get('name') if isinstance(issuetype_obj, dict) else None
     parent_obj = fields.get('parent')
     parent_key = parent_obj.get('key') if isinstance(parent_obj, dict) and parent_obj else None
+    assignee_obj = fields.get('assignee')
+    assignee_name = assignee_obj.get('displayName') if isinstance(assignee_obj, dict) and assignee_obj else None
+    sprint_name = _get_sprint_name(fields)
 
     # Infer platform from labels (e.g. iOS, Android, Backend) or default
     platform_labels = {'iOS', 'Android', 'Backend', 'Other'}
@@ -103,6 +129,8 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
         'issuetype': issuetype_name,
         'priority': priority_name,
         'parentKey': parent_key,
+        'assignee': assignee_name,
+        'sprint': sprint_name,
         'aiRecommendation': {},
     }
 
@@ -216,7 +244,8 @@ class JiraClient:
             jql = f"{base} ORDER BY updated DESC"
         field_list = fields or [
             'summary', 'description', 'issuetype', 'components', 'priority',
-            'labels', 'status', 'created', 'updated', 'parent',
+            'labels', 'status', 'created', 'updated', 'parent', 'assignee',
+            'customfield_10020',  # Sprint (Jira Software Cloud common id)
         ]
         payload = {
             'jql': jql,
