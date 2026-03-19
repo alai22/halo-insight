@@ -164,8 +164,6 @@ const BugTriageCopilot = () => {
   const [sortDirection, setSortDirection] = useState('desc');
   const [groupByCluster, setGroupByCluster] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
-  const [viewMode, setViewMode] = useState('detailed'); // 'compact' | 'detailed'
-
   const clusters = useMemo(() => {
     const set = new Set();
     issues.forEach((i) => i.clusterLabel && set.add(i.clusterLabel));
@@ -266,7 +264,6 @@ const BugTriageCopilot = () => {
                 key={issue.id}
                 issue={issue}
                 triaged={isTriaged(issue.id)}
-                viewMode={viewMode}
                 onClick={() => setMiniDetailIssue(issue)}
                 jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
               />
@@ -282,7 +279,6 @@ const BugTriageCopilot = () => {
           key={issue.id}
           issue={issue}
           triaged={isTriaged(issue.id)}
-          viewMode={viewMode}
           onClick={() => setMiniDetailIssue(issue)}
           jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
         />
@@ -460,24 +456,6 @@ const BugTriageCopilot = () => {
             />
             Group by cluster
           </label>
-          <div className="h-5 border-l border-gray-300" />
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">View:</span>
-            <button
-              type="button"
-              onClick={() => setViewMode('compact')}
-              className={`px-2 py-1 text-sm rounded-md ${viewMode === 'compact' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
-            >
-              Compact
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('detailed')}
-              className={`px-2 py-1 text-sm rounded-md ${viewMode === 'detailed' ? 'bg-gray-200 font-medium text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
-            >
-              Detailed
-            </button>
-          </div>
         </div>
       </div>
 
@@ -596,11 +574,10 @@ const BugTriageCopilot = () => {
   );
 };
 
-function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicketHref }) {
+function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
   const rec = issue.aiRecommendation || {};
   const primaryText = rec.shortSummary ?? issue.title;
   const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
-  const isCompact = viewMode === 'compact';
 
   return (
     <div
@@ -659,36 +636,22 @@ function BacklogCard({ issue, triaged, viewMode = 'detailed', onClick, jiraTicke
           {issue.title}
         </div>
       )}
-      {!showTitleSecondary && !isCompact && <div className="mb-2" />}
-      {isCompact ? (
-        <div className="mt-auto pt-1 flex items-center gap-2 flex-wrap text-xs text-gray-600">
+      {!showTitleSecondary && <div className="mb-2" />}
+      {(issue.assignee || issue.sprint) && (
+        <div className="text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
           {issue.assignee && <span title="Assignee">{issue.assignee}</span>}
           {issue.sprint && <span title="Sprint" className="text-violet-600">{issue.sprint}</span>}
-          {(rec.component != null || rec.category != null) && (
-            <span className="text-blue-700">
-              {[rec.category, rec.component].filter(Boolean).join(' · ')}
-            </span>
-          )}
         </div>
-      ) : (
-        <>
-          {(issue.assignee || issue.sprint) && (
-            <div className="text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-              {issue.assignee && <span title="Assignee">{issue.assignee}</span>}
-              {issue.sprint && <span title="Sprint" className="text-violet-600">{issue.sprint}</span>}
-            </div>
-          )}
-          {(rec.category != null || rec.component != null || rec.priority != null) && (
-            <div className="mt-auto pt-2 border-t border-gray-100">
-              <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>
-              <div className="text-sm text-gray-700 flex flex-wrap gap-x-2 gap-y-0">
-                {rec.category != null && <span className="text-blue-700">Category: {rec.category}</span>}
-                {rec.component != null && <span className="text-blue-700">Component: {rec.component}</span>}
-                {rec.priority != null && <span className="text-gray-600">Priority: {rec.priority}</span>}
-              </div>
-            </div>
-          )}
-        </>
+      )}
+      {(rec.category != null || rec.component != null || rec.priority != null) && (
+        <div className="mt-auto pt-2 border-t border-gray-100">
+          <div className="text-xs text-gray-500 uppercase mb-0.5">Recommended</div>
+          <div className="text-sm text-gray-700 flex flex-wrap gap-x-2 gap-y-0">
+            {rec.category != null && <span className="text-blue-700">Category: {rec.category}</span>}
+            {rec.component != null && <span className="text-blue-700">Component: {rec.component}</span>}
+            {rec.priority != null && <span className="text-gray-600">Priority: {rec.priority}</span>}
+          </div>
+        </div>
       )}
     </div>
   );
