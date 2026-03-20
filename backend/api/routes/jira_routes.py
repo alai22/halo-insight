@@ -63,7 +63,7 @@ _OVERVIEW_MAX_TITLE_LEN = 240
 _OVERVIEW_MAX_LABELS = 20
 _OVERVIEW_MAX_COMPONENTS = 15
 
-_BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog. You receive a table of issues (key, title, and metadata only—no full descriptions).
+_BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
 
 Write a concise markdown overview for the team. Use these sections (omit a section if nothing substantive to say):
 ## Critical / high-risk themes
@@ -73,7 +73,14 @@ For each such ticket, **explicitly state whether you recommend escalating** (rai
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
-Possible duplicates or themes that should be grouped (cite keys).
+Use **two subheadings** when this section has content (omit empty subheadings):
+### Likely duplicate candidates
+Only when titles/metadata strongly suggest the **same user-visible bug** or **same root cause** (e.g. duplicate report of the identical failure). State briefly why. Cite keys.
+### Shared root-cause investigation (optional)
+Only when you believe **one fix or one investigation thread** could reasonably address **multiple keys** together—not merely that they touch the same screen family. Name the **hypothesized shared cause** in one short phrase. Cite keys.
+
+**Product context:** Map UI, pet pins, follow mode, pet card, multi-pet map behavior, geofences/fences, and collar/API updates are **different flows** in this product. **Do not** cluster tickets together only because they share platform (iOS/Android), or keywords like map, location, GPS, or pet—surface overlap is normal, not evidence of duplication.
+
 ## Other notes
 Non-obvious risks or cross-cutting patterns only. Omit this section entirely if everything important is already covered above.
 
@@ -81,6 +88,7 @@ Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
 - When you suggest changing how a ticket should be prioritized, label the direction: **Escalate** or **De-escalate**, with a short reason tied to metadata (e.g. labels, GA-blocker flag, priority vs apparent severity).
 - Do not invent facts; only infer from the provided list.
+- **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets.
 - **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
 - Do not open with generic scene-setting. Prefer leading with concrete findings, or one short clause if the filtered set is unremarkable.
 - If the list is small or homogeneous, say so in one brief clause—do not pad.
