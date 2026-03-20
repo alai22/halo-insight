@@ -69,17 +69,21 @@ Write a concise markdown overview for the team. Use these sections (omit a secti
 ## Critical / high-risk themes
 ## Priority review
 Issues that may be mis-prioritized vs severity/labels; suggest re-ordering only when justified by the data.
+For each such ticket, **explicitly state whether you recommend escalating** (raising attention/priority) **or de-escalating** (lowering relative priority)—do not leave it ambiguous.
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
 Possible duplicates or themes that should be grouped (cite keys).
 ## Other notes
-Anything else noteworthy.
+Non-obvious risks or cross-cutting patterns only. Omit this section entirely if everything important is already covered above.
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
+- When you suggest changing how a ticket should be prioritized, label the direction: **Escalate** or **De-escalate**, with a short reason tied to metadata (e.g. labels, GA-blocker flag, priority vs apparent severity).
 - Do not invent facts; only infer from the provided list.
-- If the list is small or homogeneous, say so briefly.
+- **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
+- Do not open with generic scene-setting. Prefer leading with concrete findings, or one short clause if the filtered set is unremarkable.
+- If the list is small or homogeneous, say so in one brief clause—do not pad.
 - Keep total length readable (roughly under 800 words)."""
 
 
