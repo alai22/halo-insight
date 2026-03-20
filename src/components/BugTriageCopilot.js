@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   ArrowLeft,
   Bug,
@@ -24,6 +26,27 @@ import {
 } from '../data/bugTriageMockData';
 
 const STORAGE_KEY = 'bug_triage_decisions';
+
+/** Strip to metadata allowed by POST /api/jira/backlog-overview */
+function slimIssueForOverview(issue) {
+  return {
+    key: issue.key,
+    title: issue.title,
+    priority: issue.priority,
+    status: issue.status,
+    issuetype: issue.issuetype,
+    component: issue.component,
+    components: issue.components,
+    labels: issue.labels,
+    parentKey: issue.parentKey,
+    parentSummary: issue.parentSummary,
+    epicKey: issue.epicKey,
+    epicSummary: issue.epicSummary,
+    sprint: issue.sprint,
+    gaBlocker: issue.gaBlocker === true,
+    needsMoreInfo: issue.needsMoreInfo === true,
+  };
+}
 
 // Statuses hidden by default; user can check them in the filter to show
 const DEFAULT_HIDDEN_STATUSES = [
@@ -113,6 +136,9 @@ const BugTriageCopilot = () => {
   const [jiraStatus, setJiraStatus] = useState({ configured: false });
   const [jiraLoading, setJiraLoading] = useState(false);
   const [jiraError, setJiraError] = useState(null);
+  const [overviewMarkdown, setOverviewMarkdown] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState(null);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -258,6 +284,69 @@ const BugTriageCopilot = () => {
     sortBy,
     sortDirection,
   ]);
+
+  const backlogOverviewFingerprint = useMemo(
+    () =>
+      filteredAndSorted
+        .map(
+          (i) =>
+            `${i.key}|${i.updated || ''}|${i.status || ''}|${(i.title || '').slice(0, 64)}`,
+        )
+        .join('\n'),
+    [filteredAndSorted],
+  );
+
+  const runBacklogOverview = useCallback(async (list, signal) => {
+    if (!list.length) {
+      setOverviewMarkdown(null);
+      setOverviewError(null);
+      setOverviewLoading(false);
+      return;
+    }
+    setOverviewLoading(true);
+    setOverviewError(null);
+    try {
+      const slim = list.map(slimIssueForOverview);
+      const res = await fetch('/api/jira/backlog-overview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issues: slim }),
+        signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (signal?.aborted) return;
+      if (!res.ok || data.status !== 'success') {
+        setOverviewError(data.message || 'Failed to generate backlog overview');
+        setOverviewMarkdown(null);
+        return;
+      }
+      setOverviewMarkdown(typeof data.overview === 'string' ? data.overview : '');
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      setOverviewError(e.message || 'Request failed');
+      setOverviewMarkdown(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!jiraStatus.configured || jiraLoading) return;
+    if (filteredAndSorted.length === 0) {
+      setOverviewMarkdown(null);
+      setOverviewError(null);
+      setOverviewLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      runBacklogOverview(filteredAndSorted, ac.signal);
+    }, 500);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+  }, [jiraStatus.configured, jiraLoading, backlogOverviewFingerprint, filteredAndSorted, runBacklogOverview]);
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;
@@ -623,6 +712,54 @@ const BugTriageCopilot = () => {
             ? 'Backlog (Loading…)'
             : `Backlog (${filteredAndSorted.length} of ${issues.length} issues)`}
         </h2>
+
+        {!jiraLoading && filteredAndSorted.length > 0 && (
+          <div className="mb-4 p-4 bg-amber-50/60 border border-amber-200 rounded-lg">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <h3 className="text-sm font-semibold text-amber-950">AI backlog overview</h3>
+              <div className="flex items-center gap-2">
+                {overviewLoading && (
+                  <span className="text-xs text-amber-900 flex items-center gap-1">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
+                    Generating overview…
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={overviewLoading}
+                  onClick={() => runBacklogOverview(filteredAndSorted)}
+                  className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-950 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Regenerate
+                </button>
+              </div>
+            </div>
+            {overviewError && (
+              <div className="flex items-start justify-between gap-2 mb-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
+                <p className="text-sm text-red-800 flex-1" role="alert">
+                  {overviewError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setOverviewError(null)}
+                  className="p-1 rounded text-red-700 hover:bg-red-100 shrink-0"
+                  aria-label="Dismiss error"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+            {overviewMarkdown && (
+              <div className="markdown-content text-gray-800 text-sm [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{overviewMarkdown}</ReactMarkdown>
+              </div>
+            )}
+            {!overviewMarkdown && overviewLoading && (
+              <p className="text-xs text-amber-900/80">Analyzing filtered backlog with Claude…</p>
+            )}
+          </div>
+        )}
+
         {jiraLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-gray-500">
             <RefreshCw className="h-8 w-8 animate-spin text-gray-400 mb-3" />

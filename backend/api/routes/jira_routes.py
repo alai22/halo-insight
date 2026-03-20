@@ -1,17 +1,20 @@
 """
 Jira API Routes for Bug Triage Copilot
 
-Provides issue list, status, and OAuth 2.0 (3LO) connect flow.
+Provides issue list, status, OAuth 2.0 (3LO) connect flow, and AI backlog overview.
 """
 
 import logging
 import secrets
-from flask import Blueprint, jsonify, request, redirect, session
+from typing import Any, Dict, List, Optional
+
+from flask import Blueprint, g, jsonify, redirect, request, session
 import requests
 
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
 from backend.utils.config import Config
+from backend.utils.pii_protection import create_pii_protector
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,122 @@ jira_bp = Blueprint('jira', __name__, url_prefix='/api/jira')
 
 # OAuth state key in session
 JIRA_OAUTH_STATE_KEY = 'jira_oauth_state'
+
+# POST /backlog-overview: allowed issue keys from client; max issues and title length for prompt size
+_OVERVIEW_ALLOWED_KEYS = frozenset({
+    'key', 'title', 'priority', 'status', 'issuetype', 'component', 'components', 'labels',
+    'parentKey', 'parentSummary', 'epicKey', 'epicSummary', 'sprint', 'gaBlocker', 'needsMoreInfo',
+})
+_OVERVIEW_MAX_ISSUES = 450
+_OVERVIEW_MAX_TITLE_LEN = 240
+_OVERVIEW_MAX_LABELS = 20
+_OVERVIEW_MAX_COMPONENTS = 15
+
+_BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog. You receive a table of issues (key, title, and metadata only—no full descriptions).
+
+Write a concise markdown overview for the team. Use these sections (omit a section if nothing substantive to say):
+## Critical / high-risk themes
+## Priority review
+Issues that may be mis-prioritized vs severity/labels; suggest re-ordering only when justified by the data.
+## Needs clarification
+Tickets that look vague, blocked, or missing context based on titles/metadata.
+## Duplicates or related clusters
+Possible duplicates or themes that should be grouped (cite keys).
+## Other notes
+Anything else noteworthy.
+
+Rules:
+- Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
+- Do not invent facts; only infer from the provided list.
+- If the list is small or homogeneous, say so briefly.
+- Keep total length readable (roughly under 800 words)."""
+
+
+def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
+    """Keep only allowed keys with safe primitive/list values."""
+    if not isinstance(raw, dict):
+        return None
+    key = raw.get('key')
+    if not key or not isinstance(key, str):
+        return None
+    key = key.strip()[:32]
+    if not key:
+        return None
+    out: Dict[str, Any] = {'key': key}
+    title = raw.get('title')
+    if isinstance(title, str):
+        t = title.strip()
+        if t:
+            out['title'] = t[:_OVERVIEW_MAX_TITLE_LEN]
+
+    def _str_field(name: str, max_len: int = 120):
+        v = raw.get(name)
+        if isinstance(v, str) and v.strip():
+            out[name] = v.strip()[:max_len]
+
+    for name in ('priority', 'status', 'issuetype', 'component', 'parentKey', 'parentSummary', 'epicKey', 'epicSummary', 'sprint'):
+        if name in _OVERVIEW_ALLOWED_KEYS:
+            _str_field(name, 200 if name in ('parentSummary', 'epicSummary') else 80)
+
+    labels = raw.get('labels')
+    if isinstance(labels, list):
+        cleaned = []
+        for x in labels[:_OVERVIEW_MAX_LABELS]:
+            if isinstance(x, str) and x.strip():
+                cleaned.append(x.strip()[:80])
+        if cleaned:
+            out['labels'] = cleaned
+
+    components = raw.get('components')
+    if isinstance(components, list):
+        cleaned = []
+        for x in components[:_OVERVIEW_MAX_COMPONENTS]:
+            if isinstance(x, str) and x.strip():
+                cleaned.append(x.strip()[:80])
+        if cleaned:
+            out['components'] = cleaned
+
+    if raw.get('gaBlocker') is True:
+        out['gaBlocker'] = True
+    if raw.get('needsMoreInfo') is True:
+        out['needsMoreInfo'] = True
+
+    return out
+
+
+def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: bool, total_submitted: int) -> str:
+    """Build user message text for Claude."""
+    lines = [
+        f"The following {len(issues)} issues are the current filtered backlog (metadata only).",
+    ]
+    if truncated:
+        lines.append(f"Note: Analyzing first {len(issues)} of {total_submitted} issues submitted (cap for context size).")
+    lines.append('')
+    lines.append('key | title | type | priority | status | component(s) | labels | parent | epic | flags')
+    for i in issues:
+        comps = i.get('components') or ([] if not i.get('component') else [i['component']])
+        comp_s = ','.join(comps) if comps else ''
+        labels = ','.join(i.get('labels') or [])
+        flags = []
+        if i.get('gaBlocker'):
+            flags.append('GA-blocker')
+        if i.get('needsMoreInfo'):
+            flags.append('needs-info')
+        flag_s = ','.join(flags)
+        parent = i.get('parentKey') or ''
+        if i.get('parentSummary'):
+            parent = f"{parent} ({i['parentSummary'][:60]})" if parent else i['parentSummary'][:60]
+        epic = i.get('epicKey') or ''
+        if i.get('epicSummary'):
+            epic = f"{epic} ({i['epicSummary'][:40]})" if epic else i['epicSummary'][:40]
+        title = (i.get('title') or '').replace('|', '/').replace('\n', ' ')
+        lines.append(
+            f"{i['key']} | {title} | {i.get('issuetype') or ''} | {i.get('priority') or ''} | {i.get('status') or ''} | "
+            f"{comp_s} | {labels} | {parent} | {epic} | {flag_s}"
+        )
+    lines.append('')
+    lines.append('Produce the markdown overview as instructed.')
+    return '\n'.join(lines)
 
 
 def _basic_auth_configured() -> bool:
@@ -280,4 +399,81 @@ def get_issues():
         return jsonify({
             'status': 'error',
             'message': str(e) or 'Failed to fetch issues from Jira',
+        }), 500
+
+
+@jira_bp.route('/backlog-overview', methods=['POST'])
+def backlog_overview():
+    """
+    Generate an AI markdown overview from a client-supplied list of issues (same filtered set as the UI).
+    Expects JSON: { "issues": [ { ... } ] }. Does not call Jira; uses Claude via service container.
+    """
+    if not request.is_json:
+        return jsonify({'status': 'error', 'message': 'Content-Type must be application/json'}), 400
+
+    data = request.get_json(silent=True) or {}
+    issues_in = data.get('issues')
+    if not isinstance(issues_in, list):
+        return jsonify({'status': 'error', 'message': 'Request body must include an "issues" array'}), 400
+
+    sanitized: List[Dict[str, Any]] = []
+    for item in issues_in:
+        s = _sanitize_overview_issue(item)
+        if s:
+            sanitized.append(s)
+
+    if not sanitized:
+        return jsonify({
+            'status': 'error',
+            'message': 'No valid issues to analyze (each item needs at least a key).',
+        }), 400
+
+    total_submitted = len(sanitized)
+    truncated = total_submitted > _OVERVIEW_MAX_ISSUES
+    batch = sanitized[:_OVERVIEW_MAX_ISSUES]
+
+    user_message = _format_issues_for_overview_prompt(batch, truncated, total_submitted)
+
+    pii_config = Config.get_pii_config()
+    if pii_config.get('redact_mode'):
+        protector = create_pii_protector(pii_config)
+        user_message = protector.redact_text(user_message)
+
+    service_container = getattr(g, 'service_container', None)
+    if not service_container:
+        logger.error('Service container missing for backlog overview')
+        return jsonify({
+            'status': 'error',
+            'message': 'Server misconfiguration: service container unavailable',
+        }), 500
+
+    claude_service = service_container.get_claude_service()
+    if claude_service is None:
+        return jsonify({
+            'status': 'error',
+            'message': 'Claude API is not configured (set ANTHROPIC_API_KEY).',
+        }), 503
+
+    try:
+        claude_response = claude_service.send_message(
+            message=user_message,
+            model=None,
+            max_tokens=2048,
+            system_prompt=_BACKLOG_OVERVIEW_SYSTEM,
+        )
+        return jsonify({
+            'status': 'success',
+            'overview': claude_response.content or '',
+            'meta': {
+                'issue_count': len(batch),
+                'truncated': truncated,
+                'submitted_count': total_submitted,
+                'model': claude_response.model,
+            },
+        })
+    except Exception as e:
+        logger.exception('Backlog overview Claude call failed: %s', e)
+        return jsonify({
+            'status': 'error',
+            'message': str(e) or 'Failed to generate backlog overview',
         }), 500
