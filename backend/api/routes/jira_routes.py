@@ -65,13 +65,24 @@ _OVERVIEW_MAX_COMPONENTS = 15
 
 _BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
 
+**HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the table `priority` column case-insensitively to these names (or treat unknown values conservatively).
+
 Write a concise markdown overview for the team. Use these sections (omit a section if nothing substantive to say):
 ## Critical / high-risk themes
+(Themes and risk—**not** the Jira priority name "Critical".)
 ## Priority review
 Issues that may be mis-prioritized vs severity/labels; suggest re-ordering only when justified by the data.
-For each such ticket, state one of: **Escalate** (raise Jira priority / urgency), **De-escalate** (lower relative priority), or **No change**—do not leave it ambiguous.
 
-**Respect current priority:** If the ticket is already at the **top** of the priority field (e.g. **Blocker**, **Highest**, or **Critical**—case-insensitive), **do not** recommend **Escalate** for priority: there is nowhere higher to go. Either say **No change** or, only if clearly justified, suggest **non-priority** follow-ups (e.g. sequencing, ownership)—never imply raising priority above Blocker/Highest/Critical.
+For each ticket you discuss, use this **exact vocabulary** for the Jira **priority field** only:
+- **Raise Jira priority** — move **up** the ladder (e.g. Critical→Blocker, Major→Critical). State the **target** level when you recommend a raise (e.g. "Raise to Blocker").
+- **Lower Jira priority** — move **down** the ladder. State the target when clear.
+- **No Jira priority change** — current priority is appropriate, or you are not recommending a field change.
+
+**Ceiling:** Only **Blocker** is at the top. **Do not** recommend **Raise Jira priority** for tickets already at **Blocker**—use **No Jira priority change** (and optional non-priority follow-ups: sequencing, ownership, comms—say they are **not** Jira priority changes).
+
+**Critical is below Blocker:** Recommending **Raise Jira priority** from **Critical** to **Blocker** is valid when justified. Do not treat Critical as "already max."
+
+**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise / Lower / No Jira priority change** only. Prefer one line per ticket: KEY | Current: (value from table) | Jira priority: Raise to X / Lower to Y / No change | Reason: …
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
@@ -81,17 +92,19 @@ Only when titles/metadata strongly suggest the **same user-visible bug** or **sa
 ### Shared root-cause investigation (optional)
 Only when you believe **one fix or one investigation thread** could reasonably address **multiple keys** together—not merely that they touch the same screen family. Name the **hypothesized shared cause** in one short phrase. Cite keys.
 
-**Product context:** Map UI, pet pins, follow mode, pet card, multi-pet map behavior, geofences/fences, and collar/API updates are **different flows** in this product. **Do not** cluster tickets together only because they share platform (iOS/Android), or keywords like map, location, GPS, or pet—surface overlap is normal, not evidence of duplication.
+**iOS vs Android:** If tickets clearly target **different platforms** (e.g. `[iOS]` vs `[Android]` / `[R][Android]` in titles, or obvious platform in summary), treat them as **separate bugs by default**—different native codepaths. **Do not** list them under **Likely duplicate candidates** or claim "**the same underlying issue**" or a **single shared investigation** unless you name a **specific shared layer** (e.g. backend API, contract, shared SDK)—not merely the same button label or flow name. You may note **same feature area** and that teams could **compare notes**; phrase that differently from asserting one root cause.
+
+**Product context:** Map UI, pet pins, follow mode, pet card, multi-pet map behavior, geofences/fences, and collar/API updates are **different flows** in this product. **Do not** cluster tickets together only because they mention the same surface keywords (map, location, GPS, pet, collar) or only because both are mobile—surface overlap is normal, not evidence of duplication.
 
 ## Other notes
 Non-obvious risks or cross-cutting patterns only. Omit this section entirely if everything important is already covered above.
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
-- When you suggest changing how a ticket should be prioritized, label **Escalate**, **De-escalate**, or **No change**, with a short reason tied to metadata (e.g. labels, GA-blocker flag, severity vs current priority field).
-- **Never** recommend **Escalate** for issues already at **Blocker**, **Highest**, or **Critical** priority unless you explicitly mean something other than the priority field (and say so); for Jira priority alone, use **No change** for those.
+- **Priority review** must use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change**—never **escalate/de-escalate** as verbs for the priority field.
+- **Blocker** tickets: **No Jira priority change** only (for the priority field). **Critical** and below may **Raise** or **Lower** per the HALO ladder.
 - Do not invent facts; only infer from the provided list.
-- **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets.
+- **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets. **iOS + Android pairs** are not duplicates unless a **shared non-client** cause is explicit in the data.
 - **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
 - Do not open with generic scene-setting. Prefer leading with concrete findings, or one short clause if the filtered set is unremarkable.
 - If the list is small or homogeneous, say so in one brief clause—do not pad.
@@ -157,6 +170,12 @@ def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: 
     ]
     if truncated:
         lines.append(f"Note: Analyzing first {len(issues)} of {total_submitted} issues submitted (cap for context size).")
+    lines.append('')
+    lines.append(
+        'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
+        'For ## Priority review, read each row\'s priority column and apply that order. '
+        'Only Blocker cannot be raised further; Critical may be raised to Blocker when justified.'
+    )
     lines.append('')
     lines.append('key | title | type | priority | status | component(s) | labels | parent | epic | flags')
     for i in issues:
