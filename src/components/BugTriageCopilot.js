@@ -139,6 +139,7 @@ const BugTriageCopilot = () => {
   const [overviewMarkdown, setOverviewMarkdown] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState(null);
+  const [overviewExpanded, setOverviewExpanded] = useState(false);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -714,14 +715,37 @@ const BugTriageCopilot = () => {
         </h2>
 
         {!jiraLoading && filteredAndSorted.length > 0 && (
-          <div className="mb-4 p-4 bg-amber-50/60 border border-amber-200 rounded-lg">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <h3 className="text-sm font-semibold text-amber-950">AI backlog overview</h3>
-              <div className="flex items-center gap-2">
-                {overviewLoading && (
+          <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-lg overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3">
+              <button
+                type="button"
+                onClick={() => setOverviewExpanded((e) => !e)}
+                className="flex items-center gap-2 text-left min-w-0 flex-1"
+                aria-expanded={overviewExpanded}
+              >
+                {overviewExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
+                )}
+                <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
+                {!overviewExpanded && overviewLoading && (
+                  <span className="text-xs font-normal text-amber-800 truncate">
+                    — generating…
+                  </span>
+                )}
+                {!overviewExpanded && overviewError && !overviewLoading && (
+                  <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
+                )}
+                {!overviewExpanded && overviewMarkdown && !overviewLoading && !overviewError && (
+                  <span className="text-xs font-normal text-amber-800/90 truncate">— ready, click to expand</span>
+                )}
+              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {overviewExpanded && overviewLoading && (
                   <span className="text-xs text-amber-900 flex items-center gap-1">
                     <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
-                    Generating overview…
+                    Generating…
                   </span>
                 )}
                 <button
@@ -734,28 +758,32 @@ const BugTriageCopilot = () => {
                 </button>
               </div>
             </div>
-            {overviewError && (
-              <div className="flex items-start justify-between gap-2 mb-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
-                <p className="text-sm text-red-800 flex-1" role="alert">
-                  {overviewError}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setOverviewError(null)}
-                  className="p-1 rounded text-red-700 hover:bg-red-100 shrink-0"
-                  aria-label="Dismiss error"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+            {overviewExpanded && (
+              <div className="px-4 pb-4 pt-0 border-t border-amber-200/70 space-y-3">
+                {overviewError && (
+                  <div className="flex items-start justify-between gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
+                    <p className="text-sm text-red-800 flex-1" role="alert">
+                      {overviewError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setOverviewError(null)}
+                      className="p-1 rounded text-red-700 hover:bg-red-100 shrink-0"
+                      aria-label="Dismiss error"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+                {overviewMarkdown && (
+                  <div className="markdown-content text-gray-800 text-sm [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{overviewMarkdown}</ReactMarkdown>
+                  </div>
+                )}
+                {!overviewMarkdown && overviewLoading && (
+                  <p className="text-xs text-amber-900/80">Analyzing filtered backlog with Claude…</p>
+                )}
               </div>
-            )}
-            {overviewMarkdown && (
-              <div className="markdown-content text-gray-800 text-sm [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{overviewMarkdown}</ReactMarkdown>
-              </div>
-            )}
-            {!overviewMarkdown && overviewLoading && (
-              <p className="text-xs text-amber-900/80">Analyzing filtered backlog with Claude…</p>
             )}
           </div>
         )}
