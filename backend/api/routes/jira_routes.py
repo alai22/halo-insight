@@ -69,7 +69,9 @@ Write a concise markdown overview for the team. Use these sections (omit a secti
 ## Critical / high-risk themes
 ## Priority review
 Issues that may be mis-prioritized vs severity/labels; suggest re-ordering only when justified by the data.
-For each such ticket, **explicitly state whether you recommend escalating** (raising attention/priority) **or de-escalating** (lowering relative priority)—do not leave it ambiguous.
+For each such ticket, state one of: **Escalate** (raise Jira priority / urgency), **De-escalate** (lower relative priority), or **No change**—do not leave it ambiguous.
+
+**Respect current priority:** If the ticket is already at the **top** of the priority field (e.g. **Blocker**, **Highest**, or **Critical**—case-insensitive), **do not** recommend **Escalate** for priority: there is nowhere higher to go. Either say **No change** or, only if clearly justified, suggest **non-priority** follow-ups (e.g. sequencing, ownership)—never imply raising priority above Blocker/Highest/Critical.
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
@@ -86,7 +88,8 @@ Non-obvious risks or cross-cutting patterns only. Omit this section entirely if 
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
-- When you suggest changing how a ticket should be prioritized, label the direction: **Escalate** or **De-escalate**, with a short reason tied to metadata (e.g. labels, GA-blocker flag, priority vs apparent severity).
+- When you suggest changing how a ticket should be prioritized, label **Escalate**, **De-escalate**, or **No change**, with a short reason tied to metadata (e.g. labels, GA-blocker flag, severity vs current priority field).
+- **Never** recommend **Escalate** for issues already at **Blocker**, **Highest**, or **Critical** priority unless you explicitly mean something other than the priority field (and say so); for Jira priority alone, use **No change** for those.
 - Do not invent facts; only infer from the provided list.
 - **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets.
 - **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
