@@ -9,7 +9,7 @@ See: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue
 import base64
 import re
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 
@@ -43,6 +43,30 @@ def _adf_to_plain_text(adf: Any) -> str:
 
     walk(adf)
     return ' '.join(text_parts).strip() if text_parts else ''
+
+
+def _parse_epic_link_field(fields: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Epic Link value from Jira Software (company-managed) is often customfield_10014.
+    Returns (epic_key_or_none, epic_summary_or_none). Summary is present only when
+    Jira returns a nested issue object with fields.summary.
+    """
+    epic_raw = fields.get('customfield_10014')
+    if epic_raw is None or epic_raw == '':
+        return (None, None)
+    if isinstance(epic_raw, str):
+        k = epic_raw.strip()
+        return (k, None) if k else (None, None)
+    if isinstance(epic_raw, dict):
+        k = epic_raw.get('key')
+        if not k:
+            return (None, None)
+        epic_fields = epic_raw.get('fields') or {}
+        summ = ''
+        if isinstance(epic_fields, dict):
+            summ = (epic_fields.get('summary') or '').strip()
+        return (str(k).strip(), summ or None)
+    return (None, None)
 
 
 def _get_sprint_name(fields: Dict[str, Any]) -> Optional[str]:
@@ -89,7 +113,14 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     issuetype_obj = fields.get('issuetype')
     issuetype_name = issuetype_obj.get('name') if isinstance(issuetype_obj, dict) else None
     parent_obj = fields.get('parent')
-    parent_key = parent_obj.get('key') if isinstance(parent_obj, dict) and parent_obj else None
+    parent_key = None
+    parent_summary = None
+    if isinstance(parent_obj, dict) and parent_obj:
+        parent_key = parent_obj.get('key')
+        parent_fields = parent_obj.get('fields') or {}
+        if isinstance(parent_fields, dict):
+            parent_summary = (parent_fields.get('summary') or '').strip() or None
+    epic_key, epic_summary = _parse_epic_link_field(fields)
     assignee_obj = fields.get('assignee')
     assignee_name = assignee_obj.get('displayName') if isinstance(assignee_obj, dict) and assignee_obj else None
     sprint_name = _get_sprint_name(fields)
@@ -131,6 +162,9 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
         'issuetype': issuetype_name,
         'priority': priority_name,
         'parentKey': parent_key,
+        'parentSummary': parent_summary,
+        'epicKey': epic_key,
+        'epicSummary': epic_summary,
         'assignee': assignee_name,
         'sprint': sprint_name,
         'aiRecommendation': {},
@@ -248,6 +282,7 @@ class JiraClient:
             'summary', 'description', 'issuetype', 'components', 'priority',
             'labels', 'status', 'created', 'updated', 'parent', 'assignee',
             'customfield_10020',  # Sprint (Jira Software Cloud common id)
+            'customfield_10014',  # Epic Link (common Jira Software Cloud id)
         ]
         payload = {
             'jql': jql,

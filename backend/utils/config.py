@@ -158,6 +158,15 @@ class Config:
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     # Admin email(s) for Google SSO admin access (comma-separated for multiple admins)
     ADMIN_EMAIL: Optional[str] = os.getenv('ADMIN_EMAIL', '')
+    # Domains allowed for magic link and Google SSO (comma-separated, no @)
+    # Example: halocollar.com,softeq.com
+    ALLOWED_EMAIL_DOMAINS: str = os.getenv('ALLOWED_EMAIL_DOMAINS', 'halocollar.com')
+    
+    @classmethod
+    def allowed_email_domains(cls) -> frozenset:
+        """Parse ALLOWED_EMAIL_DOMAINS into a lowercase set. Empty/invalid env falls back to halocollar.com."""
+        parts = {d.strip().lower() for d in cls.ALLOWED_EMAIL_DOMAINS.split(',') if d.strip()}
+        return frozenset(parts) if parts else frozenset({'halocollar.com'})
     
     @classmethod
     def is_admin_email(cls, email: str) -> bool:

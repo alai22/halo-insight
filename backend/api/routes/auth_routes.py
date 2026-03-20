@@ -7,6 +7,7 @@ from ...utils.logging import get_logger
 from ...services.auth_service import AuthService
 from ...utils.email_service import EmailService
 from ...utils.config import Config
+from urllib.parse import quote
 import os
 
 logger = get_logger('auth_routes')
@@ -572,7 +573,8 @@ def google_callback():
         # Validate email domain
         if not AuthService.validate_email_domain(email):
             logger.warning(f"Google OAuth login attempt from unauthorized domain: {email}")
-            return redirect("/?auth=error&message=Only @halocollar.com email addresses are allowed")
+            msg = quote('Your email domain is not allowed to access this application.')
+            return redirect(f"/?auth=error&message={msg}")
         
         # Check if user is an admin
         is_admin = Config.is_admin_email(email)

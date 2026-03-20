@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 import logging
 from backend.core.interfaces import IAuthService
+from backend.utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,6 @@ class AuthService(IAuthService):
     
     # Token expiration time (default 30 minutes)
     TOKEN_EXPIRATION_MINUTES = 30
-    
-    # Allowed email domain
-    ALLOWED_DOMAIN = 'halocollar.com'
     
     @classmethod
     def _cleanup_expired_tokens(cls):
@@ -37,11 +35,11 @@ class AuthService(IAuthService):
     
     @classmethod
     def validate_email_domain(cls, email: str) -> bool:
-        """Validate that email belongs to allowed domain"""
+        """Validate that email belongs to an allowed domain (Config.ALLOWED_EMAIL_DOMAINS)."""
         if not email or '@' not in email:
             return False
         domain = email.split('@')[1].lower()
-        return domain == cls.ALLOWED_DOMAIN.lower()
+        return domain in Config.allowed_email_domains()
     
     @classmethod
     def generate_token(cls, email: str) -> str:

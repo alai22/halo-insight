@@ -66,7 +66,9 @@ function getPriorityBadgeClasses(priority) {
   if (p === 'blocker' || p === 'highest') return 'bg-red-100 text-red-800';
   if (p === 'critical') return 'bg-red-200 text-red-900';
   if (p === 'major' || p === 'high') return 'bg-amber-100 text-amber-800';
-  if (p === 'medium' || p === 'normal') return 'bg-slate-100 text-slate-700';
+  if (p === 'medium') return 'bg-slate-100 text-slate-700';
+  if (p === 'normal') return 'bg-sky-100 text-sky-800';
+  if (p === 'minor') return 'bg-emerald-100 text-emerald-800';
   if (p === 'low' || p === 'lowest') return 'bg-gray-100 text-gray-600';
   return 'bg-gray-100 text-gray-700';
 }
@@ -78,8 +80,10 @@ function getPriorityRank(priority) {
   if (p === 'blocker' || p === 'highest') return 100;
   if (p === 'critical') return 90;
   if (p === 'major' || p === 'high') return 70;
-  if (p === 'medium' || p === 'normal') return 50;
+  if (p === 'medium') return 50;
+  if (p === 'normal') return 45;
   if (p === 'low') return 25;
+  if (p === 'minor') return 20;
   if (p === 'lowest') return 10;
   return 0;
 }
@@ -165,11 +169,9 @@ const BugTriageCopilot = () => {
   };
 
   // Filters
-  const [filterGaBlocker, setFilterGaBlocker] = useState(false);
   const [filterComponent, setFilterComponent] = useState('');
   const [filterPlatform, setFilterPlatform] = useState('');
   const [filterCluster, setFilterCluster] = useState('');
-  const [filterNeedsMoreInfo, setFilterNeedsMoreInfo] = useState(false);
   const [sortBy, setSortBy] = useState('priority');
   const [sortDirection, setSortDirection] = useState('desc');
   const [groupByCluster, setGroupByCluster] = useState(false);
@@ -227,7 +229,6 @@ const BugTriageCopilot = () => {
         return !hiddenStatuses.has(s);
       });
     }
-    if (filterGaBlocker) list = list.filter((i) => i.gaBlocker);
     if (filterComponent) {
       list = list.filter((i) => {
         const comps = i.components?.length ? i.components : (i.component ? [i.component] : []);
@@ -236,7 +237,6 @@ const BugTriageCopilot = () => {
     }
     if (filterPlatform) list = list.filter((i) => i.platform === filterPlatform);
     if (filterCluster) list = list.filter((i) => i.clusterLabel === filterCluster);
-    if (filterNeedsMoreInfo) list = list.filter((i) => i.needsMoreInfo);
 
     const mult = sortDirection === 'asc' ? 1 : -1;
     if (sortBy === 'priority') {
@@ -252,11 +252,9 @@ const BugTriageCopilot = () => {
   }, [
     issues,
     hiddenStatuses,
-    filterGaBlocker,
     filterComponent,
     filterPlatform,
     filterCluster,
-    filterNeedsMoreInfo,
     sortBy,
     sortDirection,
   ]);
@@ -306,6 +304,7 @@ const BugTriageCopilot = () => {
         onBack={() => setSelectedIssue(null)}
         NEXT_ACTIONS={NEXT_ACTIONS}
         COMPONENTS={COMPONENTS}
+        jiraBaseUrl={jiraStatus.base_url || null}
         jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${selectedIssue.key}` : null}
       />
     );
@@ -327,6 +326,7 @@ const BugTriageCopilot = () => {
                 issue={issue}
                 triaged={isTriaged(issue.id)}
                 onClick={() => setMiniDetailIssue(issue)}
+                jiraBaseUrl={jiraStatus.base_url || null}
                 jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
               />
             ))}
@@ -342,6 +342,7 @@ const BugTriageCopilot = () => {
           issue={issue}
           triaged={isTriaged(issue.id)}
           onClick={() => setMiniDetailIssue(issue)}
+          jiraBaseUrl={jiraStatus.base_url || null}
           jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
         />
       ))}
@@ -440,24 +441,6 @@ const BugTriageCopilot = () => {
           <span className="text-sm font-medium text-gray-700 flex items-center gap-1">
             <Filter className="h-4 w-4" /> Filters
           </span>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filterGaBlocker}
-              onChange={(e) => setFilterGaBlocker(e.target.checked)}
-              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-            />
-            GA blocker
-          </label>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filterNeedsMoreInfo}
-              onChange={(e) => setFilterNeedsMoreInfo(e.target.checked)}
-              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-            />
-            Needs more info
-          </label>
           <select
             value={filterComponent}
             onChange={(e) => setFilterComponent(e.target.value)}
@@ -666,6 +649,7 @@ const BugTriageCopilot = () => {
             setSelectedIssue(miniDetailIssue);
             setMiniDetailIssue(null);
           }}
+          jiraBaseUrl={jiraStatus.base_url || null}
           jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${miniDetailIssue.key}` : null}
         />
       )}
@@ -673,7 +657,79 @@ const BugTriageCopilot = () => {
   );
 };
 
-function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
+/** Parent issue and/or Epic Link from Jira (see jira_client _map_jira_issue_to_triage). */
+function IssueParentEpicMeta({ issue, jiraBaseUrl, compact = false }) {
+  const parentKey = issue.parentKey;
+  const parentSummary = issue.parentSummary;
+  const epicKey = issue.epicKey;
+  const epicSummary = issue.epicSummary;
+  const showEpic = epicKey && epicKey !== parentKey;
+  if (!parentKey && !showEpic) return null;
+
+  const browse = (key) => (jiraBaseUrl ? `${jiraBaseUrl}/browse/${key}` : null);
+  const linkClass = compact
+    ? 'text-blue-600 hover:text-blue-800 hover:underline font-mono'
+    : 'text-blue-600 hover:text-blue-800 hover:underline font-mono text-sm';
+
+  return (
+    <div
+      className={
+        compact
+          ? 'text-xs text-gray-600 space-y-0.5 mt-1.5'
+          : 'text-sm text-gray-700 space-y-1.5 mt-2'
+      }
+    >
+      {parentKey && (
+        <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0">
+          <span className="text-gray-500 shrink-0 font-medium">Parent</span>
+          {browse(parentKey) ? (
+            <a
+              href={browse(parentKey)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={linkClass}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {parentKey}
+            </a>
+          ) : (
+            <span className="font-mono text-gray-800">{parentKey}</span>
+          )}
+          {parentSummary && (
+            <span className="text-gray-600 line-clamp-2 min-w-0" title={parentSummary}>
+              — {parentSummary}
+            </span>
+          )}
+        </div>
+      )}
+      {showEpic && (
+        <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0">
+          <span className="text-gray-500 shrink-0 font-medium">Epic</span>
+          {browse(epicKey) ? (
+            <a
+              href={browse(epicKey)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={linkClass}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {epicKey}
+            </a>
+          ) : (
+            <span className="font-mono text-gray-800">{epicKey}</span>
+          )}
+          {epicSummary && (
+            <span className="text-gray-600 line-clamp-2 min-w-0" title={epicSummary}>
+              — {epicSummary}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
   const rec = issue.aiRecommendation || {};
   const primaryText = rec.shortSummary ?? issue.title;
   const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
@@ -729,6 +785,7 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
           </span>
         )}
       </div>
+      <IssueParentEpicMeta issue={issue} jiraBaseUrl={jiraBaseUrl} compact />
       <div
         className="font-medium text-gray-900 line-clamp-4 mb-0.5"
         title={issue.title || primaryText}
@@ -761,7 +818,7 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
   );
 }
 
-function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit, jiraTicketHref }) {
+function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose, onFullEdit, jiraTicketHref, jiraBaseUrl }) {
   const decision = decisions[issue.id] || {};
   const rec = issue.aiRecommendation || {};
   const getValue = (field) => {
@@ -838,6 +895,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
             ) : (
               <p className="font-mono text-sm text-gray-500">{issue.key}</p>
             )}
+            <IssueParentEpicMeta issue={issue} jiraBaseUrl={jiraBaseUrl} />
             {rec.shortSummary ? (
               <>
                 <h3 className="font-medium text-gray-900 mt-1">{rec.shortSummary}</h3>
@@ -851,7 +909,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
             )}
             <div className="flex flex-wrap gap-2 mt-2">
               {issue.priority && (
-                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-medium" title="Priority">{issue.priority}</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${getPriorityBadgeClasses(issue.priority)}`} title="Priority">{issue.priority}</span>
               )}
               {issue.status && (
                 <span className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs" title="Status">{issue.status}</span>
@@ -1008,7 +1066,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
   );
 }
 
-function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NEXT_ACTIONS, COMPONENTS, jiraTicketHref }) {
+function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NEXT_ACTIONS, COMPONENTS, jiraTicketHref, jiraBaseUrl }) {
   const decision = decisions[issue.id] || {};
   const rec = useMemo(() => issue.aiRecommendation || {}, [issue.aiRecommendation]);
   const getValue = (field) => {
@@ -1089,10 +1147,11 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
           ) : (
             <p className="text-sm text-gray-500 font-mono mb-2">{issue.key}</p>
           )}
+          <IssueParentEpicMeta issue={issue} jiraBaseUrl={jiraBaseUrl} />
           {(issue.priority || issue.status) && (
             <div className="flex flex-wrap gap-2 mb-2">
               {issue.priority && (
-                <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-sm font-medium" title="Priority">{issue.priority}</span>
+                <span className={`px-2 py-1 rounded text-sm font-medium ${getPriorityBadgeClasses(issue.priority)}`} title="Priority">{issue.priority}</span>
               )}
               {issue.status && (
                 <span className="px-2 py-1 bg-sky-50 text-sky-700 rounded text-sm" title="Status">{issue.status}</span>
