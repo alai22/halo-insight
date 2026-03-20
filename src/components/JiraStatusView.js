@@ -118,7 +118,7 @@ const JiraStatusView = ({ setCurrentMode }) => {
   const handleFetch = () => {
     setFetching(true);
     setFetchResult(null);
-    fetch('/api/jira/issues?project=HALO&max_results=500')
+    fetch('/api/jira/issues?project=HALO&max_results=1000')
       .then((res) => res.json().then((data) => ({ status: res.status, data })))
       .then(({ status: code, data }) => {
         if (code !== 200 || data.status !== 'success') {

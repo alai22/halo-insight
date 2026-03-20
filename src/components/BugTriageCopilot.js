@@ -26,7 +26,14 @@ import {
 const STORAGE_KEY = 'bug_triage_decisions';
 
 // Statuses hidden by default; user can check them in the filter to show
-const DEFAULT_HIDDEN_STATUSES = ['Ready for QA', 'Resolved', 'In Progress'];
+const DEFAULT_HIDDEN_STATUSES = [
+  'Ready for QA',
+  'Resolved',
+  'Closed',
+  'Ready for Merge',
+  'In Code Review',
+  'In Quality Control',
+];
 
 // Status → badge color classes
 function getStatusBadgeClasses(status) {
@@ -123,7 +130,7 @@ const BugTriageCopilot = () => {
     if (!jiraStatus.configured) return;
     setJiraError(null);
     setJiraLoading(true);
-    const params = new URLSearchParams({ project: 'HALO', max_results: '500' });
+    const params = new URLSearchParams({ project: 'HALO', max_results: '1000' });
     const ancestor = (jiraAncestorKeyRef.current || '').trim();
     if (ancestor) params.set('ancestor_key', ancestor);
     fetch(`/api/jira/issues?${params}`)
@@ -163,7 +170,7 @@ const BugTriageCopilot = () => {
   const [filterPlatform, setFilterPlatform] = useState('');
   const [filterCluster, setFilterCluster] = useState('');
   const [filterNeedsMoreInfo, setFilterNeedsMoreInfo] = useState(false);
-  const [sortBy, setSortBy] = useState('updated');
+  const [sortBy, setSortBy] = useState('priority');
   const [sortDirection, setSortDirection] = useState('desc');
   const [groupByCluster, setGroupByCluster] = useState(false);
   const [showSummary, setShowSummary] = useState(false);

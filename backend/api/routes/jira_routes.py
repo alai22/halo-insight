@@ -236,7 +236,7 @@ def get_myself():
 @jira_bp.route('/issues', methods=['GET'])
 def get_issues():
     """
-    Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (default 500, max 1000),
+    Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (1–1000, default 1000),
     ancestor_key (e.g. HALO-23306) to restrict to that issue and its descendants (children, grandchildren, etc.),
     issuetype (default Bug) to filter by issue type; use issuetype= or issuetype=all for all types.
     Uses Basic auth (JIRA_EMAIL + JIRA_API_TOKEN) when set; otherwise OAuth. Paginates Jira API to fetch beyond 100.
@@ -249,7 +249,7 @@ def get_issues():
 
     try:
         project = request.args.get('project', 'HALO').strip() or 'HALO'
-        max_results = min(max(int(request.args.get('max_results', 500)), 1), 1000)  # default 500, cap 1000
+        max_results = min(max(int(request.args.get('max_results', 1000)), 1), 1000)  # default 1000, cap 1000
         ancestor_key = (request.args.get('ancestor_key') or request.args.get('parent_key') or '').strip() or None
         issuetype_arg = (request.args.get('issuetype') or 'Bug').strip()
         issuetype = None if issuetype_arg.lower() in ('', 'all', '*') else issuetype_arg
