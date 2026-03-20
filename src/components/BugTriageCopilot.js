@@ -729,9 +729,14 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref }) {
           </span>
         )}
       </div>
-      <div className="font-medium text-gray-900 line-clamp-2 mb-0.5">{primaryText}</div>
+      <div
+        className="font-medium text-gray-900 line-clamp-4 mb-0.5"
+        title={issue.title || primaryText}
+      >
+        {primaryText}
+      </div>
       {showTitleSecondary && (
-        <div className="text-xs text-gray-500 line-clamp-1 mb-2" title={issue.title}>
+        <div className="text-xs text-gray-500 line-clamp-2 mb-2" title={issue.title}>
           {issue.title}
         </div>
       )}
