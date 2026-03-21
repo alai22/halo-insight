@@ -141,8 +141,7 @@ def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
 
 
 # Pass 1: themes, clarification, duplicates—no Priority review (that is pass 2 for output budget).
-_OVERVIEW_MAX_TOKENS_PASS1 = 4096
-_OVERVIEW_MAX_TOKENS_PASS2 = 8192
+# max_tokens per pass come from Config (default 4096; >4096 often 400 Bad Request on Haiku).
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS1 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
 
@@ -632,13 +631,13 @@ def backlog_overview():
         r1 = claude_service.send_message(
             message=user_message_pass1,
             model=None,
-            max_tokens=_OVERVIEW_MAX_TOKENS_PASS1,
+            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS,
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS1,
         )
         r2 = claude_service.send_message(
             message=user_message_pass2,
             model=None,
-            max_tokens=_OVERVIEW_MAX_TOKENS_PASS2,
+            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
         )
         part1 = (r1.content or '').strip()

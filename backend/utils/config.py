@@ -98,6 +98,10 @@ class Config:
     JIRA_OAUTH_TOKENS_FILE: str = os.getenv('JIRA_OAUTH_TOKENS_FILE', 'data/jira_oauth_tokens.json')
     # App base URL for OAuth callback (e.g. https://insight.halocollar.com). Required for Jira OAuth.
     APP_BASE_URL: Optional[str] = os.getenv('APP_BASE_URL')
+    # Backlog overview uses two Claude calls. Default 4096 per pass — values above 4096 often return 400
+    # from Anthropic for claude-3-haiku and other models; set to 8192 only if your CLAUDE_MODEL supports it.
+    JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS', '4096'))
+    JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '4096'))
     
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')

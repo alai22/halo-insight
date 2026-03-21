@@ -229,6 +229,8 @@ class ClaudeService(IClaudeService):
                     pass
             
             logger.error(f"Claude API request failed: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None and getattr(e.response, 'text', None):
+                logger.error("Claude API response body (truncated): %s", (e.response.text or '')[:800])
             raise ClaudeAPIError(
                 f"Claude API request failed: {str(e)}",
                 details=error_details
