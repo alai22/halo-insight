@@ -143,7 +143,7 @@ def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
 # Pass 1: themes, clarification, duplicates—no Priority review (that is pass 2 for output budget).
 # max_tokens per pass come from Config (default 4096; >4096 often 400 Bad Request on Haiku).
 
-_BACKLOG_OVERVIEW_SYSTEM_PASS1 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
+_BACKLOG_OVERVIEW_SYSTEM_PASS1 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive issues as **TAB-separated** lines (see user message header row for column order—**priority** is the 4th column).
 
 **Important:** Do **not** output a `## Priority review` section. Priority review is generated in a separate step; including it here is **forbidden**.
 
@@ -177,9 +177,11 @@ Rules:
 **Forbidden:** Any heading `## Priority review` or discussion of Jira priority raise/lower recommendations (that is handled elsewhere)."""
 
 
-_BACKLOG_OVERVIEW_SYSTEM_PASS2 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
+_BACKLOG_OVERVIEW_SYSTEM_PASS2 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive issues as **TAB-separated** lines (not pipe `|` tables). The user message has a header row naming columns: **key, title, type, priority, status, …** — the **priority** value is always the **4th field** on each line.
 
-**HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the table `priority` column case-insensitively to these names (or treat unknown values conservatively).
+**Canonical Jira priority:** For every ticket, the **only** source of truth for its current Jira priority is that **priority** field. **Never** infer or override it from the title (e.g. words like "GA", "critical", "blocker" in the summary are **not** the Jira priority unless they appear in the **priority** column). In `### Recommended Jira priority changes`, the **Current priority** cell must **exactly match** the priority field from the input line for that issue key.
+
+**HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the **priority** column case-insensitively to these names (or treat unknown values conservatively).
 
 **Ladder for comparisons (memorize):** Blocker is **#1 (top—cannot go higher)**. Then Critical, Major, Normal, Minor, Trivial. A valid **Raise** means moving **up** this list (e.g. Critical→Blocker). A valid **Lower** means moving **down**.
 
@@ -279,6 +281,20 @@ def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
+def _overview_tsv_field(val: Any, max_len: Optional[int] = None) -> str:
+    """One cell for tab-separated overview lines; remove chars that break column alignment."""
+    if val is None:
+        s = ''
+    elif isinstance(val, (int, float)):
+        s = str(val)
+    else:
+        s = str(val).replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
+        s = ' '.join(s.split())
+    if max_len is not None and len(s) > max_len:
+        s = s[:max_len]
+    return s
+
+
 def _format_issues_for_overview_prompt(
     issues: List[Dict[str, Any]],
     truncated: bool,
@@ -302,12 +318,22 @@ def _format_issues_for_overview_prompt(
         lines.append(
             'Your task for this message: output **only** ## Priority review (aggregate counts + reprioritization table when applicable). '
             'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
+            'For each issue key, **Current priority** in your output must match the **priority** column (4th tab-separated field) in the data below—not the title. '
             'Tabulate counts for issues with no change; list Raise/Lower only in the reprioritization table. '
             '**Hard rule:** Never a row with Current priority Blocker and Raise/Raise to Blocker. '
             'Raise to Blocker only when Current is Critical or lower. Self-check: target must not equal Current.'
         )
     lines.append('')
-    lines.append('key | title | type | priority | status | component(s) | labels | parent | epic | flags')
+    lines.append(
+        'Issues below: each line is TAB-separated (use the tab character as delimiter only—do not parse as pipe `|`). '
+        'Columns: key, title, type, priority, status, components, labels, parent, epic, flags. '
+        'The **priority** column (4th) is the authoritative Jira priority for that key.'
+    )
+    lines.append(
+        '\t'.join(
+            ['key', 'title', 'type', 'priority', 'status', 'components', 'labels', 'parent', 'epic', 'flags']
+        )
+    )
     for i in issues:
         comps = i.get('components') or ([] if not i.get('component') else [i['component']])
         comp_s = ','.join(comps) if comps else ''
@@ -320,15 +346,25 @@ def _format_issues_for_overview_prompt(
         flag_s = ','.join(flags)
         parent = i.get('parentKey') or ''
         if i.get('parentSummary'):
-            parent = f"{parent} ({i['parentSummary'][:60]})" if parent else i['parentSummary'][:60]
+            ps = (i.get('parentSummary') or '')[:60]
+            parent = f"{parent} ({ps})" if parent else ps
         epic = i.get('epicKey') or ''
         if i.get('epicSummary'):
-            epic = f"{epic} ({i['epicSummary'][:40]})" if epic else i['epicSummary'][:40]
-        title = (i.get('title') or '').replace('|', '/').replace('\n', ' ')
-        lines.append(
-            f"{i['key']} | {title} | {i.get('issuetype') or ''} | {i.get('priority') or ''} | {i.get('status') or ''} | "
-            f"{comp_s} | {labels} | {parent} | {epic} | {flag_s}"
-        )
+            es = (i.get('epicSummary') or '')[:40]
+            epic = f"{epic} ({es})" if epic else es
+        row = [
+            _overview_tsv_field(i.get('key')),
+            _overview_tsv_field((i.get('title') or ''), _OVERVIEW_MAX_TITLE_LEN),
+            _overview_tsv_field(i.get('issuetype') or ''),
+            _overview_tsv_field(i.get('priority') or ''),
+            _overview_tsv_field(i.get('status') or ''),
+            _overview_tsv_field(comp_s, 240),
+            _overview_tsv_field(labels, 400),
+            _overview_tsv_field(parent, 140),
+            _overview_tsv_field(epic, 120),
+            _overview_tsv_field(flag_s),
+        ]
+        lines.append('\t'.join(row))
     lines.append('')
     if prompt_variant == 'pass1':
         lines.append('Produce the markdown overview as instructed in the system prompt (no ## Priority review).')
