@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { getSurvicateDataSource } from '../utils/constants';
 
-const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings }) => {
+const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings, mobileDrawerOpen = false, onCloseMobile }) => {
   const [downloadStats, setDownloadStats] = useState(null);
   const [surveyStats, setSurveyStats] = useState(null);
   const [dataSource, setDataSource] = useState(getSurvicateDataSource());
@@ -389,19 +389,39 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
   };
 
   return (
-    <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
+    <div
+      className={`
+        bg-white shadow-lg border-r border-gray-200 flex flex-col w-64 shrink-0 overflow-y-auto
+        fixed inset-y-0 left-0 z-50 h-full max-w-[min(20rem,calc(100vw-2rem))]
+        transition-transform duration-200 ease-out
+        md:relative md:inset-auto md:z-auto md:h-auto md:max-w-none md:translate-x-0
+        ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+      `}
+    >
       {/* Header */}
       <div className="p-6 border-b border-gray-200">
-        <div className="flex items-center space-x-3 mb-4">
-          <img 
-            src="/dog-spark.jpg" 
-            alt="Halo Insight Logo" 
-            className="h-10 w-10 rounded-full object-cover"
-          />
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Halo Insight</h2>
-            <p className="text-sm text-gray-500">Customer Intelligence</p>
+        <div className="flex items-start justify-between gap-2 mb-4">
+          <div className="flex items-center space-x-3 min-w-0">
+            <img 
+              src="/dog-spark.jpg" 
+              alt="Halo Insight Logo" 
+              className="h-10 w-10 rounded-full object-cover shrink-0"
+            />
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900">Halo Insight</h2>
+              <p className="text-sm text-gray-500">Customer Intelligence</p>
+            </div>
           </div>
+          {onCloseMobile && (
+            <button
+              type="button"
+              onClick={onCloseMobile}
+              className="md:hidden shrink-0 p-2 -mr-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+              aria-label="Close menu"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
         </div>
         
         {/* Health Status */}
@@ -718,7 +738,10 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
                 {currentMode !== 'api-data-manager' && (currentMode === 'survicate' || currentMode === 'churn-trends') && (
                   <div className="mt-3">
                     <button
-                      onClick={() => setCurrentMode('api-data-manager')}
+                      onClick={() => {
+                        setCurrentMode('api-data-manager');
+                        onCloseMobile?.();
+                      }}
                       className="w-full px-3 py-2 text-xs bg-purple-500 text-white rounded hover:bg-purple-600 flex items-center justify-center space-x-1"
                       title="Open Data Management in main area"
                     >

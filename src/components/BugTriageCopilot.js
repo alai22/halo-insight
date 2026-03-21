@@ -440,17 +440,17 @@ const BugTriageCopilot = () => {
   );
 
   return (
-    <div className="max-w-7xl mx-auto p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Bug className="h-7 w-7 text-amber-600" />
-          Bug Triage Copilot
+    <div className="max-w-7xl mx-auto px-3 py-4 sm:p-6 min-w-0">
+      <div className="mb-4 sm:mb-6">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2 min-w-0">
+          <Bug className="h-6 w-6 sm:h-7 sm:w-7 text-amber-600 shrink-0" />
+          <span className="truncate sm:whitespace-normal">Bug Triage Copilot</span>
         </h1>
       </div>
 
       {/* Jira controls */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 sm:p-4 mb-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           {jiraLoading && (
             <span className="text-sm text-gray-500">Loading…</span>
           )}
@@ -458,7 +458,7 @@ const BugTriageCopilot = () => {
             <span className="text-sm text-green-700">{issues.length} issues loaded from Jira</span>
           )}
           {jiraError && (
-            <span className="text-sm text-red-600">{jiraError}</span>
+            <span className="text-sm text-red-600 break-words">{jiraError}</span>
           )}
           {jiraStatus.configured && (
             <>
@@ -466,28 +466,29 @@ const BugTriageCopilot = () => {
                 type="button"
                 onClick={fetchJiraIssues}
                 disabled={jiraLoading}
-                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 sm:px-2 sm:py-1 text-sm sm:text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md disabled:opacity-50 w-full sm:w-auto"
                 title="Refresh issues from Jira"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-4 w-4 sm:h-3.5 sm:w-3.5 ${jiraLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm text-gray-500">Under issue:</span>
+              <div className="flex flex-col gap-2 w-full min-w-0 sm:flex-row sm:items-center sm:flex-wrap sm:w-auto">
+                <span className="text-sm text-gray-500 shrink-0">Under issue:</span>
                 <input
                   type="text"
                   value={jiraAncestorKey}
                   onChange={(e) => setJiraAncestorKey(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && fetchJiraIssues()}
                   placeholder="e.g. HALO-23306"
-                  className="px-2 py-1 text-sm border border-gray-300 rounded-md w-36 font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md w-full min-w-0 sm:w-40 max-w-full font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   title="Show only children, grandchildren, etc. of this issue"
                 />
+                <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={fetchJiraIssues}
                   disabled={jiraLoading}
-                  className="px-2 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50"
+                  className="px-3 py-2 sm:px-2 sm:py-1 text-sm sm:text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-md disabled:opacity-50 min-h-[44px] sm:min-h-0"
                 >
                   Apply
                 </button>
@@ -500,7 +501,7 @@ const BugTriageCopilot = () => {
                       fetchJiraIssues();
                     }}
                     disabled={jiraLoading}
-                    className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded disabled:opacity-50"
+                    className="px-3 py-2 sm:px-2 sm:py-1 text-sm sm:text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md disabled:opacity-50 min-h-[44px] sm:min-h-0"
                   >
                     Clear
                   </button>
@@ -510,12 +511,13 @@ const BugTriageCopilot = () => {
                     href={`${jiraStatus.base_url}/browse/${jiraAncestorKey.trim()}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                    className="text-sm sm:text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5 py-2 sm:py-0"
                   >
                     Open in Jira
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3 w-3 shrink-0" />
                   </a>
                 )}
+                </div>
               </div>
             </>
           )}
@@ -526,15 +528,16 @@ const BugTriageCopilot = () => {
       </div>
 
       {/* Filters & sort */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm font-medium text-gray-700 flex items-center gap-1">
-            <Filter className="h-4 w-4" /> Filters
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 sm:p-4 mb-4 min-w-0">
+        <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+          <span className="text-sm font-medium text-gray-700 flex items-center gap-1 shrink-0">
+            <Filter className="h-4 w-4 shrink-0" /> Filters
           </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center gap-2 sm:gap-3 flex-1 min-w-0 w-full lg:w-auto">
           <select
             value={filterComponent}
             onChange={(e) => setFilterComponent(e.target.value)}
-            className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            className="w-full min-w-0 lg:w-auto px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 max-w-full"
           >
             <option value="">All components</option>
             {(componentOptions.length ? componentOptions : COMPONENTS).map((c) => (
@@ -544,7 +547,7 @@ const BugTriageCopilot = () => {
           <select
             value={filterPlatform}
             onChange={(e) => setFilterPlatform(e.target.value)}
-            className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            className="w-full min-w-0 lg:w-auto px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 max-w-full"
           >
             <option value="">All platforms</option>
             {PLATFORMS.map((p) => (
@@ -554,25 +557,25 @@ const BugTriageCopilot = () => {
           <select
             value={filterCluster}
             onChange={(e) => setFilterCluster(e.target.value)}
-            className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            className="w-full min-w-0 lg:w-auto px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 max-w-full"
           >
             <option value="">All clusters</option>
             {clusters.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
-          <div className="relative" ref={statusDropdownRef}>
+          <div className="relative w-full sm:w-auto" ref={statusDropdownRef}>
             <button
               type="button"
               onClick={() => setShowStatusDropdown((v) => !v)}
-              className="inline-flex items-center gap-1 px-2 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 text-gray-700"
+              className="inline-flex w-full sm:w-auto justify-center sm:justify-start items-center gap-1 px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 text-gray-700 min-h-[44px] sm:min-h-0"
               title="Show/hide by status"
             >
               Status
               <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${showStatusDropdown ? 'rotate-180' : ''}`} />
             </button>
             {showStatusDropdown && (
-              <div className="absolute left-0 top-full mt-1 z-20 min-w-[12rem] max-h-64 overflow-auto py-2 bg-white border border-gray-200 rounded-lg shadow-lg">
+              <div className="absolute left-0 right-0 sm:right-auto top-full mt-1 z-20 min-w-0 sm:min-w-[12rem] max-h-64 overflow-auto py-2 bg-white border border-gray-200 rounded-lg shadow-lg">
                 <div className="px-3 py-1 text-xs font-medium text-gray-500 uppercase">Show issues with status</div>
                 {statusOptions.length > 0 ? (
                   statusOptions.map((status) => (
@@ -598,14 +601,15 @@ const BugTriageCopilot = () => {
               </div>
             )}
           </div>
-          <div className="h-5 border-l border-gray-300" />
-          <div className="flex items-center gap-2">
-            <ArrowUpDown className="h-4 w-4 text-gray-500" />
-            <span className="text-sm text-gray-600">Sort:</span>
+          </div>
+          <div className="hidden sm:block h-5 w-px shrink-0 bg-gray-300 self-stretch sm:self-auto" aria-hidden />
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto pt-1 border-t border-gray-200 sm:border-t-0 sm:pt-0">
+            <ArrowUpDown className="h-4 w-4 text-gray-500 shrink-0" />
+            <span className="text-sm text-gray-600 shrink-0">Sort:</span>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+              className="flex-1 min-w-[8rem] sm:flex-none px-3 py-2 sm:px-2 sm:py-1 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 max-w-full"
             >
               <option value="priority">Priority</option>
               <option value="updated">Recency</option>
@@ -613,18 +617,18 @@ const BugTriageCopilot = () => {
             <button
               type="button"
               onClick={() => setSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'))}
-              className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-md"
+              className="p-2.5 sm:p-1.5 text-gray-600 hover:bg-gray-100 rounded-md min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 flex items-center justify-center shrink-0"
               title={sortDirection === 'asc' ? 'Descending' : 'Ascending'}
             >
               {sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
             </button>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer py-1 min-h-[44px] sm:min-h-0">
             <input
               type="checkbox"
               checked={groupByCluster}
               onChange={(e) => setGroupByCluster(e.target.checked)}
-              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 shrink-0"
             />
             Group by cluster
           </label>
@@ -707,7 +711,7 @@ const BugTriageCopilot = () => {
       </div>
 
       {/* Backlog list */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 sm:p-4 min-w-0">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
           {jiraLoading
             ? 'Backlog (Loading…)'
@@ -776,7 +780,9 @@ const BugTriageCopilot = () => {
                   </div>
                 )}
                 {overviewMarkdown && (
-                  <div className="markdown-content text-gray-800 text-sm [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline">
+                  <div
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[36rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tbody_tr:nth-child(even)_td]:bg-amber-50/50"
+                  >
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{overviewMarkdown}</ReactMarkdown>
                   </div>
                 )}
@@ -1280,11 +1286,11 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="px-3 py-4 sm:p-6 max-w-4xl mx-auto min-w-0">
       <button
         type="button"
         onClick={onBack}
-        className="mb-4 flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
+        className="mb-4 flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors min-h-[44px] sm:min-h-0"
       >
         <ArrowLeft className="h-4 w-4" />
         Back to backlog

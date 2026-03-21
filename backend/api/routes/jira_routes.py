@@ -82,7 +82,18 @@ For each ticket you discuss, use this **exact vocabulary** for the Jira **priori
 
 **Critical is below Blocker:** Recommending **Raise Jira priority** from **Critical** to **Blocker** is valid when justified. Do not treat Critical as "already max."
 
-**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise / Lower / No Jira priority change** only. Prefer one line per ticket: KEY | Current: (value from table) | Jira priority: Raise to X / Lower to Y / No change | Reason: …
+**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change** in the table’s recommendation column.
+
+**Format (required):** Under `## Priority review`, render every recommendation as a **GitHub-flavored markdown pipe table** (not plain pipe-separated lines). Include a header row and a separator row `|---|---|---|---|`. Columns **exactly**:
+
+| Ticket | Current priority | Jira priority recommendation | Reason |
+
+- **Ticket:** issue key only (e.g. HALO-26661).
+- **Current priority:** value from the backlog `priority` column.
+- **Jira priority recommendation:** e.g. `Raise to Critical`, `Lower to Normal`, or `No Jira priority change`.
+- **Reason:** short justification.
+
+One data row per ticket. Optional one-sentence intro above the table is OK; no other prose inside this section except the table.
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
@@ -101,7 +112,7 @@ Non-obvious risks or cross-cutting patterns only. Omit this section entirely if 
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
-- **Priority review** must use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change**—never **escalate/de-escalate** as verbs for the priority field.
+- **Priority review** must be a **markdown table** (see section instructions). Use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change** in the recommendation column—never **escalate/de-escalate** as verbs for the priority field.
 - **Blocker** tickets: **No Jira priority change** only (for the priority field). **Critical** and below may **Raise** or **Lower** per the HALO ladder.
 - Do not invent facts; only infer from the provided list.
 - **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets. **iOS + Android pairs** are not duplicates unless a **shared non-client** cause is explicit in the data.

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, Menu, LogOut } from 'lucide-react';
 import PromptInput from './components/PromptInput';
 import ConversationDisplay from './components/ConversationDisplay';
 import Sidebar from './components/Sidebar';
@@ -85,6 +85,26 @@ function App() {
   const [healthStatus, setHealthStatus] = useState(null);
   const [adminMode, setAdminMode] = useState(null); // 'claude' or 'download' for admin tools
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Close mobile sidebar when resizing to desktop breakpoint
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const onChange = () => {
+      if (mq.matches) setMobileSidebarOpen(false);
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMobileSidebarOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileSidebarOpen]);
   
   // Ref to prevent infinite loops when syncing URL and currentMode
   const isSyncingRef = useRef(false);
@@ -695,6 +715,14 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
+      {mobileSidebarOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          aria-label="Close menu"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
       {/* Sidebar */}
       <Sidebar 
         healthStatus={healthStatus}
@@ -703,16 +731,26 @@ function App() {
         setAdminMode={setAdminMode}
         setCurrentMode={setCurrentMode}
         onCloseSettings={() => setShowSettings(false)}
+        mobileDrawerOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
       />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+        <header className="bg-white shadow-sm border-b border-gray-200 px-3 py-3 sm:px-6 sm:py-4">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="md:hidden shrink-0 p-2.5 -ml-1 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <div className="flex-1 min-w-0">
               {adminMode && currentMode !== 'tools' ? (
-                <div className="flex items-center space-x-3 px-4 py-2 bg-orange-50 border-2 border-orange-200 rounded-lg">
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-orange-50 border-2 border-orange-200 rounded-lg">
                   <span className="text-sm font-medium text-orange-900">
                     Admin Mode: {getModeTitle()}
                   </span>
@@ -734,23 +772,24 @@ function App() {
                 />
               )}
             </div>
-            <div className="flex items-center space-x-3">
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
               <button
                 onClick={handleLogout}
-                className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                className="flex items-center justify-center gap-2 px-2.5 py-2 sm:px-3 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors min-h-[40px]"
                 title="Logout"
               >
-                Logout
+                <LogOut className="h-5 w-5 sm:hidden shrink-0" aria-hidden />
+                <span className="hidden sm:inline">Logout</span>
               </button>
               <button
                 onClick={() => setShowSettings(!showSettings)}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                className="p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
                 title="Settings"
               >
                 <Settings className="h-5 w-5" />
               </button>
               {!adminMode && (
-                <div className="flex items-center space-x-2">
+                <div className="hidden md:flex items-center space-x-2">
                   <button
                     onClick={clearCurrentConversations}
                     disabled={getCurrentConversationCount() === 0}

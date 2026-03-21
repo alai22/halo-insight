@@ -109,10 +109,16 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
     setModeAndUrl(modeId);
   };
 
+  const tabBtn = (active) =>
+    `shrink-0 md:flex-1 md:min-w-0 px-3 sm:px-4 py-2.5 text-sm font-medium rounded-md transition-colors min-h-[44px] flex items-center justify-center gap-1.5 ${
+      active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+    }`;
+
   return (
-    <div className="flex flex-col space-y-3">
-      {/* Main Tabs */}
-      <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+    <div className="flex flex-col space-y-3 min-w-0 w-full">
+      {/* Main Tabs — horizontal scroll on narrow viewports */}
+      <div className="overflow-x-auto min-w-0 -mx-1 px-1 sm:mx-0 sm:px-0 overscroll-x-contain [scrollbar-width:thin]">
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg flex-nowrap w-max min-w-full md:w-full md:min-w-0">
         <button
           onClick={() => {
             setActiveTab('churn');
@@ -120,13 +126,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               setModeAndUrl('churn-trends');
             }
           }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            activeTab === 'churn'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
+          className={tabBtn(activeTab === 'churn')}
         >
-          Churn Analysis
+          <span className="md:hidden whitespace-nowrap">Churn</span>
+          <span className="hidden md:inline whitespace-nowrap">Churn Analysis</span>
         </button>
         <button
           onClick={() => {
@@ -135,13 +138,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               setModeAndUrl('survey-manager');
             }
           }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            activeTab === 'surveys'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
+          className={tabBtn(activeTab === 'surveys')}
         >
-          Survicate Surveys
+          <span className="md:hidden whitespace-nowrap">Surveys</span>
+          <span className="hidden md:inline whitespace-nowrap">Survicate Surveys</span>
         </button>
         <button
           onClick={() => {
@@ -150,13 +150,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               setModeAndUrl('conversation-trends');
             }
           }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            activeTab === 'gladly'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
+          className={tabBtn(activeTab === 'gladly')}
         >
-          Gladly Conversations
+          <span className="md:hidden whitespace-nowrap">Gladly</span>
+          <span className="hidden md:inline whitespace-nowrap">Gladly Conversations</span>
         </button>
         <button
           onClick={() => {
@@ -165,11 +162,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               setModeAndUrl('tools');
             }
           }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-            activeTab === 'tools'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
+          className={tabBtn(activeTab === 'tools')}
         >
           Tools
         </button>
@@ -180,20 +173,18 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               setModeAndUrl('bug-triage');
             }
           }}
-          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-1.5 ${
-            activeTab === 'bug-triage'
-              ? 'bg-white text-gray-900 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
+          className={tabBtn(activeTab === 'bug-triage')}
         >
-          <Bug className="h-4 w-4" />
-          Bug Triage
+          <Bug className="h-4 w-4 shrink-0" />
+          <span className="md:hidden whitespace-nowrap">Triage</span>
+          <span className="hidden md:inline whitespace-nowrap">Bug Triage</span>
         </button>
+        </div>
       </div>
 
       {/* Sub-options for active tab */}
       {activeTab !== 'tools' && activeTab !== 'surveys' && activeTab !== 'bug-triage' && (
-        <div className="flex space-x-2">
+        <div className="flex gap-2 overflow-x-auto pb-1 min-w-0 -mx-1 px-1 sm:mx-0 sm:px-0 overscroll-x-contain [scrollbar-width:thin]">
           {(activeTab === 'gladly' ? gladlyModes : churnModes).map((mode) => {
             const Icon = mode.icon;
             const isActive = currentMode === mode.id;
@@ -202,18 +193,18 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode }) => {
               <button
                 key={mode.id}
                 onClick={() => handleModeChange(mode.id)}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg border-2 transition-all ${
+                className={`flex items-center space-x-2 px-4 py-2.5 rounded-lg border-2 transition-all shrink-0 min-h-[44px] ${
                   isActive
                     ? `${mode.bgColor} ${mode.borderColor} border-2 ${mode.color}`
                     : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
                 }`}
               >
-                <Icon className={`h-4 w-4 ${isActive ? mode.color : 'text-gray-500'}`} />
+                <Icon className={`h-4 w-4 shrink-0 ${isActive ? mode.color : 'text-gray-500'}`} />
                 <div className="text-left">
                   <div className={`text-sm font-medium ${isActive ? mode.color : 'text-gray-900'}`}>
                     {mode.name}
                   </div>
-                  <div className="text-xs text-gray-500">
+                  <div className="text-xs text-gray-500 max-w-[14rem] sm:max-w-none">
                     {mode.description}
                   </div>
                 </div>
