@@ -140,54 +140,17 @@ def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
     return '\n'.join(out)
 
 
-_BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
+# Pass 1: themes, clarification, duplicates—no Priority review (that is pass 2 for output budget).
+_OVERVIEW_MAX_TOKENS_PASS1 = 4096
+_OVERVIEW_MAX_TOKENS_PASS2 = 8192
 
-**HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the table `priority` column case-insensitively to these names (or treat unknown values conservatively).
+_BACKLOG_OVERVIEW_SYSTEM_PASS1 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
 
-**Ladder for comparisons (memorize):** Blocker is **#1 (top—cannot go higher)**. Then Critical, Major, Normal, Minor, Trivial. A valid **Raise** means moving **up** this list (e.g. Critical→Blocker). A valid **Lower** means moving **down**.
+**Important:** Do **not** output a `## Priority review` section. Priority review is generated in a separate step; including it here is **forbidden**.
 
-Write a concise markdown overview for the team. Use these sections (omit a section if nothing substantive to say):
+Write a markdown overview for the team. Use these sections only (omit a section if nothing substantive to say):
 ## Critical / high-risk themes
 (Themes and risk—**not** the Jira priority name "Critical".)
-## Priority review
-Assess each issue’s Jira priority vs title/metadata. **Do not** list every ticket that is fine—summarize those with counts; **only tabulate** tickets where you recommend changing the Jira priority field.
-
-For tickets you discuss in the reprioritization table, use this **exact vocabulary** for the Jira **priority field** only:
-- **Raise Jira priority** — move **up** the ladder (e.g. Critical→Blocker, Major→Critical). State the **target** level when you recommend a raise (e.g. "Raise to Blocker").
-- **Lower Jira priority** — move **down** the ladder. State the target when clear.
-- **No Jira priority change** — current priority is appropriate (use for counting only—**never** give these tickets their own table row).
-
-**Ceiling (hard rule):** **Blocker** is the maximum Jira priority. Tickets whose **Current priority** is **Blocker** (any spelling/casing match) **must not** appear in `### Recommended Jira priority changes` with **Raise** or with **Raise to Blocker**—that combination is **nonsense** and **forbidden**. For those tickets use **No Jira priority change** and count them only in the aggregate table. Severity wording in the title (e.g. "critical bug") does **not** override the fact they are already Blocker in Jira.
-
-**Never duplicate the current level as the target:** If **Current priority** is **X**, the recommendation column **must not** say **Raise to X** or **Lower to X**—that is not a change. Example of a **forbidden** row: Current priority `Blocker` + recommendation `Raise to Blocker`—**omit the row entirely**.
-
-**Critical is below Blocker:** **Raise to Blocker** is **only** valid when **Current priority** is **Critical, Major, Normal, Minor, or Trivial**—never when Current is already Blocker.
-
-**Before you output the reprioritization table, self-check each planned row:** (1) If recommendation starts with **Raise to**, verify Current is **strictly below** that target on the ladder. (2) If Current is **Blocker**, you may only use **Lower to …** in that table, never **Raise**. (3) Drop any row that fails this check.
-
-**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise Jira priority** or **Lower Jira priority** in the reprioritization table.
-
-**Format (required), in order:**
-
-1. **Aggregate (appropriate priorities):** A **GitHub-flavored markdown table** with header row, separator `|---|---|`, columns **exactly**:
-
-| Current priority | Count (no Jira change recommended) |
-
-- One **data row per priority level** with count **> 0** among issues you judge as appropriately set. The **sum of all counts** in this table must equal the number of issues for which you recommend **No Jira priority change**.
-- Use the same priority names as the backlog (Blocker, Critical, Major, Normal, Minor, Trivial, or as given). If **no** issue is appropriately prioritized (all need Raise/Lower), omit data rows and add one short line under the heading: e.g. *All issues reviewed warrant a recommended priority change—see table below.*
-
-2. **Reprioritization candidates (only if any):** If **one or more** issues need a Jira priority **Raise** or **Lower**, add a subheading `### Recommended Jira priority changes` and a **second** GitHub-flavored markdown pipe table with header + separator `|---|---|---|---|`, columns **exactly**:
-
-| Ticket | Current priority | Jira priority recommendation | Reason |
-
-- **Ticket:** issue key only (e.g. HALO-26661).
-- **Current priority:** value from the backlog `priority` column.
-- **Jira priority recommendation:** only **Raise to …** or **Lower to …** (state target level)—**never** `No Jira priority change` in this table. The target **must differ** from **Current priority** and be **directionally correct** (Raise = strictly higher urgency than current; Lower = strictly lower urgency).
-- **Reason:** short justification.
-
-**One row per ticket** that needs a real Jira field change only. **Zero rows** for tickets already at Blocker unless you recommend **Lowering** them. If **none** need a change, **omit** this second table entirely (do not output an empty table) and optionally one short sentence under the aggregate: e.g. "No Jira priority field changes recommended."
-
-Optional one-sentence intro above part (1) is OK. No long prose between the two tables.
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
@@ -206,14 +169,63 @@ Non-obvious risks or cross-cutting patterns only. Omit this section entirely if 
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
-- **Priority review** must follow the **two-part format** (aggregate counts table, then reprioritization table **only** for Raise/Lower). Never **escalate/de-escalate** as verbs for the priority field.
-- **Blocker** in **Current priority:** **never** output **Raise** or **Raise to Blocker** in the reprioritization table—treat as no change and count in the aggregate. **Critical** and below may **Raise** or **Lower** per the ladder; **Raise to Blocker** only when Current is **not** Blocker.
 - Do not invent facts; only infer from the provided list.
 - **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets. **iOS + Android pairs** are not duplicates unless a **shared non-client** cause is explicit in the data.
-- **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
-- Do not open with generic scene-setting. Prefer leading with concrete findings, or one short clause if the filtered set is unremarkable.
-- If the list is small or homogeneous, say so in one brief clause—do not pad.
-- Keep total length readable (roughly under 800 words)."""
+- **No filler or throat-clearing.** Do not state the obvious unless you tie it to a **specific triage implication** with cited keys.
+- Do not open with generic scene-setting. Prefer leading with concrete findings.
+- **Length:** Use up to roughly **2000 words** for these sections combined. If you must shorten, trim "Other notes" and prose before dropping concrete duplicate or clarification citations.
+
+**Forbidden:** Any heading `## Priority review` or discussion of Jira priority raise/lower recommendations (that is handled elsewhere)."""
+
+
+_BACKLOG_OVERVIEW_SYSTEM_PASS2 = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
+
+**HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the table `priority` column case-insensitively to these names (or treat unknown values conservatively).
+
+**Ladder for comparisons (memorize):** Blocker is **#1 (top—cannot go higher)**. Then Critical, Major, Normal, Minor, Trivial. A valid **Raise** means moving **up** this list (e.g. Critical→Blocker). A valid **Lower** means moving **down**.
+
+**Output:** Produce **only** one top-level markdown section: `## Priority review`. No preamble, no other `##` sections, no themes or duplicates here.
+
+Assess **every** issue in the table for Jira priority vs title/metadata. **Do not** list every appropriately prioritized ticket—summarize those with counts; **only tabulate** tickets where you recommend changing the Jira priority field.
+
+**Coverage (mandatory):** Pay deliberate attention to **Major**, **Normal**, and **Minor** tickets—not only Blocker/Critical. Many mis-prioritizations appear as severe user impact in the title while priority is still Normal or Major. Scan those tiers before concluding.
+
+**Row targets (when justified—do not invent recommendations):** If the issue count is **≥100**, aim for **at least 8** rows in `### Recommended Jira priority changes` when that many **distinct, justified** Raise/Lower recommendations exist. If the issue count is **≥300**, aim for **at least 15** such rows when that many exist. If fewer are genuinely justified, say so in one sentence under the aggregate table (do not pad with weak rows).
+
+For tickets in the reprioritization table, use this **exact vocabulary** for the Jira **priority field** only:
+- **Raise Jira priority** — move **up** the ladder. State the **target** level (e.g. "Raise to Blocker").
+- **Lower Jira priority** — move **down** the ladder. State the target when clear.
+- **No Jira priority change** — appropriate as-is (counting only—**never** a row in the reprioritization table).
+
+**Ceiling (hard rule):** **Blocker** is the maximum. Tickets whose **Current priority** is **Blocker** **must not** appear in `### Recommended Jira priority changes` with **Raise** or **Raise to Blocker**. Severity in the title does **not** override already-Blocker in Jira.
+
+**Never duplicate the current level as the target:** **Raise to X** / **Lower to X** requires Current **strictly below** / **strictly above** X on the ladder, respectively.
+
+**Before output, self-check each reprioritization row:** (1) **Raise to** implies Current is strictly below target. (2) Current **Blocker** → never **Raise**. (3) Drop invalid rows.
+
+**Avoid confusion:** Do not use **escalate** for Jira priority in the table—use **Raise** / **Lower** wording.
+
+**Format (required), in order:**
+
+1. **Aggregate (appropriate priorities):** GitHub-flavored markdown table, separator `|---|---|`, columns **exactly**:
+
+| Current priority | Count (no Jira change recommended) |
+
+- One data row per level with count **> 0**. Sum of counts = issues with **No Jira priority change**.
+- If none appropriately set, omit data rows and one short line as before.
+
+2. **Reprioritization (only if any):** Subheading `### Recommended Jira priority changes` and pipe table `|---|---|---|---|`:
+
+| Ticket | Current priority | Jira priority recommendation | Reason |
+
+- Recommendation column: only **Raise to …** or **Lower to …**. **Reason:** keep to **one short line** per row when possible so more tickets fit.
+
+**Length:** This section may use up to roughly **3500 words** if needed. Prefer terse reasons over omitting justified Major/Normal/Minor candidates.
+
+Rules:
+- Never **escalate/de-escalate** as verbs for the priority field in the table.
+- **Blocker** current → never **Raise** / **Raise to Blocker** in the reprioritization table.
+- Do not invent facts."""
 
 
 def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
@@ -268,21 +280,33 @@ def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
-def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: bool, total_submitted: int) -> str:
-    """Build user message text for Claude."""
+def _format_issues_for_overview_prompt(
+    issues: List[Dict[str, Any]],
+    truncated: bool,
+    total_submitted: int,
+    *,
+    prompt_variant: str = 'pass1',
+) -> str:
+    """Build user message text for Claude (pass1 = themes/duplicates; pass2 = priority review only)."""
     lines = [
         f"The following {len(issues)} issues are the current filtered backlog (metadata only).",
     ]
     if truncated:
         lines.append(f"Note: Analyzing first {len(issues)} of {total_submitted} issues submitted (cap for context size).")
     lines.append('')
-    lines.append(
-        'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
-        'For ## Priority review: first tabulate counts by current priority for issues that need **no** Jira change; '
-        'then list **only** issues that need Raise/Lower in a separate table (no per-ticket rows for "appropriate" issues). '
-        '**Hard rule:** Never output a row with Current priority Blocker and recommendation Raise/Raise to Blocker—already at top. '
-        'Raise to Blocker is only for Current Critical or lower. Self-check every reprioritization row: target must not equal Current.'
-    )
+    if prompt_variant == 'pass1':
+        lines.append(
+            'Your task for this message: themes, needs clarification, duplicates/clusters, and other notes only. '
+            'Do **not** output ## Priority review or Jira priority recommendations.'
+        )
+    else:
+        lines.append(
+            'Your task for this message: output **only** ## Priority review (aggregate counts + reprioritization table when applicable). '
+            'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
+            'Tabulate counts for issues with no change; list Raise/Lower only in the reprioritization table. '
+            '**Hard rule:** Never a row with Current priority Blocker and Raise/Raise to Blocker. '
+            'Raise to Blocker only when Current is Critical or lower. Self-check: target must not equal Current.'
+        )
     lines.append('')
     lines.append('key | title | type | priority | status | component(s) | labels | parent | epic | flags')
     for i in issues:
@@ -307,7 +331,10 @@ def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: 
             f"{comp_s} | {labels} | {parent} | {epic} | {flag_s}"
         )
     lines.append('')
-    lines.append('Produce the markdown overview as instructed.')
+    if prompt_variant == 'pass1':
+        lines.append('Produce the markdown overview as instructed in the system prompt (no ## Priority review).')
+    else:
+        lines.append('Produce **only** ## Priority review as instructed in the system prompt.')
     return '\n'.join(lines)
 
 
@@ -573,12 +600,18 @@ def backlog_overview():
     truncated = total_submitted > _OVERVIEW_MAX_ISSUES
     batch = sanitized[:_OVERVIEW_MAX_ISSUES]
 
-    user_message = _format_issues_for_overview_prompt(batch, truncated, total_submitted)
+    user_message_pass1 = _format_issues_for_overview_prompt(
+        batch, truncated, total_submitted, prompt_variant='pass1'
+    )
+    user_message_pass2 = _format_issues_for_overview_prompt(
+        batch, truncated, total_submitted, prompt_variant='pass2'
+    )
 
     pii_config = Config.get_pii_config()
     if pii_config.get('redact_mode'):
         protector = create_pii_protector(pii_config)
-        user_message = protector.redact_text(user_message)
+        user_message_pass1 = protector.redact_text(user_message_pass1)
+        user_message_pass2 = protector.redact_text(user_message_pass2)
 
     service_container = getattr(g, 'service_container', None)
     if not service_container:
@@ -596,13 +629,27 @@ def backlog_overview():
         }), 503
 
     try:
-        claude_response = claude_service.send_message(
-            message=user_message,
+        r1 = claude_service.send_message(
+            message=user_message_pass1,
             model=None,
-            max_tokens=2048,
-            system_prompt=_BACKLOG_OVERVIEW_SYSTEM,
+            max_tokens=_OVERVIEW_MAX_TOKENS_PASS1,
+            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS1,
         )
-        overview_text = _strip_invalid_raise_to_blocker_rows(claude_response.content or '')
+        r2 = claude_service.send_message(
+            message=user_message_pass2,
+            model=None,
+            max_tokens=_OVERVIEW_MAX_TOKENS_PASS2,
+            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
+        )
+        part1 = (r1.content or '').strip()
+        part2 = _strip_invalid_raise_to_blocker_rows((r2.content or '').strip())
+        overview_text = f'{part1}\n\n{part2}'.strip() if part2 else part1
+        tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
+        logger.info(
+            'backlog-overview: 2-pass complete issues=%s output_tokens≈%s',
+            len(batch),
+            tokens_used,
+        )
         return jsonify({
             'status': 'success',
             'overview': overview_text,
@@ -610,7 +657,10 @@ def backlog_overview():
                 'issue_count': len(batch),
                 'truncated': truncated,
                 'submitted_count': total_submitted,
-                'model': claude_response.model,
+                'model': r2.model,
+                'overview_passes': 2,
+                'models': [r1.model, r2.model],
+                'output_tokens': tokens_used,
             },
         })
     except Exception as e:
