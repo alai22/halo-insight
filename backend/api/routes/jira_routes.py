@@ -5,6 +5,7 @@ Provides issue list, status, OAuth 2.0 (3LO) connect flow, and AI backlog overvi
 """
 
 import logging
+import re
 import secrets
 from typing import Any, Dict, List, Optional
 
@@ -63,9 +64,87 @@ _OVERVIEW_MAX_TITLE_LEN = 240
 _OVERVIEW_MAX_LABELS = 20
 _OVERVIEW_MAX_COMPONENTS = 15
 
+# Post-process model output: drop reprioritization rows that say "raise" to Blocker when current is already Blocker.
+_RE_MD_TABLE_ROW = re.compile(r'^\s*\|(.+)\|\s*$')
+_RE_RAISE = re.compile(r'raise', re.IGNORECASE)
+_RE_BLOCKER = re.compile(r'\bblocker\b', re.IGNORECASE)
+_RE_HEADER_SEP = re.compile(r'^[\s\-:|]+$')
+
+
+def _markdown_table_row_cells(line: str) -> Optional[List[str]]:
+    """Parse a pipe table row into stripped cells, or None if not a table row."""
+    m = _RE_MD_TABLE_ROW.match(line)
+    if not m:
+        return None
+    inner = m.group(1)
+    cells = [c.strip() for c in inner.split('|')]
+    return cells if len(cells) >= 4 else None
+
+
+def _current_priority_is_blocker(cell: str) -> bool:
+    t = (cell or '').strip().lower()
+    return t == 'blocker' or t.startswith('blocker ')
+
+
+def _recommendation_is_raise_to_blocker(cell: str) -> bool:
+    c = cell or ''
+    return bool(_RE_RAISE.search(c) and _RE_BLOCKER.search(c))
+
+
+def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
+    """
+    Remove 4-column reprioritization table rows where Current is already Blocker but
+    the model still emitted a Raise…Blocker recommendation (recurring LLM mistake).
+    Only applies between ### Recommended Jira priority changes and the next ## section.
+    """
+    if not markdown or 'Recommended Jira priority changes' not in markdown:
+        return markdown
+
+    lines = markdown.split('\n')
+    out: List[str] = []
+    in_repr = False
+    dropped = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('### Recommended Jira priority changes'):
+            in_repr = True
+            out.append(line)
+            continue
+        if in_repr and stripped.startswith('## ') and not stripped.startswith('###'):
+            in_repr = False
+        if not in_repr:
+            out.append(line)
+            continue
+
+        # Inside reprioritization section
+        cells = _markdown_table_row_cells(line)
+        if (
+            cells
+            and len(cells) >= 4
+            and not cells[0].lower().startswith('ticket')
+            and not _RE_HEADER_SEP.match(cells[0])
+            and _current_priority_is_blocker(cells[1])
+            and _recommendation_is_raise_to_blocker(cells[2])
+        ):
+            dropped += 1
+            logger.info(
+                'backlog-overview: dropped invalid Raise-to-Blocker row for ticket %s',
+                cells[0][:32],
+            )
+            continue
+        out.append(line)
+
+    if dropped:
+        logger.info('backlog-overview: dropped %s invalid Blocker→Raise rows', dropped)
+    return '\n'.join(out)
+
+
 _BACKLOG_OVERVIEW_SYSTEM = """You are an engineering lead helping triage a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive a table of issues (key, title, and metadata only—no full descriptions).
 
 **HALO Jira priority field (highest → lowest):** Blocker → Critical → Major → Normal → Minor → Trivial. Match the table `priority` column case-insensitively to these names (or treat unknown values conservatively).
+
+**Ladder for comparisons (memorize):** Blocker is **#1 (top—cannot go higher)**. Then Critical, Major, Normal, Minor, Trivial. A valid **Raise** means moving **up** this list (e.g. Critical→Blocker). A valid **Lower** means moving **down**.
 
 Write a concise markdown overview for the team. Use these sections (omit a section if nothing substantive to say):
 ## Critical / high-risk themes
@@ -78,9 +157,13 @@ For tickets you discuss in the reprioritization table, use this **exact vocabula
 - **Lower Jira priority** — move **down** the ladder. State the target when clear.
 - **No Jira priority change** — current priority is appropriate (use for counting only—**never** give these tickets their own table row).
 
-**Ceiling:** Only **Blocker** is at the top. **Do not** recommend **Raise Jira priority** for tickets already at **Blocker**—treat as **No Jira priority change** for counting (and optional non-priority follow-ups: sequencing, ownership, comms—say they are **not** Jira priority changes).
+**Ceiling (hard rule):** **Blocker** is the maximum Jira priority. Tickets whose **Current priority** is **Blocker** (any spelling/casing match) **must not** appear in `### Recommended Jira priority changes` with **Raise** or with **Raise to Blocker**—that combination is **nonsense** and **forbidden**. For those tickets use **No Jira priority change** and count them only in the aggregate table. Severity wording in the title (e.g. "critical bug") does **not** override the fact they are already Blocker in Jira.
 
-**Critical is below Blocker:** Recommending **Raise Jira priority** from **Critical** to **Blocker** is valid when justified. Do not treat Critical as "already max."
+**Never duplicate the current level as the target:** If **Current priority** is **X**, the recommendation column **must not** say **Raise to X** or **Lower to X**—that is not a change. Example of a **forbidden** row: Current priority `Blocker` + recommendation `Raise to Blocker`—**omit the row entirely**.
+
+**Critical is below Blocker:** **Raise to Blocker** is **only** valid when **Current priority** is **Critical, Major, Normal, Minor, or Trivial**—never when Current is already Blocker.
+
+**Before you output the reprioritization table, self-check each planned row:** (1) If recommendation starts with **Raise to**, verify Current is **strictly below** that target on the ladder. (2) If Current is **Blocker**, you may only use **Lower to …** in that table, never **Raise**. (3) Drop any row that fails this check.
 
 **Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise Jira priority** or **Lower Jira priority** in the reprioritization table.
 
@@ -99,10 +182,10 @@ For tickets you discuss in the reprioritization table, use this **exact vocabula
 
 - **Ticket:** issue key only (e.g. HALO-26661).
 - **Current priority:** value from the backlog `priority` column.
-- **Jira priority recommendation:** only **Raise to …** or **Lower to …** (state target level)—**never** `No Jira priority change` in this table.
+- **Jira priority recommendation:** only **Raise to …** or **Lower to …** (state target level)—**never** `No Jira priority change` in this table. The target **must differ** from **Current priority** and be **directionally correct** (Raise = strictly higher urgency than current; Lower = strictly lower urgency).
 - **Reason:** short justification.
 
-**One row per ticket** that needs a change only. If **none** need a change, **omit** this second table entirely (do not output an empty table) and optionally one short sentence under the aggregate: e.g. "No Jira priority field changes recommended."
+**One row per ticket** that needs a real Jira field change only. **Zero rows** for tickets already at Blocker unless you recommend **Lowering** them. If **none** need a change, **omit** this second table entirely (do not output an empty table) and optionally one short sentence under the aggregate: e.g. "No Jira priority field changes recommended."
 
 Optional one-sentence intro above part (1) is OK. No long prose between the two tables.
 ## Needs clarification
@@ -124,7 +207,7 @@ Non-obvious risks or cross-cutting patterns only. Omit this section entirely if 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
 - **Priority review** must follow the **two-part format** (aggregate counts table, then reprioritization table **only** for Raise/Lower). Never **escalate/de-escalate** as verbs for the priority field.
-- **Blocker** tickets: **No Jira priority change** only (for the priority field). **Critical** and below may **Raise** or **Lower** per the HALO ladder.
+- **Blocker** in **Current priority:** **never** output **Raise** or **Raise to Blocker** in the reprioritization table—treat as no change and count in the aggregate. **Critical** and below may **Raise** or **Lower** per the ladder; **Raise to Blocker** only when Current is **not** Blocker.
 - Do not invent facts; only infer from the provided list.
 - **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets. **iOS + Android pairs** are not duplicates unless a **shared non-client** cause is explicit in the data.
 - **No filler or throat-clearing.** Do not state the obvious: e.g. that the backlog is large, spans many areas, or covers iOS/Android/platforms, unless you immediately tie it to a **specific triage implication** with cited keys. Readers already see the table; every sentence should add non-obvious or actionable insight.
@@ -197,7 +280,8 @@ def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: 
         'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
         'For ## Priority review: first tabulate counts by current priority for issues that need **no** Jira change; '
         'then list **only** issues that need Raise/Lower in a separate table (no per-ticket rows for "appropriate" issues). '
-        'Only Blocker cannot be raised further; Critical may be raised to Blocker when justified.'
+        '**Hard rule:** Never output a row with Current priority Blocker and recommendation Raise/Raise to Blocker—already at top. '
+        'Raise to Blocker is only for Current Critical or lower. Self-check every reprioritization row: target must not equal Current.'
     )
     lines.append('')
     lines.append('key | title | type | priority | status | component(s) | labels | parent | epic | flags')
@@ -518,9 +602,10 @@ def backlog_overview():
             max_tokens=2048,
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM,
         )
+        overview_text = _strip_invalid_raise_to_blocker_rows(claude_response.content or '')
         return jsonify({
             'status': 'success',
-            'overview': claude_response.content or '',
+            'overview': overview_text,
             'meta': {
                 'issue_count': len(batch),
                 'truncated': truncated,
