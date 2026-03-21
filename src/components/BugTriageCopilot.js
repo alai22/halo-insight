@@ -904,6 +904,12 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
   const rec = issue.aiRecommendation || {};
   const primaryText = rec.shortSummary ?? issue.title;
   const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
+  const jiraComponents =
+    issue.components?.length > 0
+      ? issue.components
+      : issue.component
+        ? [issue.component]
+        : [];
 
   return (
     <div
@@ -956,6 +962,19 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
           </span>
         )}
       </div>
+      {jiraComponents.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-1.5" aria-label="Jira components">
+          {jiraComponents.map((c) => (
+            <span
+              key={c}
+              className="px-2 py-0.5 text-xs font-medium rounded-md bg-indigo-50 text-indigo-900 border border-indigo-100"
+              title="Jira component"
+            >
+              {c}
+            </span>
+          ))}
+        </div>
+      )}
       <IssueParentEpicMeta issue={issue} jiraBaseUrl={jiraBaseUrl} compact />
       <div
         className="font-medium text-gray-900 line-clamp-4 mb-0.5"

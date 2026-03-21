@@ -71,29 +71,40 @@ Write a concise markdown overview for the team. Use these sections (omit a secti
 ## Critical / high-risk themes
 (Themes and risk—**not** the Jira priority name "Critical".)
 ## Priority review
-Issues that may be mis-prioritized vs severity/labels; suggest re-ordering only when justified by the data.
+Assess each issue’s Jira priority vs title/metadata. **Do not** list every ticket that is fine—summarize those with counts; **only tabulate** tickets where you recommend changing the Jira priority field.
 
-For each ticket you discuss, use this **exact vocabulary** for the Jira **priority field** only:
+For tickets you discuss in the reprioritization table, use this **exact vocabulary** for the Jira **priority field** only:
 - **Raise Jira priority** — move **up** the ladder (e.g. Critical→Blocker, Major→Critical). State the **target** level when you recommend a raise (e.g. "Raise to Blocker").
 - **Lower Jira priority** — move **down** the ladder. State the target when clear.
-- **No Jira priority change** — current priority is appropriate, or you are not recommending a field change.
+- **No Jira priority change** — current priority is appropriate (use for counting only—**never** give these tickets their own table row).
 
-**Ceiling:** Only **Blocker** is at the top. **Do not** recommend **Raise Jira priority** for tickets already at **Blocker**—use **No Jira priority change** (and optional non-priority follow-ups: sequencing, ownership, comms—say they are **not** Jira priority changes).
+**Ceiling:** Only **Blocker** is at the top. **Do not** recommend **Raise Jira priority** for tickets already at **Blocker**—treat as **No Jira priority change** for counting (and optional non-priority follow-ups: sequencing, ownership, comms—say they are **not** Jira priority changes).
 
 **Critical is below Blocker:** Recommending **Raise Jira priority** from **Critical** to **Blocker** is valid when justified. Do not treat Critical as "already max."
 
-**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change** in the table’s recommendation column.
+**Avoid confusion:** Do not use the verb **escalate** for Jira priority—use **Raise Jira priority** or **Lower Jira priority** in the reprioritization table.
 
-**Format (required):** Under `## Priority review`, render every recommendation as a **GitHub-flavored markdown pipe table** (not plain pipe-separated lines). Include a header row and a separator row `|---|---|---|---|`. Columns **exactly**:
+**Format (required), in order:**
+
+1. **Aggregate (appropriate priorities):** A **GitHub-flavored markdown table** with header row, separator `|---|---|`, columns **exactly**:
+
+| Current priority | Count (no Jira change recommended) |
+
+- One **data row per priority level** with count **> 0** among issues you judge as appropriately set. The **sum of all counts** in this table must equal the number of issues for which you recommend **No Jira priority change**.
+- Use the same priority names as the backlog (Blocker, Critical, Major, Normal, Minor, Trivial, or as given). If **no** issue is appropriately prioritized (all need Raise/Lower), omit data rows and add one short line under the heading: e.g. *All issues reviewed warrant a recommended priority change—see table below.*
+
+2. **Reprioritization candidates (only if any):** If **one or more** issues need a Jira priority **Raise** or **Lower**, add a subheading `### Recommended Jira priority changes` and a **second** GitHub-flavored markdown pipe table with header + separator `|---|---|---|---|`, columns **exactly**:
 
 | Ticket | Current priority | Jira priority recommendation | Reason |
 
 - **Ticket:** issue key only (e.g. HALO-26661).
 - **Current priority:** value from the backlog `priority` column.
-- **Jira priority recommendation:** e.g. `Raise to Critical`, `Lower to Normal`, or `No Jira priority change`.
+- **Jira priority recommendation:** only **Raise to …** or **Lower to …** (state target level)—**never** `No Jira priority change` in this table.
 - **Reason:** short justification.
 
-One data row per ticket. Optional one-sentence intro above the table is OK; no other prose inside this section except the table.
+**One row per ticket** that needs a change only. If **none** need a change, **omit** this second table entirely (do not output an empty table) and optionally one short sentence under the aggregate: e.g. "No Jira priority field changes recommended."
+
+Optional one-sentence intro above part (1) is OK. No long prose between the two tables.
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
@@ -112,7 +123,7 @@ Non-obvious risks or cross-cutting patterns only. Omit this section entirely if 
 
 Rules:
 - Cite issue keys (e.g. PROJ-123) when you reference specific tickets.
-- **Priority review** must be a **markdown table** (see section instructions). Use **Raise Jira priority**, **Lower Jira priority**, or **No Jira priority change** in the recommendation column—never **escalate/de-escalate** as verbs for the priority field.
+- **Priority review** must follow the **two-part format** (aggregate counts table, then reprioritization table **only** for Raise/Lower). Never **escalate/de-escalate** as verbs for the priority field.
 - **Blocker** tickets: **No Jira priority change** only (for the priority field). **Critical** and below may **Raise** or **Lower** per the HALO ladder.
 - Do not invent facts; only infer from the provided list.
 - **Duplicates / clusters:** Prefer **no entry** in this section over weak grouping. If you are unsure, omit or mention uncertainty briefly rather than listing loosely related tickets. **iOS + Android pairs** are not duplicates unless a **shared non-client** cause is explicit in the data.
@@ -184,7 +195,8 @@ def _format_issues_for_overview_prompt(issues: List[Dict[str, Any]], truncated: 
     lines.append('')
     lines.append(
         'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
-        'For ## Priority review, read each row\'s priority column and apply that order. '
+        'For ## Priority review: first tabulate counts by current priority for issues that need **no** Jira change; '
+        'then list **only** issues that need Raise/Lower in a separate table (no per-ticket rows for "appropriate" issues). '
         'Only Blocker cannot be raised further; Critical may be raised to Blocker when justified.'
     )
     lines.append('')
