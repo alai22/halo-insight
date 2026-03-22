@@ -98,11 +98,17 @@ class Config:
     JIRA_OAUTH_TOKENS_FILE: str = os.getenv('JIRA_OAUTH_TOKENS_FILE', 'data/jira_oauth_tokens.json')
     # App base URL for OAuth callback (e.g. https://insight.halocollar.com). Required for Jira OAuth.
     APP_BASE_URL: Optional[str] = os.getenv('APP_BASE_URL')
-    # Backlog overview uses two Claude calls. Default 4096 per pass — values above 4096 often return 400
-    # from Anthropic for claude-3-haiku and other models; set to 8192 only if your CLAUDE_MODEL supports it.
+    # Backlog overview: two Claude calls by default, optional third (description refine for priority table).
+    # Default 4096 per pass — values above 4096 often return 400 from Anthropic for claude-3-haiku; set to 8192 only if your CLAUDE_MODEL supports it.
     JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS', '4096'))
     JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '4096'))
-    
+    # Optional third call: refine ## Priority review using description excerpts for keys from pass-2 reprioritization table.
+    JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED: bool = os.getenv('JIRA_BACKLOG_OVERVIEW_DEEP_PASS', '1').lower() in (
+        '1', 'true', 'yes',
+    )
+    JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS', '40'))
+    JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS', '4096'))
+
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')
     S3_BUCKET_NAME: Optional[str] = os.getenv('S3_BUCKET_NAME')

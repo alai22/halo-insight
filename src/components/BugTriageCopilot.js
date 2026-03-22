@@ -48,8 +48,8 @@ function _hastClassNameList(value) {
 }
 
 /**
- * Mark 4+ column data rows (reprioritization table) so components/CSS can target
- * column 3 without relying on `parent` on hast nodes (often unset).
+ * Mark reprioritization table rows (4 cols legacy or 5 cols with Title). Sets row tint and
+ * dataOverviewRecKind on the recommendation cell for React styling.
  */
 function rehypeAnnotateBacklogOverviewTables() {
   return (tree) => {
@@ -58,16 +58,22 @@ function rehypeAnnotateBacklogOverviewTables() {
       const tds = (node.children || []).filter(
         (c) => c.type === 'element' && c.tagName === 'td'
       );
-      if (tds.length < 3) return;
+      if (tds.length < 4) return;
+      const recIdx = tds.length >= 5 ? 3 : 2;
       tds.forEach((td, i) => {
         td.properties = td.properties || {};
         td.properties.dataOverviewCol = String(i);
       });
-      const rec = hastPlainText(tds[2]).trim().toLowerCase();
+      const recCell = tds[recIdx];
+      if (!recCell) return;
+      const rec = hastPlainText(recCell).trim().toLowerCase();
       if (!rec.startsWith('raise') && !rec.startsWith('lower')) return;
+      const kind = rec.startsWith('raise') ? 'raise' : 'lower';
+      recCell.properties = recCell.properties || {};
+      recCell.properties.dataOverviewRecKind = kind;
       node.properties = node.properties || {};
       const cls = _hastClassNameList(node.properties.className);
-      cls.push(rec.startsWith('raise') ? 'overview-priority-raise' : 'overview-priority-lower');
+      cls.push(kind === 'raise' ? 'overview-priority-raise' : 'overview-priority-lower');
       node.properties.className = cls;
     });
   };
@@ -103,7 +109,8 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
         }
       }
 
-      if (col !== '2') {
+      const recKind = node?.properties?.dataOverviewRecKind;
+      if (recKind !== 'raise' && recKind !== 'lower') {
         return <td {...props}>{children}</td>;
       }
       const raw = hastPlainText(node).trim();
@@ -143,8 +150,12 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
   };
 }
 
-/** Strip to metadata allowed by POST /api/jira/backlog-overview */
+/** Strip to metadata allowed by POST /api/jira/backlog-overview (description used for pass-2b priority refine). */
 function slimIssueForOverview(issue) {
+  const d =
+    typeof issue.description === 'string' && issue.description.trim()
+      ? issue.description.trim().slice(0, 2000)
+      : undefined;
   return {
     key: issue.key,
     title: issue.title,
@@ -161,6 +172,7 @@ function slimIssueForOverview(issue) {
     sprint: issue.sprint,
     gaBlocker: issue.gaBlocker === true,
     needsMoreInfo: issue.needsMoreInfo === true,
+    ...(d !== undefined ? { description: d } : {}),
   };
 }
 
@@ -902,7 +914,7 @@ const BugTriageCopilot = () => {
                 )}
                 {overviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[36rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[44rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
