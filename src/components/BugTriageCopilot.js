@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { visit } from 'unist-util-visit';
 import {
   ArrowLeft,
   Bug,
@@ -26,6 +27,94 @@ import {
 } from '../data/bugTriageMockData';
 
 const STORAGE_KEY = 'bug_triage_decisions';
+
+/** Plain text from a hast node (table cells may wrap content in paragraphs, emphasis, etc.). */
+function hastPlainText(node) {
+  if (!node) return '';
+  if (node.type === 'text') return node.value || '';
+  if (node.children && Array.isArray(node.children)) {
+    return node.children.map(hastPlainText).join('');
+  }
+  return '';
+}
+
+const _RE_LEADING_REC_ARROW = /^[\u2191\u2193\u25b2\u25bc↑↓]/;
+
+function _hastClassNameList(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? [...value] : String(value).split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Mark 4+ column data rows (reprioritization table) so components/CSS can target
+ * column 3 without relying on `parent` on hast nodes (often unset).
+ */
+function rehypeAnnotateBacklogOverviewTables() {
+  return (tree) => {
+    visit(tree, 'element', (node) => {
+      if (node.tagName !== 'tr') return;
+      const tds = (node.children || []).filter(
+        (c) => c.type === 'element' && c.tagName === 'td'
+      );
+      if (tds.length < 3) return;
+      tds.forEach((td, i) => {
+        td.properties = td.properties || {};
+        td.properties.dataOverviewCol = String(i);
+      });
+      const rec = hastPlainText(tds[2]).trim().toLowerCase();
+      if (!rec.startsWith('raise') && !rec.startsWith('lower')) return;
+      node.properties = node.properties || {};
+      const cls = _hastClassNameList(node.properties.className);
+      cls.push(rec.startsWith('raise') ? 'overview-priority-raise' : 'overview-priority-lower');
+      node.properties.className = cls;
+    });
+  };
+}
+
+/**
+ * Arrow + emphasis in the Jira priority recommendation column; row tint via wrapper CSS.
+ */
+const backlogOverviewMarkdownComponents = {
+  td({ node, children, ...props }) {
+    const col = node?.properties?.dataOverviewCol;
+    if (col !== '2') {
+      return <td {...props}>{children}</td>;
+    }
+    const raw = hastPlainText(node).trim();
+    const lower = raw.toLowerCase();
+    let extraClass = '';
+    let prefix = null;
+    if (lower.startsWith('raise')) {
+      extraClass = 'text-rose-900 font-medium';
+      if (!_RE_LEADING_REC_ARROW.test(raw)) {
+        prefix = (
+          <span className="mr-1 inline-block font-semibold text-rose-700" aria-hidden>
+            ↑
+          </span>
+        );
+      }
+    } else if (lower.startsWith('lower')) {
+      extraClass = 'text-emerald-900 font-medium';
+      if (!_RE_LEADING_REC_ARROW.test(raw)) {
+        prefix = (
+          <span className="mr-1 inline-block font-semibold text-emerald-800" aria-hidden>
+            ↓
+          </span>
+        );
+      }
+    }
+    if (!extraClass) {
+      return <td {...props}>{children}</td>;
+    }
+    const className = [props.className, extraClass].filter(Boolean).join(' ');
+    return (
+      <td {...props} className={className}>
+        {prefix}
+        {children}
+      </td>
+    );
+  },
+};
 
 /** Strip to metadata allowed by POST /api/jira/backlog-overview */
 function slimIssueForOverview(issue) {
@@ -781,9 +870,15 @@ const BugTriageCopilot = () => {
                 )}
                 {overviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[36rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tbody_tr:nth-child(even)_td]:bg-amber-50/50"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_h2]:text-gray-900 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[36rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80"
                   >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{overviewMarkdown}</ReactMarkdown>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeAnnotateBacklogOverviewTables]}
+                      components={backlogOverviewMarkdownComponents}
+                    >
+                      {overviewMarkdown}
+                    </ReactMarkdown>
                   </div>
                 )}
                 {!overviewMarkdown && overviewLoading && (
