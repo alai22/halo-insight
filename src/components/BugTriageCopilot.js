@@ -39,6 +39,8 @@ function hastPlainText(node) {
 }
 
 const _RE_LEADING_REC_ARROW = /^[\u2191\u2193\u25b2\u25bc↑↓]/;
+/** Cell is only a Jira issue key (e.g. HALO-26845), optional surrounding whitespace. */
+const _RE_BARE_JIRA_ISSUE_KEY = /^\s*([A-Za-z][A-Za-z0-9]{1,19}-\d+)\s*$/;
 
 function _hastClassNameList(value) {
   if (value == null) return [];
@@ -72,49 +74,74 @@ function rehypeAnnotateBacklogOverviewTables() {
 }
 
 /**
- * Arrow + emphasis in the Jira priority recommendation column; row tint via wrapper CSS.
+ * Arrow + emphasis in the Jira priority recommendation column; ticket column links when base URL is known.
  */
-const backlogOverviewMarkdownComponents = {
-  td({ node, children, ...props }) {
-    const col = node?.properties?.dataOverviewCol;
-    if (col !== '2') {
-      return <td {...props}>{children}</td>;
-    }
-    const raw = hastPlainText(node).trim();
-    const lower = raw.toLowerCase();
-    let extraClass = '';
-    let prefix = null;
-    if (lower.startsWith('raise')) {
-      extraClass = 'text-rose-900 font-medium';
-      if (!_RE_LEADING_REC_ARROW.test(raw)) {
-        prefix = (
-          <span className="mr-1 inline-block font-semibold text-rose-700" aria-hidden>
-            ↑
-          </span>
-        );
+function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
+  const base = jiraBaseUrl && String(jiraBaseUrl).replace(/\/+$/, '');
+  return {
+    td({ node, children, ...props }) {
+      const col = node?.properties?.dataOverviewCol;
+
+      if (col === '0' && base) {
+        const raw = hastPlainText(node).trim();
+        const m = raw.match(_RE_BARE_JIRA_ISSUE_KEY);
+        if (m) {
+          const key = m[1].toUpperCase();
+          const href = `${base}/browse/${encodeURIComponent(key)}`;
+          return (
+            <td {...props}>
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-blue-600 underline break-words hover:text-blue-800"
+              >
+                {key}
+              </a>
+            </td>
+          );
+        }
       }
-    } else if (lower.startsWith('lower')) {
-      extraClass = 'text-emerald-900 font-medium';
-      if (!_RE_LEADING_REC_ARROW.test(raw)) {
-        prefix = (
-          <span className="mr-1 inline-block font-semibold text-emerald-800" aria-hidden>
-            ↓
-          </span>
-        );
+
+      if (col !== '2') {
+        return <td {...props}>{children}</td>;
       }
-    }
-    if (!extraClass) {
-      return <td {...props}>{children}</td>;
-    }
-    const className = [props.className, extraClass].filter(Boolean).join(' ');
-    return (
-      <td {...props} className={className}>
-        {prefix}
-        {children}
-      </td>
-    );
-  },
-};
+      const raw = hastPlainText(node).trim();
+      const lower = raw.toLowerCase();
+      let extraClass = '';
+      let prefix = null;
+      if (lower.startsWith('raise')) {
+        extraClass = 'text-rose-900 font-medium';
+        if (!_RE_LEADING_REC_ARROW.test(raw)) {
+          prefix = (
+            <span className="mr-1 inline-block font-semibold text-rose-700" aria-hidden>
+              ↑
+            </span>
+          );
+        }
+      } else if (lower.startsWith('lower')) {
+        extraClass = 'text-emerald-900 font-medium';
+        if (!_RE_LEADING_REC_ARROW.test(raw)) {
+          prefix = (
+            <span className="mr-1 inline-block font-semibold text-emerald-800" aria-hidden>
+              ↓
+            </span>
+          );
+        }
+      }
+      if (!extraClass) {
+        return <td {...props}>{children}</td>;
+      }
+      const className = [props.className, extraClass].filter(Boolean).join(' ');
+      return (
+        <td {...props} className={className}>
+          {prefix}
+          {children}
+        </td>
+      );
+    },
+  };
+}
 
 /** Strip to metadata allowed by POST /api/jira/backlog-overview */
 function slimIssueForOverview(issue) {
@@ -437,6 +464,11 @@ const BugTriageCopilot = () => {
       ac.abort();
     };
   }, [jiraStatus.configured, jiraLoading, backlogOverviewFingerprint, filteredAndSorted, runBacklogOverview]);
+
+  const backlogOverviewMarkdownComponents = useMemo(
+    () => createBacklogOverviewMarkdownComponents(jiraStatus.base_url),
+    [jiraStatus.base_url],
+  );
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;

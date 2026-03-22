@@ -147,7 +147,8 @@ _BACKLOG_OVERVIEW_SYSTEM_PASS1 = """You are an engineering lead helping triage a
 
 **Important:** Do **not** output a `## Priority review` section. Priority review is generated in a separate step; including it here is **forbidden**.
 
-Write a markdown overview for the team. Use these sections only (omit a section if nothing substantive to say):
+Write a markdown overview for the team. Use these sections only (omit a section if nothing substantive to say). **When multiple sections apply, keep this `##` order** so the recap reads top-down: **themes and unclear tickets before duplicate clusters** (this block is shown **after** `## Priority review` in the UI, which covers Jira priority recommendations first).
+
 ## Critical / high-risk themes
 (Themes and risk—**not** the Jira priority name "Critical".)
 ## Needs clarification
@@ -692,7 +693,8 @@ def backlog_overview():
         )
         part1 = (r1.content or '').strip()
         part2 = _strip_invalid_raise_to_blocker_rows((r2.content or '').strip())
-        overview_text = f'{part1}\n\n{part2}'.strip() if part2 else part1
+        # Priority review first in the recap (actionable Jira changes), then themes / clarification / duplicates.
+        overview_text = f'{part2}\n\n{part1}'.strip() if part2 else part1
         tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
         logger.info(
             'backlog-overview: 2-pass complete issues=%s output_tokens≈%s',
