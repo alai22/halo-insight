@@ -80,6 +80,66 @@ function rehypeAnnotateBacklogOverviewTables() {
 }
 
 /**
+ * Place server-generated ### Backlog snapshot and ### By status blocks side-by-side when both exist
+ * so narrow stat tables are not stretched to full width.
+ */
+function rehypeWrapBacklogSnapshotBlocks() {
+  return (tree) => {
+    if (tree.type !== 'root' || !Array.isArray(tree.children)) return;
+    const { children } = tree;
+
+    const h3Key = (node) => {
+      if (!node || node.type !== 'element' || node.tagName !== 'h3') return '';
+      return hastPlainText(node).trim().toLowerCase();
+    };
+
+    const snapIdx = children.findIndex((c) => h3Key(c) === 'backlog snapshot');
+    const statusIdx = children.findIndex((c) => h3Key(c) === 'by status');
+    if (snapIdx === -1 || statusIdx === -1 || statusIdx <= snapIdx) return;
+
+    const findTableEndExclusive = (startFrom) => {
+      for (let t = startFrom; t < children.length; t++) {
+        const c = children[t];
+        if (c.type === 'element' && c.tagName === 'table') {
+          return t + 1;
+        }
+      }
+      return -1;
+    };
+
+    const firstTableEnd = findTableEndExclusive(snapIdx + 1);
+    if (firstTableEnd === -1 || firstTableEnd > statusIdx) return;
+
+    const secondTableEnd = findTableEndExclusive(statusIdx + 1);
+    if (secondTableEnd === -1) return;
+
+    const snapshotCol = (nodes) => ({
+      type: 'element',
+      tagName: 'div',
+      properties: {
+        className: 'backlog-overview-snapshot-col min-w-0 shrink-0 max-w-md',
+      },
+      children: nodes,
+    });
+
+    const wrap = {
+      type: 'element',
+      tagName: 'div',
+      properties: {
+        className:
+          'backlog-overview-snapshot-wrap flex flex-wrap gap-x-8 gap-y-4 items-start mb-4 w-full',
+      },
+      children: [
+        snapshotCol(children.slice(snapIdx, firstTableEnd)),
+        snapshotCol(children.slice(statusIdx, secondTableEnd)),
+      ],
+    };
+
+    tree.children = [...children.slice(0, snapIdx), wrap, ...children.slice(secondTableEnd)];
+  };
+}
+
+/**
  * Arrow + emphasis in the Jira priority recommendation column; ticket column links when base URL is known.
  */
 function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
@@ -220,7 +280,7 @@ function getPriorityBadgeClasses(priority) {
   if (p === 'medium') return 'bg-slate-100 text-slate-700';
   if (p === 'normal') return 'bg-sky-100 text-sky-800';
   if (p === 'minor') return 'bg-emerald-100 text-emerald-800';
-  if (p === 'low' || p === 'lowest') return 'bg-gray-100 text-gray-600';
+  if (p === 'low' || p === 'lowest' || p === 'trivial') return 'bg-gray-100 text-gray-600';
   return 'bg-gray-100 text-gray-700';
 }
 
@@ -235,8 +295,23 @@ function getPriorityRank(priority) {
   if (p === 'normal') return 45;
   if (p === 'low') return 25;
   if (p === 'minor') return 20;
-  if (p === 'lowest') return 10;
+  if (p === 'lowest' || p === 'trivial') return 10;
   return 0;
+}
+
+/** Section heading when grouping backlog by priority (matches getPriorityRank buckets). */
+function getPrioritySectionLabel(priority) {
+  const r = getPriorityRank(priority);
+  if (r === 0) return '(No priority)';
+  if (r >= 100) return 'Blocker';
+  if (r >= 90) return 'Critical';
+  if (r >= 70) return 'Major';
+  if (r >= 50) return 'Medium';
+  if (r >= 45) return 'Normal';
+  if (r >= 25) return 'Low';
+  if (r >= 20) return 'Minor';
+  if (r >= 10) return 'Trivial';
+  return '(No priority)';
 }
 
 const loadDecisions = () => {
@@ -493,6 +568,37 @@ const BugTriageCopilot = () => {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filteredAndSorted, groupByCluster]);
 
+  /** Consecutive runs by priority rank when sorted by priority (for section dividers). */
+  const backlogPriorityGroups = useMemo(() => {
+    if (groupByCluster || sortBy !== 'priority' || filteredAndSorted.length === 0) {
+      return null;
+    }
+    const groups = [];
+    let currentRank = getPriorityRank(filteredAndSorted[0].priority);
+    let current = [filteredAndSorted[0]];
+    for (let i = 1; i < filteredAndSorted.length; i++) {
+      const issue = filteredAndSorted[i];
+      const r = getPriorityRank(issue.priority);
+      if (r !== currentRank) {
+        groups.push({
+          rank: currentRank,
+          label: getPrioritySectionLabel(current[0].priority),
+          issues: current,
+        });
+        currentRank = r;
+        current = [issue];
+      } else {
+        current.push(issue);
+      }
+    }
+    groups.push({
+      rank: currentRank,
+      label: getPrioritySectionLabel(current[0].priority),
+      issues: current,
+    });
+    return groups;
+  }, [filteredAndSorted, sortBy, groupByCluster]);
+
   const summaryData = useMemo(() => {
     const triagedIds = new Set(Object.keys(decisions));
     const byComponent = {};
@@ -534,6 +640,14 @@ const BugTriageCopilot = () => {
   }
 
   // Backlog view
+  const cardProps = (issue) => ({
+    issue,
+    triaged: isTriaged(issue.id),
+    onClick: () => setMiniDetailIssue(issue),
+    jiraBaseUrl: jiraStatus.base_url || null,
+    jiraTicketHref: jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null,
+  });
+
   const listContent = groupByCluster && groupedByCluster ? (
     <div className="space-y-6">
       {groupedByCluster.map(([clusterLabel, items]) => (
@@ -544,30 +658,38 @@ const BugTriageCopilot = () => {
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {items.map((issue) => (
-              <BacklogCard
-                key={issue.id}
-                issue={issue}
-                triaged={isTriaged(issue.id)}
-                onClick={() => setMiniDetailIssue(issue)}
-                jiraBaseUrl={jiraStatus.base_url || null}
-                jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
-              />
+              <BacklogCard key={issue.id} {...cardProps(issue)} />
             ))}
           </div>
         </div>
       ))}
     </div>
+  ) : backlogPriorityGroups ? (
+    <div className="space-y-8">
+      {backlogPriorityGroups.map((g) => (
+        <section key={`pri-${g.rank}-${g.label}`} className="min-w-0" aria-label={`${g.label} issues`}>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3 pb-2 border-b border-amber-200/90">
+            <span
+              className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${getPriorityBadgeClasses(g.issues[0]?.priority)}`}
+            >
+              {g.label}
+            </span>
+            <span className="text-sm text-gray-500">
+              {g.issues.length} issue{g.issues.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {g.issues.map((issue) => (
+              <BacklogCard key={issue.id} {...cardProps(issue)} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
   ) : (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       {filteredAndSorted.map((issue) => (
-        <BacklogCard
-          key={issue.id}
-          issue={issue}
-          triaged={isTriaged(issue.id)}
-          onClick={() => setMiniDetailIssue(issue)}
-          jiraBaseUrl={jiraStatus.base_url || null}
-          jiraTicketHref={jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null}
-        />
+        <BacklogCard key={issue.id} {...cardProps(issue)} />
       ))}
     </div>
   );
@@ -914,11 +1036,11 @@ const BugTriageCopilot = () => {
                 )}
                 {overviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-full [&_table]:min-w-0 sm:[&_table]:min-w-[44rem] [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2.5 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2.5 [&_td]:py-2 [&_td]:align-top [&_td]:text-gray-800 [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-0 [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[rehypeAnnotateBacklogOverviewTables]}
+                      rehypePlugins={[rehypeWrapBacklogSnapshotBlocks, rehypeAnnotateBacklogOverviewTables]}
                       components={backlogOverviewMarkdownComponents}
                     >
                       {overviewMarkdown}
