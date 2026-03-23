@@ -7,6 +7,7 @@ Provides issue list, status, OAuth 2.0 (3LO) connect flow, and AI backlog overvi
 import logging
 import re
 import secrets
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Blueprint, g, jsonify, redirect, request, session
@@ -208,7 +209,8 @@ Write a markdown overview for the team. Use these sections only (omit a section 
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
 ## Duplicates or related clusters
-Use **two subheadings** when this section has content (omit empty subheadings):
+When this section has content: put **at least one sentence of prose** on the line(s) immediately after this `##` heading **before** any `###` subheading (do **not** jump straight from `## Duplicates or related clusters` to `###` with nothing in between—that reads as a broken outline).
+Then use **two subheadings** when applicable (omit empty subheadings):
 ### Likely duplicate candidates
 Only when titles/metadata strongly suggest the **same user-visible bug** or **same root cause** (e.g. duplicate report of the identical failure). State briefly why. Cite keys.
 ### Shared root-cause investigation (optional)
@@ -253,13 +255,13 @@ _BACKLOG_OVERVIEW_SYSTEM_PASS2 = (
 
 """
     + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
-    + """**Output:** Produce **only** one top-level markdown section: `## Priority review`. No preamble, no other `##` sections, no themes or duplicates here.
+    + """**Output:** Produce **only** the markdown subsection starting with `### Recommended Jira priority changes` (see Format below). Do **not** output `## Priority review`—the application prepends backlog statistics. Do **not** output an aggregate “count by priority” table; a snapshot is injected for you. No preamble, no other `##` sections, no themes or duplicates here.
 
-Assess **every** issue in the table for Jira priority vs title/metadata. **Do not** list every appropriately prioritized ticket—summarize those with counts; **only tabulate** tickets where you recommend changing the Jira priority field.
+Assess **every** issue in the table for Jira priority vs title/metadata. **Only tabulate** tickets where you recommend changing the Jira priority field in the reprioritization table.
 
 **Coverage (mandatory):** Pay deliberate attention to **Major**, **Normal**, and **Minor** tickets—not only Blocker/Critical. Many mis-prioritizations appear as severe user impact in the title while priority is still Normal or Major. Scan those tiers before concluding.
 
-**Row targets (when justified—do not invent recommendations):** If the issue count is **≥100**, aim for **at least 8** rows in `### Recommended Jira priority changes` when that many **distinct, justified** Raise/Lower recommendations exist. If the issue count is **≥300**, aim for **at least 15** such rows when that many exist. If fewer are genuinely justified, say so in one sentence under the aggregate table (do not pad with weak rows).
+**Row targets (when justified—do not invent recommendations):** If the issue count is **≥100**, aim for **at least 8** rows in `### Recommended Jira priority changes` when that many **distinct, justified** Raise/Lower recommendations exist. If the issue count is **≥300**, aim for **at least 15** such rows when that many exist. If fewer are genuinely justified, say so in one sentence under that subheading (do not pad with weak rows).
 
 For tickets in the reprioritization table, use this **exact vocabulary** for the Jira **priority field** only:
 - **Raise Jira priority** — move **up** the ladder. State the **target** level (e.g. "Raise to Blocker").
@@ -274,23 +276,17 @@ For tickets in the reprioritization table, use this **exact vocabulary** for the
 
 **Avoid confusion:** Do not use **escalate** for Jira priority in the table—use **Raise** / **Lower** wording.
 
-**Format (required), in order:**
+**Format (required):**
 
-1. **Aggregate (appropriate priorities):** GitHub-flavored markdown table, separator `|---|---|`, columns **exactly**:
-
-| Current priority | Count (no Jira change recommended) |
-
-- One data row per level with count **> 0**. Sum of counts = issues with **No Jira priority change**.
-- If none appropriately set, omit data rows and one short line as before.
-
-2. **Reprioritization (only if any):** Subheading `### Recommended Jira priority changes` and pipe table `|---|---|---|---|---|`:
+**Reprioritization (only if any):** Start with subheading `### Recommended Jira priority changes` then a GitHub-flavored pipe table `|---|---|---|---|---|`:
 
 | Ticket | Title | Current priority | Jira priority recommendation | Reason |
 
 - **Title:** Copy the issue **summary/title** from the input data for that key (same wording as the `title` field in the tab-separated issue list; truncate with `…` if needed so the row stays readable, e.g. roughly **120 characters** max in the cell).
-- Recommendation column: only **Raise to …** or **Lower to …**. **Reason:** keep to **one short line** per row when possible so more tickets fit.
+- Recommendation column: only **Raise to …** or **Lower to …** (never “No change” rows—omit tickets that need no change). **Reason:** keep to **one short line** per row when possible so more tickets fit.
+- If you recommend **no** priority changes at all, output the subheading `### Recommended Jira priority changes` and a single line of prose stating that (no table).
 
-**Length:** This section may use up to roughly **3500 words** if needed. Prefer terse reasons over omitting justified Major/Normal/Minor candidates.
+**Length:** This fragment may use up to roughly **3500 words** if needed. Prefer terse reasons over omitting justified Major/Normal/Minor candidates.
 
 Rules:
 - Never **escalate/de-escalate** as verbs for the priority field in the table.
@@ -303,7 +299,7 @@ _BACKLOG_OVERVIEW_PASS2B_EXTRA = """
 **Second pass (description-enriched):** The user message has the same **metadata table** for every issue, then a line containing only `---`, then a **description_excerpts** block: each row is `key<TAB>description_excerpt` (plain text, may be truncated).
 - For any issue **whose key appears in description_excerpts**, you **must** use that excerpt together with the title and metadata when deciding Raise/Lower and when writing **Reason**. You may **omit** a Raise/Lower row if the excerpt shows impact is **peripheral** (per Halo product context above—e.g. optional profile/photo UX) and **Major** or current priority is appropriate.
 - For issues **not** listed in description_excerpts, judge from the metadata table only (same as a title-only pass).
-- Output **only** `## Priority review` with the same structure as before: aggregate table + optional `### Recommended Jira priority changes` table. Recompute aggregate counts consistently with your final reprioritization rows."""
+- Output **only** the same fragment as pass 2: starting with `### Recommended Jira priority changes` (no `## Priority review`, no aggregate snapshot tables—the app prepends statistics)."""
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS2B = _BACKLOG_OVERVIEW_SYSTEM_PASS2 + _BACKLOG_OVERVIEW_PASS2B_EXTRA
 
@@ -378,6 +374,114 @@ def _overview_tsv_field(val: Any, max_len: Optional[int] = None) -> str:
     return s
 
 
+def _md_pipe_cell(val: Any, max_len: Optional[int] = None) -> str:
+    """Escape for markdown pipe tables."""
+    return _overview_tsv_field(val, max_len).replace('|', '\\|')
+
+
+_HALO_PRIORITY_SNAPSHOT_ORDER = (
+    'Blocker',
+    'Critical',
+    'Major',
+    'Normal',
+    'Minor',
+    'Trivial',
+)
+_STATUS_SNAPSHOT_MAX_ROWS = 12
+
+
+def _overview_issue_priority_label(issue: Dict[str, Any]) -> str:
+    p = issue.get('priority')
+    if isinstance(p, str) and p.strip():
+        return p.strip()
+    return '(none)'
+
+
+def _overview_issue_status_label(issue: Dict[str, Any]) -> str:
+    s = issue.get('status')
+    if isinstance(s, str) and s.strip():
+        return s.strip()
+    return '(No status)'
+
+
+def _compute_backlog_snapshot_stats(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(issues)
+    by_pri = Counter(_overview_issue_priority_label(i) for i in issues)
+    by_st = Counter(_overview_issue_status_label(i) for i in issues)
+    return {
+        'total': total,
+        'by_priority': dict(by_pri),
+        'by_status': dict(by_st),
+    }
+
+
+def _render_backlog_snapshot_markdown(issues: List[Dict[str, Any]]) -> str:
+    """Deterministic ### Backlog snapshot + ### By status (no LLM)."""
+    stats = _compute_backlog_snapshot_stats(issues)
+    total = stats['total']
+    denom = total if total > 0 else 1
+    lines: List[str] = []
+    lines.append('### Backlog snapshot')
+    lines.append('')
+    lines.append('Counts are from the **filtered backlog** in this overview (same issues the model triages).')
+    lines.append('')
+    lines.append('| Priority | Count | % |')
+    lines.append('|---:|---:|---:|')
+    by_p = stats['by_priority']
+    known = frozenset(_HALO_PRIORITY_SNAPSHOT_ORDER)
+    ordered_pri: List[str] = [k for k in _HALO_PRIORITY_SNAPSHOT_ORDER if by_p.get(k, 0) > 0]
+    for k in sorted(kk for kk in by_p if kk not in known and by_p[kk] > 0):
+        ordered_pri.append(k)
+    for label in ordered_pri:
+        c = by_p[label]
+        pct = round(100.0 * c / denom, 1)
+        lines.append(f'| {_md_pipe_cell(label)} | {c} | {pct} |')
+    if total > 0:
+        lines.append(f'| **Total** | {total} | 100 |')
+    lines.append('')
+    lines.append('### By status')
+    lines.append('')
+    lines.append('| Status | Count | % |')
+    lines.append('|---:|---:|---:|')
+    by_s = sorted(stats['by_status'].items(), key=lambda x: (-x[1], x[0]))
+    top = by_s[:_STATUS_SNAPSHOT_MAX_ROWS]
+    other = sum(c for _, c in by_s[_STATUS_SNAPSHOT_MAX_ROWS:])
+    for label, c in top:
+        pct = round(100.0 * c / denom, 1)
+        lines.append(f'| {_md_pipe_cell(label, 160)} | {c} | {pct} |')
+    if other > 0:
+        rest_n = len(by_s) - _STATUS_SNAPSHOT_MAX_ROWS
+        lbl = f'Other ({rest_n} other statuses)' if rest_n != 1 else 'Other (1 other status)'
+        pct = round(100.0 * other / denom, 1)
+        lines.append(f'| {_md_pipe_cell(lbl)} | {other} | {pct} |')
+    return '\n'.join(lines)
+
+
+def _strip_leading_h2_priority_review(markdown: str) -> str:
+    """Remove a leading ## Priority review block so server can prepend snapshot + same H2."""
+    if not markdown:
+        return ''
+    lines = markdown.split('\n')
+    i = 0
+    while i < len(lines) and lines[i].strip() == '':
+        i += 1
+    if i < len(lines) and lines[i].strip() == '## Priority review':
+        i += 1
+        while i < len(lines) and lines[i].strip() == '':
+            i += 1
+        return '\n'.join(lines[i:]).strip()
+    return markdown.strip()
+
+
+def _assemble_priority_review_with_snapshot(issues: List[Dict[str, Any]], llm_fragment: str) -> str:
+    snapshot = _render_backlog_snapshot_markdown(issues)
+    body = _strip_leading_h2_priority_review(llm_fragment)
+    parts = ['## Priority review', '', snapshot]
+    if body:
+        parts.extend(['', body])
+    return '\n'.join(parts).strip()
+
+
 def _format_issues_for_overview_prompt(
     issues: List[Dict[str, Any]],
     truncated: bool,
@@ -406,20 +510,20 @@ def _format_issues_for_overview_prompt(
         )
     elif prompt_variant == 'pass2b':
         lines.append(
-            'Your task for this message: output **only** ## Priority review (aggregate counts + reprioritization table when applicable). '
+            'Your task for this message: output **only** the `### Recommended Jira priority changes` subsection (and its table when applicable)—do **not** output `## Priority review` or aggregate snapshot tables. '
             'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
             'For each issue key, **Current priority** in your output must match the **priority** column (4th tab-separated field) in the main table—not the title. '
-            'Tabulate counts for issues with no change; list Raise/Lower only in the reprioritization table. '
+            'List Raise/Lower only in the reprioritization table; omit tickets that need no change. '
             '**Hard rule:** Never a row with Current priority Blocker and Raise/Raise to Blocker. '
             'Raise to Blocker only when Current is Critical or lower. Self-check: target must not equal Current. '
             'For keys present in **description_excerpts** after `---`, you **must** incorporate those excerpts into judgment and Reason.'
         )
     else:
         lines.append(
-            'Your task for this message: output **only** ## Priority review (aggregate counts + reprioritization table when applicable). '
+            'Your task for this message: output **only** the `### Recommended Jira priority changes` subsection (and its table when applicable)—do **not** output `## Priority review` or aggregate snapshot tables. '
             'HALO Jira priority order (highest first): Blocker > Critical > Major > Normal > Minor > Trivial. '
             'For each issue key, **Current priority** in your output must match the **priority** column (4th tab-separated field) in the data below—not the title. '
-            'Tabulate counts for issues with no change; list Raise/Lower only in the reprioritization table. '
+            'List Raise/Lower only in the reprioritization table; omit tickets that need no change. '
             '**Hard rule:** Never a row with Current priority Blocker and Raise/Raise to Blocker. '
             'Raise to Blocker only when Current is Critical or lower. Self-check: target must not equal Current.'
         )
@@ -499,10 +603,12 @@ def _format_issues_for_overview_prompt(
         lines.append('Produce the markdown overview as instructed in the system prompt (no ## Priority review).')
     elif prompt_variant == 'pass2b':
         lines.append(
-            'Produce **only** ## Priority review as instructed in the system prompt (second pass / description excerpts).'
+            'Produce **only** the `### Recommended Jira priority changes` fragment as instructed (second pass / description excerpts).'
         )
     else:
-        lines.append('Produce **only** ## Priority review as instructed in the system prompt.')
+        lines.append(
+            'Produce **only** the `### Recommended Jira priority changes` fragment as instructed in the system prompt.'
+        )
     return '\n'.join(lines)
 
 
@@ -818,7 +924,8 @@ def backlog_overview():
         tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
         models_used: List[str] = [r1.model, r2.model]
         llm_rounds = 2
-        part2 = part2_draft
+        part2 = _assemble_priority_review_with_snapshot(batch, part2_draft)
+        snapshot_stats = _compute_backlog_snapshot_stats(batch)
         deep_key_count = 0
         deep_pass_applied = False
 
@@ -852,8 +959,11 @@ def backlog_overview():
                 tokens_used += getattr(r2b, 'tokens_used', 0) or 0
                 models_used.append(r2b.model)
                 llm_rounds = 3
-                if part2b_out and '## Priority review' in part2b_out:
-                    part2 = part2b_out
+                pass2b_ok = bool(part2b_out.strip()) and (
+                    '### Recommended Jira priority changes' in part2b_out
+                )
+                if pass2b_ok:
+                    part2 = _assemble_priority_review_with_snapshot(batch, part2b_out)
                     deep_pass_applied = True
                     logger.info(
                         'backlog-overview: pass2b description refine issues=%s keys=%s',
@@ -862,7 +972,7 @@ def backlog_overview():
                     )
                 else:
                     logger.warning(
-                        'backlog-overview: pass2b missing valid ## Priority review; keeping pass2 output keys=%s',
+                        'backlog-overview: pass2b missing valid ### Recommended Jira priority changes; keeping pass2 output keys=%s',
                         deep_key_count,
                     )
 
@@ -887,6 +997,7 @@ def backlog_overview():
                 'output_tokens': tokens_used,
                 'priority_deep_pass_keys': deep_key_count,
                 'priority_deep_pass_applied': deep_pass_applied,
+                'snapshot_stats': snapshot_stats,
             },
         })
     except Exception as e:
