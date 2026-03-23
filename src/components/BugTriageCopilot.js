@@ -275,12 +275,13 @@ function getPriorityBadgeClasses(priority) {
   if (!priority) return 'bg-gray-100 text-gray-700';
   const p = priority.toLowerCase();
   if (p === 'blocker' || p === 'highest') return 'bg-red-100 text-red-800';
-  if (p === 'critical') return 'bg-red-200 text-red-900';
+  if (p === 'critical') return 'bg-orange-100 text-orange-900';
   if (p === 'major' || p === 'high') return 'bg-amber-100 text-amber-800';
   if (p === 'medium') return 'bg-slate-100 text-slate-700';
-  if (p === 'normal') return 'bg-sky-100 text-sky-800';
+  if (p === 'normal') return 'bg-yellow-100 text-yellow-900';
   if (p === 'minor') return 'bg-emerald-100 text-emerald-800';
-  if (p === 'low' || p === 'lowest' || p === 'trivial') return 'bg-gray-100 text-gray-600';
+  if (p === 'trivial') return 'bg-blue-100 text-blue-800';
+  if (p === 'low' || p === 'lowest') return 'bg-gray-100 text-gray-600';
   return 'bg-gray-100 text-gray-700';
 }
 
