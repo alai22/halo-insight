@@ -27,6 +27,55 @@ import {
 } from '../data/bugTriageMockData';
 
 const STORAGE_KEY = 'bug_triage_decisions';
+const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
+/** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
+const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
+
+function loadOverviewCacheEntry() {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (
+      !o ||
+      typeof o.fingerprint !== 'string' ||
+      typeof o.overview !== 'string' ||
+      typeof o.cachedAt !== 'string'
+    ) {
+      return null;
+    }
+    return o;
+  } catch {
+    return null;
+  }
+}
+
+function saveOverviewCache(entry) {
+  try {
+    localStorage.setItem(OVERVIEW_CACHE_STORAGE_KEY, JSON.stringify(entry));
+  } catch (e) {
+    console.warn('Failed to save backlog overview cache', e);
+  }
+}
+
+/**
+ * Returns cached markdown if fingerprint matches and entry is within TTL; else null.
+ * Multi-tab race: acceptable; both may POST once before either writes.
+ */
+function getValidCachedOverview(fingerprint) {
+  const entry = loadOverviewCacheEntry();
+  if (!entry || entry.fingerprint !== fingerprint) return null;
+  const t = new Date(entry.cachedAt).getTime();
+  if (Number.isNaN(t) || Date.now() - t >= BACKLOG_OVERVIEW_CACHE_TTL_MS) return null;
+  const timeLabel = new Date(entry.cachedAt).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return {
+    overview: entry.overview,
+    cacheHint: `from cache · ${timeLabel}`,
+  };
+}
 
 /** Plain text from a hast node (table cells may wrap content in paragraphs, emphasis, etc.). */
 function hastPlainText(node) {
@@ -344,6 +393,8 @@ const BugTriageCopilot = () => {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState(null);
   const [overviewExpanded, setOverviewExpanded] = useState(false);
+  /** Set when overview was restored from localStorage (auto-run only); cleared on fresh POST. */
+  const [overviewCacheHint, setOverviewCacheHint] = useState(null);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -501,15 +552,17 @@ const BugTriageCopilot = () => {
     [filteredAndSorted],
   );
 
-  const runBacklogOverview = useCallback(async (list, signal) => {
+  const runBacklogOverview = useCallback(async (list, signal, fingerprintForCache = null) => {
     if (!list.length) {
       setOverviewMarkdown(null);
       setOverviewError(null);
       setOverviewLoading(false);
+      setOverviewCacheHint(null);
       return;
     }
     setOverviewLoading(true);
     setOverviewError(null);
+    setOverviewCacheHint(null);
     try {
       const slim = list.map(slimIssueForOverview);
       const res = await fetch('/api/jira/backlog-overview', {
@@ -525,7 +578,15 @@ const BugTriageCopilot = () => {
         setOverviewMarkdown(null);
         return;
       }
-      setOverviewMarkdown(typeof data.overview === 'string' ? data.overview : '');
+      const md = typeof data.overview === 'string' ? data.overview : '';
+      setOverviewMarkdown(md);
+      if (fingerprintForCache != null) {
+        saveOverviewCache({
+          fingerprint: fingerprintForCache,
+          overview: md,
+          cachedAt: new Date().toISOString(),
+        });
+      }
     } catch (e) {
       if (e.name === 'AbortError') return;
       setOverviewError(e.message || 'Request failed');
@@ -541,11 +602,20 @@ const BugTriageCopilot = () => {
       setOverviewMarkdown(null);
       setOverviewError(null);
       setOverviewLoading(false);
+      setOverviewCacheHint(null);
+      return;
+    }
+    const cached = getValidCachedOverview(backlogOverviewFingerprint);
+    if (cached) {
+      setOverviewMarkdown(cached.overview);
+      setOverviewError(null);
+      setOverviewLoading(false);
+      setOverviewCacheHint(cached.cacheHint);
       return;
     }
     const ac = new AbortController();
     const timer = setTimeout(() => {
-      runBacklogOverview(filteredAndSorted, ac.signal);
+      runBacklogOverview(filteredAndSorted, ac.signal, backlogOverviewFingerprint);
     }, 500);
     return () => {
       clearTimeout(timer);
@@ -998,7 +1068,9 @@ const BugTriageCopilot = () => {
                   <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
                 )}
                 {!overviewExpanded && overviewMarkdown && !overviewLoading && !overviewError && (
-                  <span className="text-xs font-normal text-amber-800/90 truncate">— ready, click to expand</span>
+                  <span className="text-xs font-normal text-amber-800/90 truncate">
+                    — {overviewCacheHint ? `${overviewCacheHint}, ` : ''}ready, click to expand
+                  </span>
                 )}
               </button>
               <div className="flex items-center gap-2 shrink-0">
@@ -1011,7 +1083,7 @@ const BugTriageCopilot = () => {
                 <button
                   type="button"
                   disabled={overviewLoading}
-                  onClick={() => runBacklogOverview(filteredAndSorted)}
+                  onClick={() => runBacklogOverview(filteredAndSorted, undefined, backlogOverviewFingerprint)}
                   className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-950 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Regenerate
@@ -1020,6 +1092,9 @@ const BugTriageCopilot = () => {
             </div>
             {overviewExpanded && (
               <div className="px-4 pb-4 pt-0 border-t border-amber-200/70 space-y-3">
+                {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
+                  <p className="text-xs text-amber-800/85">{overviewCacheHint}</p>
+                )}
                 {overviewError && (
                   <div className="flex items-start justify-between gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
                     <p className="text-sm text-red-800 flex-1" role="alert">
