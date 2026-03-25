@@ -74,6 +74,7 @@ function getValidCachedOverview(fingerprint) {
   return {
     overview: entry.overview,
     cacheHint: `from cache · ${timeLabel}`,
+    meta: entry.meta && typeof entry.meta === 'object' ? entry.meta : null,
   };
 }
 
@@ -410,6 +411,7 @@ const BugTriageCopilot = () => {
   const [overviewExpanded, setOverviewExpanded] = useState(false);
   /** Set when overview was restored from localStorage (auto-run only); cleared on fresh POST. */
   const [overviewCacheHint, setOverviewCacheHint] = useState(null);
+  const [overviewMeta, setOverviewMeta] = useState(null);
   const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
 
   // Check Jira config on mount and load issues when configured
@@ -574,6 +576,7 @@ const BugTriageCopilot = () => {
       setOverviewError(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
+      setOverviewMeta(null);
       return;
     }
     setOverviewLoading(true);
@@ -592,21 +595,26 @@ const BugTriageCopilot = () => {
       if (!res.ok || data.status !== 'success') {
         setOverviewError(data.message || 'Failed to generate backlog overview');
         setOverviewMarkdown(null);
+        setOverviewMeta(null);
         return;
       }
       const md = typeof data.overview === 'string' ? data.overview : '';
+      const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
       setOverviewMarkdown(md);
+      setOverviewMeta(meta);
       if (fingerprintForCache != null) {
         saveOverviewCache({
           fingerprint: fingerprintForCache,
           overview: md,
           cachedAt: new Date().toISOString(),
+          ...(meta ? { meta } : {}),
         });
       }
     } catch (e) {
       if (e.name === 'AbortError') return;
       setOverviewError(e.message || 'Request failed');
       setOverviewMarkdown(null);
+      setOverviewMeta(null);
     } finally {
       setOverviewLoading(false);
     }
@@ -619,6 +627,7 @@ const BugTriageCopilot = () => {
       setOverviewError(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
+      setOverviewMeta(null);
       return;
     }
     const cached = getValidCachedOverview(backlogOverviewFingerprint);
@@ -627,6 +636,7 @@ const BugTriageCopilot = () => {
       setOverviewError(null);
       setOverviewLoading(false);
       setOverviewCacheHint(cached.cacheHint);
+      setOverviewMeta(cached.meta);
       return;
     }
     const ac = new AbortController();
@@ -651,6 +661,30 @@ const BugTriageCopilot = () => {
     () => (overviewCacheHint ? 'from cache' : 'fresh'),
     [overviewCacheHint],
   );
+  const overviewCoverage = useMemo(() => {
+    const issueCount = Number.isFinite(Number(overviewMeta?.issue_count))
+      ? Number(overviewMeta.issue_count)
+      : null;
+    const submittedCount = Number.isFinite(Number(overviewMeta?.submitted_count))
+      ? Number(overviewMeta.submitted_count)
+      : null;
+    const deepCount = Number.isFinite(Number(overviewMeta?.priority_deep_pass_keys))
+      ? Number(overviewMeta.priority_deep_pass_keys)
+      : 0;
+    const passes = Number.isFinite(Number(overviewMeta?.overview_passes))
+      ? Number(overviewMeta.overview_passes)
+      : null;
+    const truncated = overviewMeta?.truncated === true;
+    if (issueCount == null) return null;
+    return {
+      firstPassCount: issueCount,
+      secondPassCount: issueCount,
+      deepRefineCount: passes >= 3 ? deepCount : 0,
+      displayedCount: filteredAndSorted.length,
+      submittedCount,
+      truncated,
+    };
+  }, [overviewMeta, filteredAndSorted.length]);
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;
@@ -1109,6 +1143,18 @@ const BugTriageCopilot = () => {
                     <span className="text-amber-800/85">{overviewCacheHint}</span>
                   )}
                 </div>
+                {!overviewLoading && !overviewError && overviewCoverage && (
+                  <p className="text-xs text-amber-900/90">
+                    Coverage: pass1 {overviewCoverage.firstPassCount}, priority pass {overviewCoverage.secondPassCount}
+                    {overviewCoverage.deepRefineCount > 0 ? `, deep refine ${overviewCoverage.deepRefineCount}` : ''}
+                    , displayed {overviewCoverage.displayedCount}.
+                  </p>
+                )}
+                {!overviewLoading && !overviewError && overviewCoverage?.truncated && (
+                  <p className="text-xs text-amber-800/90">
+                    AI analyzed {overviewCoverage.firstPassCount} of {overviewCoverage.submittedCount ?? overviewCoverage.firstPassCount} submitted tickets (analysis cap).
+                  </p>
+                )}
                 {!overviewExpanded && overviewPreviewText && !overviewError && (
                   <p className="text-xs text-amber-900/90 truncate">
                     {overviewPreviewText}
@@ -1158,6 +1204,18 @@ const BugTriageCopilot = () => {
               <div className="px-4 pb-4 pt-0 border-t border-amber-200/70 space-y-3">
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
                   <p className="text-xs text-amber-800/85">{overviewCacheHint}</p>
+                )}
+                {!overviewLoading && !overviewError && overviewCoverage && (
+                  <p className="text-xs text-amber-900/95">
+                    Coverage: First pass {overviewCoverage.firstPassCount} considered; priority pass {overviewCoverage.secondPassCount} considered
+                    {overviewCoverage.deepRefineCount > 0 ? `; deep refine (description-backed) ${overviewCoverage.deepRefineCount} considered` : ''}
+                    ; displayed in backlog {overviewCoverage.displayedCount}.
+                  </p>
+                )}
+                {!overviewLoading && !overviewError && overviewCoverage?.truncated && (
+                  <p className="text-xs text-amber-800/90">
+                    AI analyzed {overviewCoverage.firstPassCount} of {overviewCoverage.submittedCount ?? overviewCoverage.firstPassCount} submitted tickets due to the analysis cap.
+                  </p>
                 )}
                 {overviewError && (
                   <div className="flex items-start justify-between gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
