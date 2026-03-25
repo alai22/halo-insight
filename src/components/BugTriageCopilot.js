@@ -61,11 +61,18 @@ function logOverviewConsole(event, detail) {
 function isOverviewStreamTransportFailure(err) {
   if (!err || typeof err !== 'object') return false;
   if (err.name === 'AbortError') return false;
+  // DOMException in some browsers / WebView
+  if (err.name === 'NetworkError') return true;
   const msg = String(err.message || '').toLowerCase();
   if (err.name === 'TypeError' && (msg === 'network error' || msg.includes('network'))) return true;
   if (msg.includes('failed to fetch')) return true;
+  if (msg.includes('load failed')) return true;
+  if (msg.includes('err_http2') || msg.includes('http2')) return true;
   return false;
 }
+
+/** POST without ?stream=1 above this size — long NDJSON streams often hit HTTP/2 / proxy resets (still 200). */
+const BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES = 350;
 
 /** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
 const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -642,6 +649,62 @@ const BugTriageCopilot = () => {
     const runStartedAt = performance.now();
     const stepStartedAt = Object.create(null);
     let overviewLogGroupOpened = false;
+    const slim = list.map(slimIssueForOverview);
+
+    const applyOverviewJsonResponse = (jsonRes, data, traceKind) => {
+      if (signal?.aborted) return;
+      if (!jsonRes.ok || data.status !== 'success') {
+        const errLabel =
+          traceKind === 'fallback'
+            ? 'Fallback error payload'
+            : traceKind === 'large-batch'
+              ? 'Large-batch error payload'
+              : 'Non-stream error';
+        logOverviewConsole(errLabel, {
+          wallClockMs: Math.round(performance.now() - runStartedAt),
+          httpStatus: jsonRes.status,
+          errorCode: data.error_code,
+          failedStep: data.failed_step,
+          completedSteps: data.completed_steps,
+          retryAfterSeconds: data.retry_after_seconds,
+        });
+        setOverviewError({
+          message: data.message || 'Failed to generate backlog overview',
+          errorCode: data.error_code,
+          failedStep: data.failed_step,
+          completedSteps: data.completed_steps,
+          retryAfterSeconds: data.retry_after_seconds,
+          details: data.details,
+        });
+        setOverviewMarkdown(null);
+        setOverviewMeta(null);
+        return;
+      }
+      const md = typeof data.overview === 'string' ? data.overview : '';
+      const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+      const okLabel =
+        traceKind === 'fallback'
+          ? 'Fallback success'
+          : traceKind === 'large-batch'
+            ? 'Large-batch success'
+            : 'Non-stream success';
+      logOverviewConsole(okLabel, {
+        wallClockMs: Math.round(performance.now() - runStartedAt),
+        overviewChars: md.length,
+        overviewIncomplete: meta?.overview_incomplete,
+        issueCount: meta?.issue_count,
+      });
+      setOverviewMarkdown(md);
+      setOverviewMeta(meta);
+      if (fingerprintForCache != null) {
+        saveOverviewCache({
+          fingerprint: fingerprintForCache,
+          overview: md,
+          cachedAt: new Date().toISOString(),
+          ...(meta ? { meta } : {}),
+        });
+      }
+    };
 
     try {
       try {
@@ -652,50 +715,30 @@ const BugTriageCopilot = () => {
           time: new Date().toISOString(),
         });
 
-        const slim = list.map(slimIssueForOverview);
-
-        const applyOverviewJsonResponse = (jsonRes, data, traceKind) => {
-          if (signal?.aborted) return;
-          if (!jsonRes.ok || data.status !== 'success') {
-            logOverviewConsole(traceKind === 'fallback' ? 'Fallback error payload' : 'Non-stream error', {
-              wallClockMs: Math.round(performance.now() - runStartedAt),
-              httpStatus: jsonRes.status,
-              errorCode: data.error_code,
-              failedStep: data.failed_step,
-              completedSteps: data.completed_steps,
-              retryAfterSeconds: data.retry_after_seconds,
-            });
-            setOverviewError({
-              message: data.message || 'Failed to generate backlog overview',
-              errorCode: data.error_code,
-              failedStep: data.failed_step,
-              completedSteps: data.completed_steps,
-              retryAfterSeconds: data.retry_after_seconds,
-              details: data.details,
-            });
-            setOverviewMarkdown(null);
-            setOverviewMeta(null);
-            return;
-          }
-          const md = typeof data.overview === 'string' ? data.overview : '';
-          const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
-          logOverviewConsole(traceKind === 'fallback' ? 'Fallback success' : 'Non-stream success', {
-            wallClockMs: Math.round(performance.now() - runStartedAt),
-            overviewChars: md.length,
-            overviewIncomplete: meta?.overview_incomplete,
-            issueCount: meta?.issue_count,
+        if (list.length >= BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES) {
+          logOverviewConsole('Large batch: non-streaming overview only (avoids HTTP/2 NDJSON stream drops)', {
+            issues: list.length,
+            threshold: BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES,
           });
-          setOverviewMarkdown(md);
-          setOverviewMeta(meta);
-          if (fingerprintForCache != null) {
-            saveOverviewCache({
-              fingerprint: fingerprintForCache,
-              overview: md,
-              cachedAt: new Date().toISOString(),
-              ...(meta ? { meta } : {}),
-            });
-          }
-        };
+          const lbFetchAt = performance.now();
+          const resLb = await fetch('/api/jira/backlog-overview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issues: slim }),
+            signal,
+          });
+          logOverviewConsole('Large-batch response headers', {
+            ms: Math.round(performance.now() - lbFetchAt),
+            status: resLb.status,
+          });
+          if (signal?.aborted) return;
+          const lbParseAt = performance.now();
+          const dataLb = await resLb.json().catch(() => ({}));
+          logOverviewConsole('Large-batch JSON parsed', { ms: Math.round(performance.now() - lbParseAt) });
+          if (signal?.aborted) return;
+          applyOverviewJsonResponse(resLb, dataLb, 'large-batch');
+          return;
+        }
 
         const fetchStartedAt = performance.now();
         const res = await fetch('/api/jira/backlog-overview?stream=1', {
@@ -918,6 +961,38 @@ const BugTriageCopilot = () => {
         overviewLogGroupOpened = false;
       }
       if (e.name === 'AbortError') return;
+      if (isOverviewStreamTransportFailure(e) && !signal?.aborted) {
+        logOverviewConsole('Transport error (outer catch); retrying JSON POST without stream', {
+          name: e.name,
+          message: e.message,
+          wallClockMs: Math.round(performance.now() - runStartedAt),
+        });
+        try {
+          const fbAt = performance.now();
+          const resFb = await fetch('/api/jira/backlog-overview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issues: slim }),
+            signal,
+          });
+          logOverviewConsole('Outer fallback response headers', {
+            ms: Math.round(performance.now() - fbAt),
+            status: resFb.status,
+          });
+          if (signal?.aborted) return;
+          const dataFb = await resFb.json().catch(() => ({}));
+          applyOverviewJsonResponse(resFb, dataFb, 'fallback');
+        } catch (e2) {
+          console.info(OVERVIEW_CONSOLE_GROUP, 'Outer fallback failed', {
+            name: e2.name,
+            message: e2.message,
+          });
+          setOverviewError({ message: e2.message || e.message || 'Request failed' });
+          setOverviewMarkdown(null);
+          setOverviewMeta(null);
+        }
+        return;
+      }
       console.info(OVERVIEW_CONSOLE_GROUP, 'Client error', {
         wallClockMs: Math.round(performance.now() - runStartedAt),
         name: e.name,
