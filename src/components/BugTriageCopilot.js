@@ -54,6 +54,19 @@ function logOverviewConsole(event, detail) {
   }
 }
 
+/**
+ * Long NDJSON streams often fail mid-body with net::ERR_HTTP2_PROTOCOL_ERROR (still 200) behind
+ * reverse proxies; the read() promise then rejects with TypeError "network error".
+ */
+function isOverviewStreamTransportFailure(err) {
+  if (!err || typeof err !== 'object') return false;
+  if (err.name === 'AbortError') return false;
+  const msg = String(err.message || '').toLowerCase();
+  if (err.name === 'TypeError' && (msg === 'network error' || msg.includes('network'))) return true;
+  if (msg.includes('failed to fetch')) return true;
+  return false;
+}
+
 /** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
 const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -640,6 +653,50 @@ const BugTriageCopilot = () => {
         });
 
         const slim = list.map(slimIssueForOverview);
+
+        const applyOverviewJsonResponse = (jsonRes, data, traceKind) => {
+          if (signal?.aborted) return;
+          if (!jsonRes.ok || data.status !== 'success') {
+            logOverviewConsole(traceKind === 'fallback' ? 'Fallback error payload' : 'Non-stream error', {
+              wallClockMs: Math.round(performance.now() - runStartedAt),
+              httpStatus: jsonRes.status,
+              errorCode: data.error_code,
+              failedStep: data.failed_step,
+              completedSteps: data.completed_steps,
+              retryAfterSeconds: data.retry_after_seconds,
+            });
+            setOverviewError({
+              message: data.message || 'Failed to generate backlog overview',
+              errorCode: data.error_code,
+              failedStep: data.failed_step,
+              completedSteps: data.completed_steps,
+              retryAfterSeconds: data.retry_after_seconds,
+              details: data.details,
+            });
+            setOverviewMarkdown(null);
+            setOverviewMeta(null);
+            return;
+          }
+          const md = typeof data.overview === 'string' ? data.overview : '';
+          const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+          logOverviewConsole(traceKind === 'fallback' ? 'Fallback success' : 'Non-stream success', {
+            wallClockMs: Math.round(performance.now() - runStartedAt),
+            overviewChars: md.length,
+            overviewIncomplete: meta?.overview_incomplete,
+            issueCount: meta?.issue_count,
+          });
+          setOverviewMarkdown(md);
+          setOverviewMeta(meta);
+          if (fingerprintForCache != null) {
+            saveOverviewCache({
+              fingerprint: fingerprintForCache,
+              overview: md,
+              cachedAt: new Date().toISOString(),
+              ...(meta ? { meta } : {}),
+            });
+          }
+        };
+
         const fetchStartedAt = performance.now();
         const res = await fetch('/api/jira/backlog-overview?stream=1', {
           method: 'POST',
@@ -662,45 +719,7 @@ const BugTriageCopilot = () => {
           const data = await res.json().catch(() => ({}));
           logOverviewConsole('JSON body parsed', { ms: Math.round(performance.now() - parseStartedAt) });
           if (signal?.aborted) return;
-          if (!res.ok || data.status !== 'success') {
-            logOverviewConsole('Non-stream error', {
-              wallClockMs: Math.round(performance.now() - runStartedAt),
-              httpStatus: res.status,
-              errorCode: data.error_code,
-              failedStep: data.failed_step,
-              completedSteps: data.completed_steps,
-              retryAfterSeconds: data.retry_after_seconds,
-            });
-            setOverviewError({
-              message: data.message || 'Failed to generate backlog overview',
-              errorCode: data.error_code,
-              failedStep: data.failed_step,
-              completedSteps: data.completed_steps,
-              retryAfterSeconds: data.retry_after_seconds,
-              details: data.details,
-            });
-            setOverviewMarkdown(null);
-            setOverviewMeta(null);
-            return;
-          }
-          const md = typeof data.overview === 'string' ? data.overview : '';
-          const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
-          logOverviewConsole('Non-stream success', {
-            wallClockMs: Math.round(performance.now() - runStartedAt),
-            overviewChars: md.length,
-            overviewIncomplete: meta?.overview_incomplete,
-            issueCount: meta?.issue_count,
-          });
-          setOverviewMarkdown(md);
-          setOverviewMeta(meta);
-          if (fingerprintForCache != null) {
-            saveOverviewCache({
-              fingerprint: fingerprintForCache,
-              overview: md,
-              cachedAt: new Date().toISOString(),
-              ...(meta ? { meta } : {}),
-            });
-          }
+          applyOverviewJsonResponse(res, data, 'initial-json');
           return;
         }
 
@@ -720,72 +739,116 @@ const BugTriageCopilot = () => {
         let buffer = '';
         let finalResult = null;
         let streamEnded = false;
-        while (!streamEnded) {
-          const { done, value } = await reader.read();
-          if (signal?.aborted) {
-            reader.cancel().catch(() => {});
-            logOverviewConsole('Aborted during stream', {
-              wallClockMs: Math.round(performance.now() - runStartedAt),
-            });
-            return;
-          }
-          if (done) {
-            streamEnded = true;
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            let ev;
-            try {
-              ev = JSON.parse(line);
-            } catch {
-              continue;
+        try {
+          while (!streamEnded) {
+            const { done, value } = await reader.read();
+            if (signal?.aborted) {
+              reader.cancel().catch(() => {});
+              logOverviewConsole('Aborted during stream', {
+                wallClockMs: Math.round(performance.now() - runStartedAt),
+              });
+              return;
             }
-            if (ev.type === 'progress') {
-              const step = ev.step;
-              const phase = ev.phase;
-              const label = overviewStepLabel(step);
-              if (phase === 'start') {
-                stepStartedAt[step] = performance.now();
-                logOverviewConsole(`Step start · ${label}`, {
-                  step,
-                  completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
-                });
-              } else if (phase === 'done' || phase === 'error') {
-                const t0 = stepStartedAt[step];
-                const durationMs = t0 != null ? Math.round(performance.now() - t0) : null;
-                logOverviewConsole(`Step ${phase} · ${label}`, {
-                  step,
-                  durationMs,
+            if (done) {
+              streamEnded = true;
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              let ev;
+              try {
+                ev = JSON.parse(line);
+              } catch {
+                continue;
+              }
+              if (ev.type === 'progress') {
+                const step = ev.step;
+                const phase = ev.phase;
+                const label = overviewStepLabel(step);
+                if (phase === 'start') {
+                  stepStartedAt[step] = performance.now();
+                  logOverviewConsole(`Step start · ${label}`, {
+                    step,
+                    completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+                  });
+                } else if (phase === 'done' || phase === 'error') {
+                  const t0 = stepStartedAt[step];
+                  const durationMs = t0 != null ? Math.round(performance.now() - t0) : null;
+                  logOverviewConsole(`Step ${phase} · ${label}`, {
+                    step,
+                    durationMs,
+                    ...(durationMs === 0
+                      ? { note: 'start+done in same chunk (timestamps identical in one turn)' }
+                      : {}),
+                    completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+                  });
+                }
+                setOverviewProgress({
+                  step: ev.step,
+                  phase: ev.phase,
                   completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
                 });
               }
-              setOverviewProgress({
-                step: ev.step,
-                phase: ev.phase,
-                completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
-              });
-            }
-            if (ev.type === 'result') {
-              finalResult = ev;
+              if (ev.type === 'result') {
+                finalResult = ev;
+              }
             }
           }
-        }
-        if (buffer.trim()) {
-          try {
-            const ev = JSON.parse(buffer);
-            if (ev.type === 'result') finalResult = ev;
-          } catch {
-            /* ignore */
+          if (buffer.trim()) {
+            try {
+              const ev = JSON.parse(buffer);
+              if (ev.type === 'result') finalResult = ev;
+            } catch {
+              /* ignore */
+            }
           }
-        }
 
-        logOverviewConsole('Stream bytes finished', {
-          ms: Math.round(performance.now() - streamStartedAt),
-        });
+          logOverviewConsole('Stream bytes finished', {
+            ms: Math.round(performance.now() - streamStartedAt),
+          });
+        } catch (streamErr) {
+          if (signal?.aborted) {
+            reader.cancel().catch(() => {});
+            throw streamErr;
+          }
+          if (!isOverviewStreamTransportFailure(streamErr)) {
+            reader.cancel().catch(() => {});
+            throw streamErr;
+          }
+          logOverviewConsole(
+            'Stream transport error; retrying single JSON POST (no stream) — mitigates HTTP/2 / proxy drops on long bodies',
+            {
+              name: streamErr.name,
+              message: streamErr.message,
+              wallClockMs: Math.round(performance.now() - runStartedAt),
+            },
+          );
+          reader.cancel().catch(() => {});
+          setOverviewProgress(null);
+          const fbFetchAt = performance.now();
+          const res2 = await fetch('/api/jira/backlog-overview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issues: slim }),
+            signal,
+          });
+          logOverviewConsole('Fallback response headers', {
+            ms: Math.round(performance.now() - fbFetchAt),
+            status: res2.status,
+          });
+          if (signal?.aborted) return;
+          const parseStartedAt = performance.now();
+          const data2 = await res2.json().catch(() => ({}));
+          logOverviewConsole('Fallback JSON parsed', {
+            ms: Math.round(performance.now() - parseStartedAt),
+          });
+          if (signal?.aborted) return;
+          applyOverviewJsonResponse(res2, data2, 'fallback');
+          return;
+        }
 
         if (signal?.aborted) return;
 
