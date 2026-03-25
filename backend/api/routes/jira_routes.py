@@ -1107,6 +1107,25 @@ def _overview_progress_event(step: str, phase: str, completed: List[str]) -> Dic
     return {'type': 'progress', 'step': step, 'phase': phase, 'completed': list(completed)}
 
 
+def _join_overview_chunks(part2: str, part1: str, title_section: str) -> str:
+    """Same join order as terminal overview: part2, part1, title."""
+    chunks: List[str] = []
+    p2 = (part2 or '').strip()
+    p1 = (part1 or '').strip()
+    t = (title_section or '').strip()
+    if p2:
+        chunks.append(p2)
+    if p1:
+        chunks.append(p1)
+    if t:
+        chunks.append(t)
+    return '\n\n'.join(chunks).strip()
+
+
+def _overview_partial_event(milestone: str, markdown: str) -> Dict[str, Any]:
+    return {'type': 'partial', 'milestone': milestone, 'markdown': markdown}
+
+
 def _overview_error_result(
     exc: Exception,
     *,
@@ -1159,7 +1178,7 @@ def _iter_backlog_overview_events(
     submitted_count_after_parent_filter: int,
 ) -> Iterator[Dict[str, Any]]:
     """
-    Yields progress dicts and a single terminal result dict (type=='result').
+    Yields progress dicts, optional partial markdown (type=='partial'), and a terminal result (type=='result').
     On partial success after pass2, result status is 'success' with meta.overview_incomplete.
     """
     completed: List[str] = []
@@ -1229,6 +1248,7 @@ def _iter_backlog_overview_events(
     models_used: List[str] = [r1.model, r2.model]
     llm_rounds = 2
     part2 = _assemble_priority_review_with_snapshot(batch, part2_draft)
+    yield _overview_partial_event('after_pass2', _join_overview_chunks(part2, part1, ''))
     snapshot_stats = _compute_backlog_snapshot_stats(batch)
     deep_key_count = 0
     deep_pass_applied = False
@@ -1305,6 +1325,9 @@ def _iter_backlog_overview_events(
                     )
                     completed.append('pass2b')
                     yield _overview_progress_event('pass2b', 'done', completed)
+
+    if 'pass2b' in completed:
+        yield _overview_partial_event('after_pass2b', _join_overview_chunks(part2, part1, ''))
 
     if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED:
         all_keys = list(source_by_key.keys())
@@ -1387,6 +1410,12 @@ def _iter_backlog_overview_events(
                         title_rewrite_pass_applied = title_rewrite_rows > 0
                         completed.append('title_rewrite')
                         yield _overview_progress_event('title_rewrite', 'done', completed)
+
+    if title_rewrite_section.strip():
+        yield _overview_partial_event(
+            'after_title',
+            _join_overview_chunks(part2, part1, title_rewrite_section),
+        )
 
     chunks: List[str] = []
     if part2:

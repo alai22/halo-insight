@@ -465,6 +465,8 @@ const BugTriageCopilot = () => {
   /** Set when overview was restored from localStorage (auto-run only); cleared on fresh POST. */
   const [overviewCacheHint, setOverviewCacheHint] = useState(null);
   const [overviewMeta, setOverviewMeta] = useState(null);
+  /** NDJSON `partial` milestone while stream still in flight (for UX copy only). */
+  const [overviewPartialMilestone, setOverviewPartialMilestone] = useState(null);
   const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
   const [showBacklogMetrics, setShowBacklogMetrics] = useState(false);
 
@@ -640,6 +642,7 @@ const BugTriageCopilot = () => {
       setOverviewMarkdown(null);
       setOverviewError(null);
       setOverviewProgress(null);
+      setOverviewPartialMilestone(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
       setOverviewMeta(null);
@@ -648,6 +651,7 @@ const BugTriageCopilot = () => {
     setOverviewLoading(true);
     setOverviewError(null);
     setOverviewProgress(null);
+    setOverviewPartialMilestone(null);
     setOverviewCacheHint(null);
     const runStartedAt = performance.now();
     const stepStartedAt = Object.create(null);
@@ -806,6 +810,14 @@ const BugTriageCopilot = () => {
                   completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
                 });
               }
+              if (ev.type === 'partial' && typeof ev.markdown === 'string') {
+                setOverviewMarkdown(ev.markdown);
+                setOverviewPartialMilestone(typeof ev.milestone === 'string' ? ev.milestone : null);
+                logOverviewConsole('Partial markdown', {
+                  milestone: ev.milestone,
+                  chars: ev.markdown.length,
+                });
+              }
               if (ev.type === 'result') {
                 finalResult = ev;
               }
@@ -815,6 +827,14 @@ const BugTriageCopilot = () => {
             try {
               const ev = JSON.parse(buffer);
               if (ev.type === 'result') finalResult = ev;
+              else if (ev.type === 'partial' && typeof ev.markdown === 'string') {
+                setOverviewMarkdown(ev.markdown);
+                setOverviewPartialMilestone(typeof ev.milestone === 'string' ? ev.milestone : null);
+                logOverviewConsole('Partial markdown', {
+                  milestone: ev.milestone,
+                  chars: ev.markdown.length,
+                });
+              }
             } catch {
               /* ignore */
             }
@@ -975,6 +995,7 @@ const BugTriageCopilot = () => {
     } finally {
       setOverviewLoading(false);
       setOverviewProgress(null);
+      setOverviewPartialMilestone(null);
     }
   }, []);
 
@@ -984,6 +1005,7 @@ const BugTriageCopilot = () => {
       setOverviewMarkdown(null);
       setOverviewError(null);
       setOverviewProgress(null);
+      setOverviewPartialMilestone(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
       setOverviewMeta(null);
@@ -994,6 +1016,7 @@ const BugTriageCopilot = () => {
       setOverviewMarkdown(cached.overview);
       setOverviewError(null);
       setOverviewLoading(false);
+      setOverviewPartialMilestone(null);
       setOverviewCacheHint(cached.cacheHint);
       setOverviewMeta(cached.meta);
       return;
@@ -1767,9 +1790,10 @@ const BugTriageCopilot = () => {
                     <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
                   )}
                   <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
-                  {!overviewExpanded && overviewLoading && (
+                  {!overviewExpanded && overviewLoading && !overviewError && (
                     <span className="text-xs font-normal text-amber-800 truncate">
-                      — {overviewProgressLabel || 'generating…'}
+                      — {overviewMarkdown ? 'Partial · ' : ''}
+                      {overviewProgressLabel || 'generating…'}
                     </span>
                   )}
                   {!overviewExpanded && overviewError && !overviewLoading && (
@@ -1802,10 +1826,11 @@ const BugTriageCopilot = () => {
                     <span className="text-amber-800/85">{overviewCacheHint}</span>
                   )}
                 </div>
-                {!overviewLoading && !overviewError && overviewMarkdown && (
+                {overviewMarkdown && !overviewError && (
                   <p className="text-xs text-amber-900/90">
                     Fetch pipeline, visible vs analyzed counts, and deterministic priority/status tables: expand{' '}
                     <strong>Backlog metrics</strong> above.
+                    {overviewLoading ? ' (AI batch counts fill in when generation finishes.)' : ''}
                   </p>
                 )}
                 {!overviewLoading && !overviewError && overviewMeta?.truncated && (
@@ -1871,9 +1896,10 @@ const BugTriageCopilot = () => {
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
                   <p className="text-xs text-amber-800/85">{overviewCacheHint}</p>
                 )}
-                {!overviewLoading && !overviewError && overviewMarkdown && (
+                {overviewMarkdown && !overviewError && (
                   <p className="text-xs text-amber-900/95">
                     Pass depth and counts: see <strong>Backlog metrics</strong> (Data flow + AI batch snapshot).
+                    {overviewLoading ? ' Batch snapshot appears after generation completes.' : ''}
                   </p>
                 )}
                 {!overviewLoading && !overviewError && overviewMeta?.truncated && (
@@ -1888,6 +1914,21 @@ const BugTriageCopilot = () => {
                       ? `(Omitted: ${overviewMeta.omitted_sections.join(', ')})`
                       : ''}
                   </p>
+                )}
+                {overviewLoading && overviewMarkdown && !overviewError && (
+                  <div
+                    className="flex items-center gap-2 rounded-md border border-amber-200/90 bg-amber-100/50 px-3 py-2 text-xs text-amber-950"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
+                    <span>
+                      Showing partial overview — still running{overviewProgressLabel ? `: ${overviewProgressLabel}` : '…'}
+                      {overviewPartialMilestone ? (
+                        <span className="ml-1 font-mono text-[10px] opacity-75">({overviewPartialMilestone})</span>
+                      ) : null}
+                    </span>
+                  </div>
                 )}
                 {overviewError && (
                   <div className="flex items-start justify-between gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">

@@ -113,7 +113,14 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
     assert len(lines) >= 3
     events = [json.loads(ln) for ln in lines]
     assert any(e.get('type') == 'progress' and e.get('step') == 'pass1' for e in events)
+    partials = [e for e in events if e.get('type') == 'partial']
+    assert len(partials) >= 1
+    assert partials[0].get('milestone') == 'after_pass2'
+    pm0 = (partials[0].get('markdown') or '').strip()
+    assert len(pm0) > 0
     terminal = [e for e in events if e.get('type') == 'result']
     assert len(terminal) == 1
     assert terminal[0]['status'] == 'success'
     assert 'overview' in terminal[0]
+    final_md = (terminal[0].get('overview') or '').strip()
+    assert final_md.startswith(pm0)
