@@ -25,6 +25,7 @@ import {
   COMPONENTS,
   NEXT_ACTIONS,
 } from '../data/bugTriageMockData';
+import { rollupBacklogByPriorityAndStatus } from '../utils/backlogRollups';
 
 const STORAGE_KEY = 'bug_triage_decisions';
 const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
@@ -415,6 +416,7 @@ const BugTriageCopilot = () => {
   const [overviewCacheHint, setOverviewCacheHint] = useState(null);
   const [overviewMeta, setOverviewMeta] = useState(null);
   const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
+  const [showBacklogMetrics, setShowBacklogMetrics] = useState(false);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -454,6 +456,9 @@ const BugTriageCopilot = () => {
           parentFilterApplied: data.parent_filter_applied === true,
           countBefore: Number(data.count_before_parent_filter ?? data.count ?? 0),
           countAfter: Number(data.count_after_parent_filter ?? data.count ?? 0),
+          maxResultsRequested: Number.isFinite(Number(data.max_results_requested))
+            ? Number(data.max_results_requested)
+            : 1000,
         });
       })
       .catch((err) => {
@@ -671,30 +676,6 @@ const BugTriageCopilot = () => {
     () => (overviewCacheHint ? 'from cache' : 'fresh'),
     [overviewCacheHint],
   );
-  const overviewCoverage = useMemo(() => {
-    const issueCount = Number.isFinite(Number(overviewMeta?.issue_count))
-      ? Number(overviewMeta.issue_count)
-      : null;
-    const submittedCount = Number.isFinite(Number(overviewMeta?.submitted_count))
-      ? Number(overviewMeta.submitted_count)
-      : null;
-    const deepCount = Number.isFinite(Number(overviewMeta?.priority_deep_pass_keys))
-      ? Number(overviewMeta.priority_deep_pass_keys)
-      : 0;
-    const passes = Number.isFinite(Number(overviewMeta?.overview_passes))
-      ? Number(overviewMeta.overview_passes)
-      : null;
-    const truncated = overviewMeta?.truncated === true;
-    if (issueCount == null) return null;
-    return {
-      firstPassCount: issueCount,
-      secondPassCount: issueCount,
-      deepRefineCount: passes >= 3 ? deepCount : 0,
-      displayedCount: filteredAndSorted.length,
-      submittedCount,
-      truncated,
-    };
-  }, [overviewMeta, filteredAndSorted.length]);
   const titleSuggestionsCount = useMemo(() => {
     const n = Number(overviewMeta?.title_rewrite_rows);
     return Number.isFinite(n) && n > 0 ? n : 0;
@@ -706,6 +687,12 @@ const BugTriageCopilot = () => {
     if (!Number.isFinite(before) || !Number.isFinite(after)) return 0;
     return Math.max(0, before - after);
   }, [jiraParentFilterStats]);
+
+  const visibleBacklogRollups = useMemo(
+    () => rollupBacklogByPriorityAndStatus(filteredAndSorted),
+    [filteredAndSorted],
+  );
+  const loadedBacklogRollups = useMemo(() => rollupBacklogByPriorityAndStatus(issues), [issues]);
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;
@@ -1049,6 +1036,268 @@ const BugTriageCopilot = () => {
         </div>
       </div>
 
+      {jiraStatus.configured && (
+        <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden min-w-0">
+          <button
+            type="button"
+            onClick={() => setShowBacklogMetrics((s) => !s)}
+            className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-slate-100/80"
+            aria-expanded={showBacklogMetrics}
+          >
+            {showBacklogMetrics ? (
+              <ChevronDown className="h-4 w-4 shrink-0 rotate-180" aria-hidden />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0" aria-hidden />
+            )}
+            Backlog metrics
+          </button>
+          {showBacklogMetrics && (
+            <div className="px-3 pb-3 pt-2 border-t border-slate-200/80 space-y-4 text-xs text-slate-700">
+              <section className="min-w-0">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                  Data flow
+                </h3>
+                <dl className="space-y-1">
+                  <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                    <dt className="text-slate-500 shrink-0 sm:w-44">Fetch cap (requested)</dt>
+                    <dd className="font-medium text-slate-900 tabular-nums">
+                      {jiraParentFilterStats?.maxResultsRequested ?? 1000}
+                    </dd>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                    <dt className="text-slate-500 shrink-0 sm:w-44">Mapped from Jira (pages)</dt>
+                    <dd className="font-medium text-slate-900 tabular-nums">
+                      {jiraParentFilterStats
+                        ? jiraParentFilterStats.parentFilterApplied
+                          ? jiraParentFilterStats.countBefore
+                          : jiraParentFilterStats.countAfter
+                        : jiraLoading
+                          ? '…'
+                          : '—'}
+                    </dd>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                    <dt className="text-slate-500 shrink-0 sm:w-44">After parent/epic filter</dt>
+                    <dd className="font-medium text-slate-900 tabular-nums">
+                      {jiraParentFilterStats?.parentFilterApplied
+                        ? jiraParentFilterStats.countAfter
+                        : '— (include unparented is on)'}
+                    </dd>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                    <dt className="text-slate-500 shrink-0 sm:w-44">Loaded in app</dt>
+                    <dd className="font-medium text-slate-900 tabular-nums">{issues.length}</dd>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                    <dt className="text-slate-500 shrink-0 sm:w-44">Visible (filters)</dt>
+                    <dd className="font-medium text-slate-900 tabular-nums">
+                      {filteredAndSorted.length}
+                      <span className="font-normal text-slate-500 ml-1">
+                        (status / component / platform / cluster)
+                      </span>
+                    </dd>
+                  </div>
+                  {overviewMeta && (
+                    <>
+                      <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline pt-1 border-t border-slate-200/60">
+                        <dt className="text-slate-500 shrink-0 sm:w-44">Submitted to AI overview</dt>
+                        <dd className="font-medium text-slate-900 tabular-nums">
+                          {Number.isFinite(Number(overviewMeta.submitted_count_after_parent_filter))
+                            ? Number(overviewMeta.submitted_count_after_parent_filter)
+                            : overviewMeta.submitted_count ?? '—'}
+                        </dd>
+                      </div>
+                      <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                        <dt className="text-slate-500 shrink-0 sm:w-44">Analyzed batch (cap)</dt>
+                        <dd className="font-medium text-slate-900 tabular-nums">
+                          {overviewMeta.issue_count ?? '—'}
+                          {overviewMeta.truncated ? (
+                            <span className="font-normal text-amber-800 ml-1">
+                              (truncated from {overviewMeta.submitted_count ?? '—'} submitted)
+                            </span>
+                          ) : null}
+                        </dd>
+                      </div>
+                    </>
+                  )}
+                </dl>
+              </section>
+
+              <section className="min-w-0">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                  By priority (visible backlog)
+                </h3>
+                <p className="text-[11px] text-slate-500 mb-1.5">Counts from Jira fields only — not from AI.</p>
+                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                  <table className="w-full text-left text-[11px] sm:text-xs border-collapse min-w-[12rem]">
+                    <thead>
+                      <tr className="bg-slate-100/90">
+                        <th className="px-2 py-1.5 font-semibold text-slate-700">Priority</th>
+                        <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleBacklogRollups.byPriority.length === 0 ? (
+                        <tr>
+                          <td colSpan={2} className="px-2 py-2 text-slate-500">
+                            No issues in view
+                          </td>
+                        </tr>
+                      ) : (
+                        visibleBacklogRollups.byPriority.map((row) => (
+                          <tr key={row.label} className="border-t border-slate-100">
+                            <td className="px-2 py-1.5 text-slate-800">{row.label}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">{row.count}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="min-w-0">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                  By status (visible backlog)
+                </h3>
+                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-40 overflow-y-auto">
+                  <table className="w-full text-left text-[11px] sm:text-xs border-collapse min-w-[12rem]">
+                    <thead className="sticky top-0">
+                      <tr className="bg-slate-100/90">
+                        <th className="px-2 py-1.5 font-semibold text-slate-700">Status</th>
+                        <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleBacklogRollups.byStatus.length === 0 ? (
+                        <tr>
+                          <td colSpan={2} className="px-2 py-2 text-slate-500">
+                            No issues in view
+                          </td>
+                        </tr>
+                      ) : (
+                        visibleBacklogRollups.byStatus.map((row) => (
+                          <tr key={row.label} className="border-t border-slate-100">
+                            <td className="px-2 py-1.5 text-slate-800 break-words">{row.label}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">{row.count}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              {issues.length > 0 && filteredAndSorted.length !== issues.length && (
+                <section className="min-w-0">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                    Loaded vs visible
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mb-1.5">
+                    Same rollups for the full loaded list ({issues.length} issues).
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1 font-semibold">Priority</th>
+                            <th className="px-2 py-1 font-semibold text-right">#</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loadedBacklogRollups.byPriority.map((row) => (
+                            <tr key={`ld-${row.label}`} className="border-t border-slate-100">
+                              <td className="px-2 py-1">{row.label}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{row.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1 font-semibold">Status</th>
+                            <th className="px-2 py-1 font-semibold text-right">#</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loadedBacklogRollups.byStatus.map((row) => (
+                            <tr key={`ls-${row.label}`} className="border-t border-slate-100">
+                              <td className="px-2 py-1 break-words">{row.label}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{row.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {overviewMeta?.snapshot_stats && typeof overviewMeta.snapshot_stats === 'object' && (
+                <section className="min-w-0">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                    AI batch snapshot (deterministic)
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mb-1.5">
+                    Same subset as the markdown snapshot tables under Priority review; can be smaller than visible
+                    backlog if the analysis cap applied.
+                  </p>
+                  <p className="text-xs font-medium text-slate-800 tabular-nums mb-1">
+                    Total in batch: {overviewMeta.snapshot_stats.total ?? '—'}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1 font-semibold">Priority</th>
+                            <th className="px-2 py-1 font-semibold text-right">#</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(overviewMeta.snapshot_stats.by_priority || {})
+                            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                            .map(([label, n]) => (
+                              <tr key={`ss-p-${label}`} className="border-t border-slate-100">
+                                <td className="px-2 py-1 break-words">{label}</td>
+                                <td className="px-2 py-1 text-right tabular-nums">{n}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1 font-semibold">Status</th>
+                            <th className="px-2 py-1 font-semibold text-right">#</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(overviewMeta.snapshot_stats.by_status || {})
+                            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                            .map(([label, n]) => (
+                              <tr key={`ss-s-${label}`} className="border-t border-slate-100">
+                                <td className="px-2 py-1 break-words">{label}</td>
+                                <td className="px-2 py-1 text-right tabular-nums">{n}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Triage Summary toggle & panel */}
       <div className="mb-4">
         <button
@@ -1189,16 +1438,15 @@ const BugTriageCopilot = () => {
                     <span className="text-amber-800/85">{overviewCacheHint}</span>
                   )}
                 </div>
-                {!overviewLoading && !overviewError && overviewCoverage && (
+                {!overviewLoading && !overviewError && overviewMarkdown && (
                   <p className="text-xs text-amber-900/90">
-                    Coverage: pass1 {overviewCoverage.firstPassCount}, priority pass {overviewCoverage.secondPassCount}
-                    {overviewCoverage.deepRefineCount > 0 ? `, deep refine ${overviewCoverage.deepRefineCount}` : ''}
-                    , displayed {overviewCoverage.displayedCount}.
+                    Fetch pipeline, visible vs analyzed counts, and deterministic priority/status tables: expand{' '}
+                    <strong>Backlog metrics</strong> above.
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewCoverage?.truncated && (
+                {!overviewLoading && !overviewError && overviewMeta?.truncated && (
                   <p className="text-xs text-amber-800/90">
-                    AI analyzed {overviewCoverage.firstPassCount} of {overviewCoverage.submittedCount ?? overviewCoverage.firstPassCount} submitted tickets (analysis cap).
+                    Analysis cap: batch smaller than submitted — see Backlog metrics.
                   </p>
                 )}
                 {!overviewExpanded && overviewPreviewText && !overviewError && (
@@ -1251,16 +1499,14 @@ const BugTriageCopilot = () => {
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
                   <p className="text-xs text-amber-800/85">{overviewCacheHint}</p>
                 )}
-                {!overviewLoading && !overviewError && overviewCoverage && (
+                {!overviewLoading && !overviewError && overviewMarkdown && (
                   <p className="text-xs text-amber-900/95">
-                    Coverage: First pass {overviewCoverage.firstPassCount} considered; priority pass {overviewCoverage.secondPassCount} considered
-                    {overviewCoverage.deepRefineCount > 0 ? `; deep refine (description-backed) ${overviewCoverage.deepRefineCount} considered` : ''}
-                    ; displayed in backlog {overviewCoverage.displayedCount}.
+                    Pass depth and counts: see <strong>Backlog metrics</strong> (Data flow + AI batch snapshot).
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewCoverage?.truncated && (
+                {!overviewLoading && !overviewError && overviewMeta?.truncated && (
                   <p className="text-xs text-amber-800/90">
-                    AI analyzed {overviewCoverage.firstPassCount} of {overviewCoverage.submittedCount ?? overviewCoverage.firstPassCount} submitted tickets due to the analysis cap.
+                    Analysis cap: see Backlog metrics for submitted vs analyzed.
                   </p>
                 )}
                 {overviewError && (

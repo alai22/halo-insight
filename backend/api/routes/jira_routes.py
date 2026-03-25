@@ -1077,6 +1077,7 @@ def get_issues():
             'status': 'success',
             'data': issues,
             'count': len(issues),
+            'max_results_requested': max_results,
             'count_before_parent_filter': triage_result.get('count_before_parent_filter', len(issues)),
             'count_after_parent_filter': triage_result.get('count_after_parent_filter', len(issues)),
             'parent_filter_applied': triage_result.get('parent_filter_applied', False),
