@@ -75,6 +75,7 @@ _RE_BLOCKER = re.compile(r'\bblocker\b', re.IGNORECASE)
 _RE_HEADER_SEP = re.compile(r'^[\s\-:|]+$')
 _RE_TICKET_KEY_CELL = re.compile(r'^[A-Za-z][A-Za-z0-9]{1,19}-\d+$')
 _RE_RECOMMENDATION_TARGET = re.compile(r'\b(raise|lower)\s+to\s+([A-Za-z]+)\b', re.IGNORECASE)
+_RE_ANY_TICKET_KEY = re.compile(r'\b([A-Za-z][A-Za-z0-9]{1,19}-\d+)\b')
 
 _PRIORITY_RANKS = {
     'blocker': 0,
@@ -285,6 +286,117 @@ def _extract_reprioritization_keys(markdown: str) -> List[str]:
     return list(dict.fromkeys(keys))
 
 
+def _extract_title_rewrite_keys(text: str, valid_keys: List[str], max_keys: int) -> List[str]:
+    """Parse candidate keys from model output (JSON-ish or free text), preserving order."""
+    if not text:
+        return []
+    valid = {k.upper() for k in valid_keys}
+    out: List[str] = []
+    seen = set()
+    for m in _RE_ANY_TICKET_KEY.finditer(text):
+        k = m.group(1).upper()
+        if k not in valid or k in seen:
+            continue
+        out.append(k)
+        seen.add(k)
+        if len(out) >= max_keys:
+            break
+    return out
+
+
+def _normalize_title_for_compare(title: str) -> str:
+    s = (title or '').strip().lower().replace('…', '...')
+    s = re.sub(r'\s+', ' ', s)
+    s = re.sub(r'\.\.\.$', '', s).strip()
+    return s
+
+
+def _titles_equivalent(a: str, b: str) -> bool:
+    na = _normalize_title_for_compare(a)
+    nb = _normalize_title_for_compare(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    # Allow conservative truncation equivalence from markdown table cells.
+    if len(na) >= 20 and nb.startswith(na):
+        return True
+    if len(nb) >= 20 and na.startswith(nb):
+        return True
+    return False
+
+
+def _validate_title_rewrite_rows(
+    markdown: str,
+    source_by_key: Dict[str, Dict[str, str]],
+    max_rows: int,
+) -> Tuple[str, Dict[str, int]]:
+    """
+    Keep only valid rows under ### Title clarity suggestions.
+    Returns (section_markdown_or_empty, counters).
+    """
+    if not markdown or 'Title clarity suggestions' not in markdown:
+        return '', {'kept': 0, 'dropped': 0}
+    lines = markdown.split('\n')
+    out: List[str] = []
+    in_section = False
+    dropped = 0
+    kept = 0
+    wrote_header = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('### Title clarity suggestions'):
+            in_section = True
+            if not wrote_header:
+                out.append('### Title clarity suggestions')
+                out.append('| Ticket | Current priority | Current title | Proposed title |')
+                out.append('|---|---|---|---|')
+                wrote_header = True
+            continue
+        if in_section and stripped.startswith('## ') and not stripped.startswith('###'):
+            break
+        if in_section and stripped.startswith('### ') and not stripped.startswith('### Title clarity suggestions'):
+            break
+        if not in_section:
+            continue
+        cells = _markdown_table_row_cells(line)
+        if not cells:
+            continue
+        ticket = (cells[0] or '').strip().upper()
+        if ticket.lower() == 'ticket' or _RE_HEADER_SEP.match(ticket):
+            continue
+        if len(cells) < 4 or ticket not in source_by_key:
+            dropped += 1
+            continue
+        src = source_by_key[ticket]
+        current_priority = _normalize_priority_label(cells[1] if len(cells) > 1 else '')
+        expected_priority = _normalize_priority_label(src.get('priority') or '')
+        current_title = (cells[2] if len(cells) > 2 else '').strip()
+        proposed_title = (cells[3] if len(cells) > 3 else '').strip()
+        if not current_priority or not expected_priority or current_priority != expected_priority:
+            dropped += 1
+            continue
+        if not _titles_equivalent(current_title, src.get('title') or ''):
+            dropped += 1
+            continue
+        if not proposed_title:
+            dropped += 1
+            continue
+        if _titles_equivalent(proposed_title, src.get('title') or '') or _titles_equivalent(proposed_title, current_title):
+            dropped += 1
+            continue
+        if kept >= max_rows:
+            dropped += 1
+            continue
+        out.append(
+            f"| {_md_pipe_cell(ticket)} | {_md_pipe_cell(src.get('priority') or '')} | {_md_pipe_cell(src.get('title') or '', 180)} | {_md_pipe_cell(proposed_title, 180)} |"
+        )
+        kept += 1
+    if kept == 0:
+        return '', {'kept': 0, 'dropped': dropped}
+    return '\n'.join(out).strip(), {'kept': kept, 'dropped': dropped}
+
+
 # Pass 1: themes, clarification, duplicates—no Priority review (that is pass 2 for output budget).
 # max_tokens per pass come from Config (default 4096; >4096 often 400 Bad Request on Haiku).
 
@@ -392,6 +504,26 @@ _BACKLOG_OVERVIEW_PASS2B_EXTRA = """
 - Output **only** the same fragment as pass 2: starting with `### Recommended Jira priority changes` (no `## Priority review`, no aggregate snapshot tables—the app prepends statistics)."""
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS2B = _BACKLOG_OVERVIEW_SYSTEM_PASS2 + _BACKLOG_OVERVIEW_PASS2B_EXTRA
+
+_BACKLOG_OVERVIEW_SYSTEM_TITLE_SCAN = """You identify Jira tickets whose titles are unclear and should be rewritten.
+Output JSON only:
+{"keys":["HALO-123","HALO-456"]}
+Rules:
+- Use only keys from input.
+- Return at most 20 keys.
+- No markdown, no prose."""
+
+_BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE = """You rewrite unclear Jira titles into clearer, specific titles using metadata and description excerpts.
+Output only:
+### Title clarity suggestions
+| Ticket | Current priority | Current title | Proposed title |
+|---|---|---|---|
+Rules:
+- Ticket key must be from input.
+- Current priority must match input.
+- Current title should reflect input title.
+- Proposed title must be materially clearer and concise.
+- No extra sections or prose."""
 
 
 def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
@@ -580,11 +712,16 @@ def _format_issues_for_overview_prompt(
     prompt_variant: str = 'pass1',
     description_keys_ordered: Optional[List[str]] = None,
 ) -> str:
-    """Build user message text for Claude (pass1 / pass2 / pass2b with optional description excerpts)."""
+    """Build user message text for Claude (pass1 / pass2 / pass2b / title_scan / title_rewrite)."""
     if prompt_variant == 'pass2b':
         lines = [
             f"The following {len(issues)} issues: first block is metadata for **every** issue (tab-separated). "
             f"After a line that is only `---`, **description_excerpts** rows apply **only** to those keys—use them for Raise/Lower per system prompt.",
+        ]
+    elif prompt_variant == 'title_rewrite':
+        lines = [
+            f"The following {len(issues)} issues: first block is metadata for **every** issue (tab-separated). "
+            f"After a line that is only `---`, **description_excerpts** rows apply **only** to those keys—use them when rewriting titles.",
         ]
     else:
         lines = [
@@ -597,6 +734,16 @@ def _format_issues_for_overview_prompt(
         lines.append(
             'Your task for this message: themes, needs clarification, duplicates/clusters, and other notes only. '
             'Do **not** output ## Priority review or Jira priority recommendations.'
+        )
+    elif prompt_variant == 'title_scan':
+        lines.append(
+            'Your task for this message: return only JSON {"keys":[...]} with issue keys whose current titles should be rewritten for clarity. '
+            'No markdown, no prose.'
+        )
+    elif prompt_variant == 'title_rewrite':
+        lines.append(
+            'Your task for this message: output only the `### Title clarity suggestions` markdown table. '
+            'Use description_excerpts after `---` for listed keys.'
         )
     elif prompt_variant == 'pass2b':
         lines.append(
@@ -691,6 +838,10 @@ def _format_issues_for_overview_prompt(
     lines.append('')
     if prompt_variant == 'pass1':
         lines.append('Produce the markdown overview as instructed in the system prompt (no ## Priority review).')
+    elif prompt_variant == 'title_scan':
+        lines.append('Return only JSON: {"keys":[...]}')
+    elif prompt_variant == 'title_rewrite':
+        lines.append('Produce only the `### Title clarity suggestions` fragment.')
     elif prompt_variant == 'pass2b':
         lines.append(
             'Produce **only** the `### Recommended Jira priority changes` fragment as instructed (second pass / description excerpts).'
@@ -1015,6 +1166,15 @@ def backlog_overview():
             for i in batch
             if i.get('key')
         }
+        source_by_key = {
+            str(i.get('key', '')).strip().upper(): {
+                'priority': str(i.get('priority') or '').strip(),
+                'title': str(i.get('title') or '').strip(),
+                'description': str(i.get('description') or '').strip(),
+            }
+            for i in batch
+            if i.get('key')
+        }
         part2_draft, dropped2 = _validate_reprioritization_rows(
             (r2.content or '').strip(),
             source_priorities=source_priorities,
@@ -1028,6 +1188,11 @@ def backlog_overview():
         deep_pass_applied = False
         dropped_invalid_rows = dropped2.get('invalid', 0)
         dropped_mismatch_rows = dropped2.get('mismatch', 0)
+        title_rewrite_candidates = 0
+        title_rewrite_rows = 0
+        title_rewrite_rows_dropped = 0
+        title_rewrite_pass_applied = False
+        title_rewrite_section = ''
 
         if (
             Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED
@@ -1081,8 +1246,71 @@ def backlog_overview():
                         deep_key_count,
                     )
 
+        if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED:
+            all_keys = list(source_by_key.keys())
+            max_keys = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS)
+            max_rows = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS)
+            if all_keys and max_keys > 0 and max_rows > 0:
+                user_message_title_scan = _format_issues_for_overview_prompt(
+                    batch,
+                    truncated,
+                    total_submitted,
+                    prompt_variant='title_scan',
+                )
+                if protector:
+                    user_message_title_scan = protector.redact_text(user_message_title_scan)
+                r_title_scan = claude_service.send_message(
+                    message=user_message_title_scan,
+                    model=None,
+                    max_tokens=min(250, max(120, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS // 2)),
+                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_SCAN,
+                )
+                tokens_used += getattr(r_title_scan, 'tokens_used', 0) or 0
+                models_used.append(r_title_scan.model)
+                llm_rounds += 1
+                candidate_keys = _extract_title_rewrite_keys(
+                    r_title_scan.content or '',
+                    all_keys,
+                    max_keys,
+                )
+                title_rewrite_candidates = len(candidate_keys)
+                if candidate_keys:
+                    user_message_title_rewrite = _format_issues_for_overview_prompt(
+                        batch,
+                        truncated,
+                        total_submitted,
+                        prompt_variant='title_rewrite',
+                        description_keys_ordered=candidate_keys,
+                    )
+                    if protector:
+                        user_message_title_rewrite = protector.redact_text(user_message_title_rewrite)
+                    r_title_rewrite = claude_service.send_message(
+                        message=user_message_title_rewrite,
+                        model=None,
+                        max_tokens=Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS,
+                        system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE,
+                    )
+                    tokens_used += getattr(r_title_rewrite, 'tokens_used', 0) or 0
+                    models_used.append(r_title_rewrite.model)
+                    llm_rounds += 1
+                    title_rewrite_section, title_counts = _validate_title_rewrite_rows(
+                        (r_title_rewrite.content or '').strip(),
+                        source_by_key=source_by_key,
+                        max_rows=max_rows,
+                    )
+                    title_rewrite_rows = title_counts.get('kept', 0)
+                    title_rewrite_rows_dropped = title_counts.get('dropped', 0)
+                    title_rewrite_pass_applied = title_rewrite_rows > 0
+
         # Priority review first in the recap (actionable Jira changes), then themes / clarification / duplicates.
-        overview_text = f'{part2}\n\n{part1}'.strip() if part2 else part1
+        chunks: List[str] = []
+        if part2:
+            chunks.append(part2.strip())
+        if part1:
+            chunks.append(part1.strip())
+        if title_rewrite_section:
+            chunks.append(title_rewrite_section.strip())
+        overview_text = '\n\n'.join(c for c in chunks if c).strip()
         logger.info(
             'backlog-overview: complete issues=%s llm_rounds=%s output_tokens≈%s',
             len(batch),
@@ -1104,6 +1332,11 @@ def backlog_overview():
                 'priority_deep_pass_applied': deep_pass_applied,
                 'priority_rows_dropped_invalid': dropped_invalid_rows,
                 'priority_rows_dropped_mismatch': dropped_mismatch_rows,
+                'title_rewrite_enabled': Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED,
+                'title_rewrite_candidates': title_rewrite_candidates,
+                'title_rewrite_rows': title_rewrite_rows,
+                'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
+                'title_rewrite_pass_applied': title_rewrite_pass_applied,
                 'snapshot_stats': snapshot_stats,
             },
         })

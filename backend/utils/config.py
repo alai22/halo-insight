@@ -108,6 +108,13 @@ class Config:
     )
     JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS', '40'))
     JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS', '4096'))
+    # Optional title clarity suggestions pass (kept lightweight to avoid slowing priority recommendations).
+    JIRA_BACKLOG_TITLE_REWRITE_ENABLED: bool = os.getenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '1').lower() in (
+        '1', 'true', 'yes',
+    )
+    JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS', '5'))
+    JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS', '10'))
+    JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS', '700'))
 
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')

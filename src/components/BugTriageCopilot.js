@@ -685,6 +685,10 @@ const BugTriageCopilot = () => {
       truncated,
     };
   }, [overviewMeta, filteredAndSorted.length]);
+  const titleSuggestionsCount = useMemo(() => {
+    const n = Number(overviewMeta?.title_rewrite_rows);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [overviewMeta]);
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;
@@ -1137,6 +1141,11 @@ const BugTriageCopilot = () => {
                   {!overviewLoading && !overviewError && overviewMarkdown && (
                     <span className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900">
                       {overviewFreshnessLabel}
+                    </span>
+                  )}
+                  {!overviewLoading && !overviewError && titleSuggestionsCount > 0 && (
+                    <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100/70 px-2 py-0.5 text-[11px] font-medium text-amber-950">
+                      title suggestions: {titleSuggestionsCount}
                     </span>
                   )}
                   {overviewCacheHint && !overviewLoading && !overviewError && (
