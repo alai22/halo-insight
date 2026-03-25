@@ -1368,66 +1368,78 @@ const BugTriageCopilot = () => {
 
               <section className="min-w-0">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                  By priority (visible backlog)
+                  Visible backlog
                 </h3>
-                <p className="text-[11px] text-slate-500 mb-1.5">Counts from Jira fields only — not from AI.</p>
-                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
-                  <table className="w-full text-left text-[11px] sm:text-xs border-collapse min-w-[12rem]">
-                    <thead>
-                      <tr className="bg-slate-100/90">
-                        <th className="px-2 py-1.5 font-semibold text-slate-700">Priority</th>
-                        <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleBacklogRollups.byPriority.length === 0 ? (
-                        <tr>
-                          <td colSpan={2} className="px-2 py-2 text-slate-500">
-                            No issues in view
-                          </td>
-                        </tr>
-                      ) : (
-                        visibleBacklogRollups.byPriority.map((row) => (
-                          <tr key={row.label} className="border-t border-slate-100">
-                            <td className="px-2 py-1.5 text-slate-800">{row.label}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">{row.count}</td>
+                <p className="text-[11px] text-slate-500 mb-1.5">
+                  Counts from Jira fields only — not from AI.
+                </p>
+                <div className="flex flex-wrap gap-2 items-start">
+                  <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      By priority
+                    </p>
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                      <table className="w-full text-left text-[11px] sm:text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1.5 font-semibold text-slate-700">Priority</th>
+                            <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section className="min-w-0">
-                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                  By status (visible backlog)
-                </h3>
-                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-40 overflow-y-auto">
-                  <table className="w-full text-left text-[11px] sm:text-xs border-collapse min-w-[12rem]">
-                    <thead className="sticky top-0">
-                      <tr className="bg-slate-100/90">
-                        <th className="px-2 py-1.5 font-semibold text-slate-700">Status</th>
-                        <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleBacklogRollups.byStatus.length === 0 ? (
-                        <tr>
-                          <td colSpan={2} className="px-2 py-2 text-slate-500">
-                            No issues in view
-                          </td>
-                        </tr>
-                      ) : (
-                        visibleBacklogRollups.byStatus.map((row) => (
-                          <tr key={row.label} className="border-t border-slate-100">
-                            <td className="px-2 py-1.5 text-slate-800 break-words">{row.label}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">{row.count}</td>
+                        </thead>
+                        <tbody>
+                          {visibleBacklogRollups.byPriority.length === 0 ? (
+                            <tr>
+                              <td colSpan={2} className="px-2 py-2 text-slate-500">
+                                No issues in view
+                              </td>
+                            </tr>
+                          ) : (
+                            visibleBacklogRollups.byPriority.map((row) => (
+                              <tr key={row.label} className="border-t border-slate-100">
+                                <td className="px-2 py-1.5 text-slate-800">{row.label}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">
+                                  {row.count}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      By status
+                    </p>
+                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-40 overflow-y-auto">
+                      <table className="w-full text-left text-[11px] sm:text-xs border-collapse">
+                        <thead className="sticky top-0">
+                          <tr className="bg-slate-100/90">
+                            <th className="px-2 py-1.5 font-semibold text-slate-700">Status</th>
+                            <th className="px-2 py-1.5 font-semibold text-slate-700 text-right">Count</th>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                        </thead>
+                        <tbody>
+                          {visibleBacklogRollups.byStatus.length === 0 ? (
+                            <tr>
+                              <td colSpan={2} className="px-2 py-2 text-slate-500">
+                                No issues in view
+                              </td>
+                            </tr>
+                          ) : (
+                            visibleBacklogRollups.byStatus.map((row) => (
+                              <tr key={row.label} className="border-t border-slate-100">
+                                <td className="px-2 py-1.5 text-slate-800 break-words">{row.label}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-slate-900">
+                                  {row.count}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -1439,8 +1451,8 @@ const BugTriageCopilot = () => {
                   <p className="text-[11px] text-slate-500 mb-1.5">
                     Same rollups for the full loaded list ({issues.length} issues).
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                  <div className="flex flex-wrap gap-2 items-start">
+                    <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)] overflow-x-auto border border-slate-200 rounded-md bg-white">
                       <table className="w-full text-left text-[11px] border-collapse">
                         <thead>
                           <tr className="bg-slate-100/90">
@@ -1458,7 +1470,7 @@ const BugTriageCopilot = () => {
                         </tbody>
                       </table>
                     </div>
-                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
+                    <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)] overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
                       <table className="w-full text-left text-[11px] border-collapse">
                         <thead>
                           <tr className="bg-slate-100/90">
@@ -1492,8 +1504,8 @@ const BugTriageCopilot = () => {
                   <p className="text-xs font-medium text-slate-800 tabular-nums mb-1">
                     Total in batch: {overviewMeta.snapshot_stats.total ?? '—'}
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white">
+                  <div className="flex flex-wrap gap-2 items-start">
+                    <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)] overflow-x-auto border border-slate-200 rounded-md bg-white">
                       <table className="w-full text-left text-[11px] border-collapse">
                         <thead>
                           <tr className="bg-slate-100/90">
@@ -1513,7 +1525,7 @@ const BugTriageCopilot = () => {
                         </tbody>
                       </table>
                     </div>
-                    <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
+                    <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)] overflow-x-auto border border-slate-200 rounded-md bg-white max-h-32 overflow-y-auto">
                       <table className="w-full text-left text-[11px] border-collapse">
                         <thead>
                           <tr className="bg-slate-100/90">
