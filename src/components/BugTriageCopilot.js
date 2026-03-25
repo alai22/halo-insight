@@ -77,6 +77,21 @@ function getValidCachedOverview(fingerprint) {
   };
 }
 
+function getOverviewPreviewText(markdown) {
+  if (typeof markdown !== 'string' || !markdown.trim()) return '';
+  const lines = markdown
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !s.startsWith('#'))
+    .filter((s) => !s.startsWith('|'))
+    .filter((s) => !s.startsWith('---'));
+  if (!lines.length) return '';
+  const first = lines[0];
+  const sentence = first.match(/(.+?[.!?])(?:\s|$)/)?.[1] || first;
+  return sentence.length > 160 ? `${sentence.slice(0, 157).trimEnd()}...` : sentence;
+}
+
 /** Plain text from a hast node (table cells may wrap content in paragraphs, emphasis, etc.). */
 function hastPlainText(node) {
   if (!node) return '';
@@ -395,6 +410,7 @@ const BugTriageCopilot = () => {
   const [overviewExpanded, setOverviewExpanded] = useState(false);
   /** Set when overview was restored from localStorage (auto-run only); cleared on fresh POST. */
   const [overviewCacheHint, setOverviewCacheHint] = useState(null);
+  const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -626,6 +642,14 @@ const BugTriageCopilot = () => {
   const backlogOverviewMarkdownComponents = useMemo(
     () => createBacklogOverviewMarkdownComponents(jiraStatus.base_url),
     [jiraStatus.base_url],
+  );
+  const overviewPreviewText = useMemo(
+    () => getOverviewPreviewText(overviewMarkdown),
+    [overviewMarkdown],
+  );
+  const overviewFreshnessLabel = useMemo(
+    () => (overviewCacheHint ? 'from cache' : 'fresh'),
+    [overviewCacheHint],
   );
 
   const groupedByCluster = useMemo(() => {
@@ -1046,34 +1070,52 @@ const BugTriageCopilot = () => {
 
         {!jiraLoading && filteredAndSorted.length > 0 && (
           <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-lg overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 p-3">
-              <button
-                type="button"
-                onClick={() => setOverviewExpanded((e) => !e)}
-                className="flex items-center gap-2 text-left min-w-0 flex-1"
-                aria-expanded={overviewExpanded}
-              >
-                {overviewExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
-                )}
-                <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
-                {!overviewExpanded && overviewLoading && (
-                  <span className="text-xs font-normal text-amber-800 truncate">
-                    — generating…
+            <div className="flex flex-wrap items-start justify-between gap-2 p-3">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => setOverviewExpanded((e) => !e)}
+                  className="flex items-center gap-2 text-left min-w-0 w-full"
+                  aria-expanded={overviewExpanded}
+                >
+                  {overviewExpanded ? (
+                    <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
+                  )}
+                  <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
+                  {!overviewExpanded && overviewLoading && (
+                    <span className="text-xs font-normal text-amber-800 truncate">
+                      — generating...
+                    </span>
+                  )}
+                  {!overviewExpanded && overviewError && !overviewLoading && (
+                    <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
+                  )}
+                  {!overviewExpanded && overviewMarkdown && !overviewLoading && !overviewError && (
+                    <span className="text-xs font-normal text-amber-800/90 truncate">— ready, click to expand</span>
+                  )}
+                </button>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                  <span className="text-amber-900">
+                    Cards below pull Jira fields directly; AI recommendations are advisory.
                   </span>
+                  {!overviewLoading && !overviewError && overviewMarkdown && (
+                    <span className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900">
+                      {overviewFreshnessLabel}
+                    </span>
+                  )}
+                  {overviewCacheHint && !overviewLoading && !overviewError && (
+                    <span className="text-amber-800/85">{overviewCacheHint}</span>
+                  )}
+                </div>
+                {!overviewExpanded && overviewPreviewText && !overviewError && (
+                  <p className="text-xs text-amber-900/90 truncate">
+                    {overviewPreviewText}
+                  </p>
                 )}
-                {!overviewExpanded && overviewError && !overviewLoading && (
-                  <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
-                )}
-                {!overviewExpanded && overviewMarkdown && !overviewLoading && !overviewError && (
-                  <span className="text-xs font-normal text-amber-800/90 truncate">
-                    — {overviewCacheHint ? `${overviewCacheHint}, ` : ''}ready, click to expand
-                  </span>
-                )}
-              </button>
-              <div className="flex items-center gap-2 shrink-0">
+              </div>
+              <div className="flex items-center gap-2 shrink-0 pt-0.5">
                 {overviewExpanded && overviewLoading && (
                   <span className="text-xs text-amber-900 flex items-center gap-1">
                     <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
@@ -1090,6 +1132,28 @@ const BugTriageCopilot = () => {
                 </button>
               </div>
             </div>
+            <div className="px-3 pb-2">
+              <button
+                type="button"
+                onClick={() => setShowPrioritizationPhilosophy((s) => !s)}
+                className="text-xs text-amber-900 hover:text-amber-950 underline underline-offset-2"
+                aria-expanded={showPrioritizationPhilosophy}
+              >
+                {showPrioritizationPhilosophy ? 'Hide' : 'How prioritization works'}
+              </button>
+            </div>
+            {showPrioritizationPhilosophy && (
+              <div className="mx-3 mb-3 rounded-md border border-amber-200/80 bg-white/80 px-3 py-2.5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-900">How prioritization works</h3>
+                <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-amber-950/95">
+                  <li>Canonical Jira ladder: Blocker, Critical, Major, Normal, Minor, Trivial.</li>
+                  <li>Recommendations use Raise / Lower wording for Jira priority only.</li>
+                  <li>Blocker is the ceiling; a current Blocker is never raised further.</li>
+                  <li>Halo core risk gets more weight: containment, geofence behavior, pairing, and safety-relevant location accuracy.</li>
+                  <li>Peripheral UX flows (like profile photo / optional onboarding polish) are usually not escalated without core safety impact.</li>
+                </ul>
+              </div>
+            )}
             {overviewExpanded && (
               <div className="px-4 pb-4 pt-0 border-t border-amber-200/70 space-y-3">
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
