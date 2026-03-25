@@ -68,12 +68,29 @@ _OVERVIEW_DESCRIPTION_EXCERPT_LEN = 800
 _OVERVIEW_MAX_LABELS = 20
 _OVERVIEW_MAX_COMPONENTS = 15
 
-# Post-process model output: drop reprioritization rows that say "raise" to Blocker when current is already Blocker.
+# Post-process model output: deterministically validate reprioritization rows.
 _RE_MD_TABLE_ROW = re.compile(r'^\s*\|(.+)\|\s*$')
 _RE_RAISE = re.compile(r'raise', re.IGNORECASE)
 _RE_BLOCKER = re.compile(r'\bblocker\b', re.IGNORECASE)
 _RE_HEADER_SEP = re.compile(r'^[\s\-:|]+$')
 _RE_TICKET_KEY_CELL = re.compile(r'^[A-Za-z][A-Za-z0-9]{1,19}-\d+$')
+_RE_RECOMMENDATION_TARGET = re.compile(r'\b(raise|lower)\s+to\s+([A-Za-z]+)\b', re.IGNORECASE)
+
+_PRIORITY_RANKS = {
+    'blocker': 0,
+    'critical': 1,
+    'major': 2,
+    'normal': 3,
+    'minor': 4,
+    'trivial': 5,
+}
+_PRIORITY_ALIASES = {
+    'highest': 'blocker',
+    'high': 'major',
+    'medium': 'normal',
+    'low': 'minor',
+    'lowest': 'trivial',
+}
 
 
 def _markdown_table_row_cells(line: str) -> Optional[List[str]]:
@@ -96,6 +113,32 @@ def _recommendation_is_raise_to_blocker(cell: str) -> bool:
     return bool(_RE_RAISE.search(c) and _RE_BLOCKER.search(c))
 
 
+def _normalize_priority_label(value: Any) -> Optional[str]:
+    raw = str(value or '').strip().lower()
+    if not raw:
+        return None
+    key = raw.replace(' ', '')
+    if key in _PRIORITY_ALIASES:
+        key = _PRIORITY_ALIASES[key]
+    if key in _PRIORITY_RANKS:
+        return key
+    return None
+
+
+def _parse_recommendation_action_and_target(cell: str) -> Optional[Tuple[str, str]]:
+    raw = (cell or '').strip()
+    if not raw:
+        return None
+    m = _RE_RECOMMENDATION_TARGET.search(raw)
+    if not m:
+        return None
+    action = m.group(1).lower()
+    target = _normalize_priority_label(m.group(2))
+    if action not in ('raise', 'lower') or target is None:
+        return None
+    return action, target
+
+
 def _repr_row_current_and_recommendation(cells: List[str]) -> Optional[Tuple[str, str]]:
     """(current_priority_cell, recommendation_cell) for reprioritization data rows; supports 4- or 5-column tables."""
     if not cells:
@@ -108,20 +151,23 @@ def _repr_row_current_and_recommendation(cells: List[str]) -> Optional[Tuple[str
     return None
 
 
-def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
+def _validate_reprioritization_rows(
+    markdown: str,
+    source_priorities: Optional[Dict[str, str]] = None,
+) -> Tuple[str, Dict[str, int]]:
     """
-    Remove reprioritization table rows where Current is already Blocker but
-    the model still emitted a Raise…Blocker recommendation (recurring LLM mistake).
-    Supports 4-column (legacy) or 5-column (Ticket, Title, …) tables.
+    Deterministically validate reprioritization rows.
+    Drops rows that violate ladder directionality or mismatch source-of-truth current priorities.
     Only applies between ### Recommended Jira priority changes and the next ## section.
     """
     if not markdown or 'Recommended Jira priority changes' not in markdown:
-        return markdown
+        return markdown, {'invalid': 0, 'mismatch': 0}
 
     lines = markdown.split('\n')
     out: List[str] = []
     in_repr = False
-    dropped = 0
+    dropped_invalid = 0
+    dropped_mismatch = 0
 
     for line in lines:
         stripped = line.strip()
@@ -137,25 +183,69 @@ def _strip_invalid_raise_to_blocker_rows(markdown: str) -> str:
 
         # Inside reprioritization section
         cells = _markdown_table_row_cells(line)
-        cur_rec = _repr_row_current_and_recommendation(cells) if cells else None
-        if (
-            cur_rec
-            and not cells[0].lower().startswith('ticket')
-            and not _RE_HEADER_SEP.match(cells[0])
-            and _current_priority_is_blocker(cur_rec[0])
-            and _recommendation_is_raise_to_blocker(cur_rec[1])
-        ):
-            dropped += 1
+        if not cells:
+            out.append(line)
+            continue
+        if cells[0].lower().startswith('ticket') or _RE_HEADER_SEP.match(cells[0]):
+            out.append(line)
+            continue
+
+        cur_rec = _repr_row_current_and_recommendation(cells)
+        if cur_rec is None:
+            dropped_invalid += 1
+            continue
+
+        ticket = (cells[0] or '').strip().upper()
+        current_raw, rec_raw = cur_rec
+        current = _normalize_priority_label(current_raw)
+        parsed = _parse_recommendation_action_and_target(rec_raw)
+        if current is None or parsed is None:
+            dropped_invalid += 1
             logger.info(
-                'backlog-overview: dropped invalid Raise-to-Blocker row for ticket %s',
-                cells[0][:32],
+                'backlog-overview: dropped invalid repr row ticket=%s current=%s recommendation=%s',
+                ticket[:32],
+                (current_raw or '')[:32],
+                (rec_raw or '')[:64],
             )
             continue
+
+        action, target = parsed
+        current_rank = _PRIORITY_RANKS[current]
+        target_rank = _PRIORITY_RANKS[target]
+        is_valid_direction = (
+            (action == 'raise' and target_rank < current_rank)
+            or (action == 'lower' and target_rank > current_rank)
+        )
+        if not is_valid_direction:
+            dropped_invalid += 1
+            logger.info(
+                'backlog-overview: dropped invalid repr direction ticket=%s current=%s recommendation=%s',
+                ticket[:32],
+                current,
+                (rec_raw or '')[:64],
+            )
+            continue
+
+        if source_priorities and _RE_TICKET_KEY_CELL.match(ticket):
+            expected = source_priorities.get(ticket)
+            if expected and expected != current:
+                dropped_mismatch += 1
+                logger.info(
+                    'backlog-overview: dropped repr row priority mismatch ticket=%s current_cell=%s expected=%s',
+                    ticket[:32],
+                    current,
+                    expected,
+                )
+                continue
         out.append(line)
 
-    if dropped:
-        logger.info('backlog-overview: dropped %s invalid Blocker→Raise rows', dropped)
-    return '\n'.join(out)
+    if dropped_invalid or dropped_mismatch:
+        logger.info(
+            'backlog-overview: dropped rows invalid=%s mismatch=%s',
+            dropped_invalid,
+            dropped_mismatch,
+        )
+    return '\n'.join(out), {'invalid': dropped_invalid, 'mismatch': dropped_mismatch}
 
 
 def _extract_reprioritization_keys(markdown: str) -> List[str]:
@@ -920,7 +1010,15 @@ def backlog_overview():
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
         )
         part1 = (r1.content or '').strip()
-        part2_draft = _strip_invalid_raise_to_blocker_rows((r2.content or '').strip())
+        source_priorities = {
+            str(i.get('key', '')).strip().upper(): (_normalize_priority_label(i.get('priority')) or '')
+            for i in batch
+            if i.get('key')
+        }
+        part2_draft, dropped2 = _validate_reprioritization_rows(
+            (r2.content or '').strip(),
+            source_priorities=source_priorities,
+        )
         tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
         models_used: List[str] = [r1.model, r2.model]
         llm_rounds = 2
@@ -928,6 +1026,8 @@ def backlog_overview():
         snapshot_stats = _compute_backlog_snapshot_stats(batch)
         deep_key_count = 0
         deep_pass_applied = False
+        dropped_invalid_rows = dropped2.get('invalid', 0)
+        dropped_mismatch_rows = dropped2.get('mismatch', 0)
 
         if (
             Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED
@@ -955,10 +1055,15 @@ def backlog_overview():
                     max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS,
                     system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2B,
                 )
-                part2b_out = _strip_invalid_raise_to_blocker_rows((r2b.content or '').strip())
+                part2b_out, dropped2b = _validate_reprioritization_rows(
+                    (r2b.content or '').strip(),
+                    source_priorities=source_priorities,
+                )
                 tokens_used += getattr(r2b, 'tokens_used', 0) or 0
                 models_used.append(r2b.model)
                 llm_rounds = 3
+                dropped_invalid_rows += dropped2b.get('invalid', 0)
+                dropped_mismatch_rows += dropped2b.get('mismatch', 0)
                 pass2b_ok = bool(part2b_out.strip()) and (
                     '### Recommended Jira priority changes' in part2b_out
                 )
@@ -997,6 +1102,8 @@ def backlog_overview():
                 'output_tokens': tokens_used,
                 'priority_deep_pass_keys': deep_key_count,
                 'priority_deep_pass_applied': deep_pass_applied,
+                'priority_rows_dropped_invalid': dropped_invalid_rows,
+                'priority_rows_dropped_mismatch': dropped_mismatch_rows,
                 'snapshot_stats': snapshot_stats,
             },
         })

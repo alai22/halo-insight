@@ -84,6 +84,8 @@ pids/
 # Coverage directory used by tools like istanbul
 coverage/
 .nyc_output/
+coverage.xml
+htmlcov/
 
 # Dependency directories
 jspm_packages/
