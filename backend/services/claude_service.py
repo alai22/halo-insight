@@ -4,6 +4,7 @@ Claude API service
 
 import json
 import hashlib
+import time
 import requests
 from typing import Optional, Dict, Any, Generator, List
 from ..utils.config import Config
@@ -13,6 +14,28 @@ from ..core.interfaces import IClaudeService, ICacheService
 from ..core.exceptions import ConfigurationError, ClaudeAPIError, RateLimitError, TimeoutError
 
 logger = get_logger('claude_service')
+
+
+def _parse_retry_after_seconds(response: requests.Response) -> Optional[float]:
+    """Parse Retry-After header as seconds, if present and numeric."""
+    raw = response.headers.get('retry-after') or response.headers.get('Retry-After')
+    if not raw:
+        return None
+    try:
+        return float(raw.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _backoff_seconds_for_429(attempt_index: int, response: requests.Response) -> float:
+    """Combine exponential backoff with optional Retry-After (capped)."""
+    base = max(0.1, float(Config.CLAUDE_RETRY_BASE_DELAY_SEC))
+    cap = max(base, float(Config.CLAUDE_RETRY_MAX_DELAY_SEC))
+    exp = min(cap, base * (2 ** attempt_index))
+    ra = _parse_retry_after_seconds(response)
+    if ra is not None:
+        return min(cap, max(exp, ra))
+    return exp
 
 
 class ClaudeService(IClaudeService):
@@ -112,17 +135,50 @@ class ClaudeService(IClaudeService):
         try:
             timeout = Config.CLAUDE_API_TIMEOUT
             logger.info(f"Sending message to Claude: model={model}, max_tokens={max_tokens}, timeout={timeout}s")
-            response = requests.post(
-                f"{self.base_url}/messages",
-                headers=self.headers,
-                json=payload,
-                timeout=timeout
-            )
+            max_attempts = max(1, int(Config.CLAUDE_RETRY_MAX_ATTEMPTS))
+            response: Optional[requests.Response] = None
+            for attempt in range(max_attempts):
+                response = requests.post(
+                    f"{self.base_url}/messages",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=timeout
+                )
+                if response.status_code == 429:
+                    if attempt + 1 >= max_attempts:
+                        ra = _parse_retry_after_seconds(response)
+                        logger.error(
+                            "Claude API rate limit (429) after %s attempts; retry_after=%s",
+                            max_attempts,
+                            ra,
+                        )
+                        raise RateLimitError(
+                            "Claude API rate limit exceeded. Please wait before making another request.",
+                            details={
+                                'status_code': 429,
+                                'model': model,
+                                'attempts': max_attempts,
+                                'retry_after_seconds': ra,
+                                'suggestion': 'Wait and retry, or reduce backlog overview scope.',
+                            },
+                        )
+                    delay = _backoff_seconds_for_429(attempt, response)
+                    logger.warning(
+                        "Claude API 429; sleeping %.2fs before retry %s/%s",
+                        delay,
+                        attempt + 2,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    continue
+                break
+
+            assert response is not None
             response.raise_for_status()
-            
+
             response_data = response.json()
             logger.info(f"Claude response received: tokens_used={response_data.get('usage', {}).get('output_tokens', 0)}")
-            
+
             claude_response = ClaudeResponse.from_api_response(response_data, model)
             
             # Cache the response (if caching is enabled and no conversation history)

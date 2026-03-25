@@ -4,15 +4,18 @@ Jira API Routes for Bug Triage Copilot
 Provides issue list, status, OAuth 2.0 (3LO) connect flow, and AI backlog overview.
 """
 
+import json
 import logging
 import re
 import secrets
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from flask import Blueprint, g, jsonify, redirect, request, session
+from flask import Blueprint, Response, g, jsonify, redirect, request, session, stream_with_context
 import requests
 
+from backend.core.exceptions import AppException, ClaudeAPIError, RateLimitError
+from backend.core.exceptions import TimeoutError as AppTimeoutError
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
 from backend.utils.config import Config
@@ -1100,6 +1103,341 @@ def get_issues():
         }), 500
 
 
+def _overview_progress_event(step: str, phase: str, completed: List[str]) -> Dict[str, Any]:
+    return {'type': 'progress', 'step': step, 'phase': phase, 'completed': list(completed)}
+
+
+def _overview_error_result(
+    exc: Exception,
+    *,
+    failed_step: str,
+    completed_steps: List[str],
+) -> Dict[str, Any]:
+    http = 500
+    error_code = 'BACKLOG_OVERVIEW_ERROR'
+    details: Dict[str, Any] = {}
+    if isinstance(exc, RateLimitError):
+        http = exc.status_code
+        error_code = exc.error_code
+        details = dict(exc.details or {})
+    elif isinstance(exc, AppTimeoutError):
+        http = exc.status_code
+        error_code = exc.error_code
+        details = dict(exc.details or {})
+    elif isinstance(exc, ClaudeAPIError):
+        http = exc.status_code
+        error_code = exc.error_code
+        details = dict(exc.details or {})
+    elif isinstance(exc, AppException):
+        http = exc.status_code
+        error_code = exc.error_code
+        details = dict(exc.details or {})
+    msg = getattr(exc, 'message', None) or str(exc)
+    retry_after = details.get('retry_after_seconds')
+    return {
+        'type': 'result',
+        'status': 'error',
+        'http_status': http,
+        'message': msg,
+        'error_code': error_code,
+        'failed_step': failed_step,
+        'completed_steps': list(completed_steps),
+        'details': details,
+        'retry_after_seconds': retry_after,
+    }
+
+
+def _iter_backlog_overview_events(
+    claude_service: Any,
+    batch: List[Dict[str, Any]],
+    truncated: bool,
+    total_submitted: int,
+    user_message_pass1: str,
+    user_message_pass2: str,
+    protector: Any,
+    submitted_count_before_parent_filter: int,
+    submitted_count_after_parent_filter: int,
+) -> Iterator[Dict[str, Any]]:
+    """
+    Yields progress dicts and a single terminal result dict (type=='result').
+    On partial success after pass2, result status is 'success' with meta.overview_incomplete.
+    """
+    completed: List[str] = []
+    overview_incomplete = False
+    omitted_sections: List[str] = []
+    incomplete_reasons: List[str] = []
+    first_failed_optional_step: Optional[str] = None
+
+    yield _overview_progress_event('pass1', 'start', completed)
+    try:
+        r1 = claude_service.send_message(
+            message=user_message_pass1,
+            model=None,
+            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS,
+            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS1,
+        )
+    except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
+        logger.exception('backlog-overview: pass1 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass1', completed_steps=completed)
+        return
+    except Exception as e:
+        logger.exception('backlog-overview: pass1 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass1', completed_steps=completed)
+        return
+    completed.append('pass1')
+    yield _overview_progress_event('pass1', 'done', completed)
+
+    yield _overview_progress_event('pass2', 'start', completed)
+    try:
+        r2 = claude_service.send_message(
+            message=user_message_pass2,
+            model=None,
+            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
+            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
+        )
+    except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
+        logger.exception('backlog-overview: pass2 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
+        return
+    except Exception as e:
+        logger.exception('backlog-overview: pass2 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
+        return
+    completed.append('pass2')
+    yield _overview_progress_event('pass2', 'done', completed)
+
+    part1 = (r1.content or '').strip()
+    source_priorities = {
+        str(i.get('key', '')).strip().upper(): (_normalize_priority_label(i.get('priority')) or '')
+        for i in batch
+        if i.get('key')
+    }
+    source_by_key = {
+        str(i.get('key', '')).strip().upper(): {
+            'priority': str(i.get('priority') or '').strip(),
+            'title': str(i.get('title') or '').strip(),
+            'description': str(i.get('description') or '').strip(),
+        }
+        for i in batch
+        if i.get('key')
+    }
+    part2_draft, dropped2 = _validate_reprioritization_rows(
+        (r2.content or '').strip(),
+        source_priorities=source_priorities,
+    )
+    tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
+    models_used: List[str] = [r1.model, r2.model]
+    llm_rounds = 2
+    part2 = _assemble_priority_review_with_snapshot(batch, part2_draft)
+    snapshot_stats = _compute_backlog_snapshot_stats(batch)
+    deep_key_count = 0
+    deep_pass_applied = False
+    dropped_invalid_rows = dropped2.get('invalid', 0)
+    dropped_mismatch_rows = dropped2.get('mismatch', 0)
+    title_rewrite_candidates = 0
+    title_rewrite_rows = 0
+    title_rewrite_rows_dropped = 0
+    title_rewrite_pass_applied = False
+    title_rewrite_section = ''
+
+    if (
+        Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED
+        and part2_draft
+        and 'Recommended Jira priority changes' in part2_draft
+    ):
+        deep_keys = _extract_reprioritization_keys(part2_draft)
+        max_deep = max(0, Config.JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS)
+        if deep_keys and max_deep > 0:
+            if len(deep_keys) > max_deep:
+                deep_keys = deep_keys[:max_deep]
+            deep_key_count = len(deep_keys)
+            user_message_pass2b = _format_issues_for_overview_prompt(
+                batch,
+                truncated,
+                total_submitted,
+                prompt_variant='pass2b',
+                description_keys_ordered=deep_keys,
+            )
+            if protector:
+                user_message_pass2b = protector.redact_text(user_message_pass2b)
+            yield _overview_progress_event('pass2b', 'start', completed)
+            try:
+                r2b = claude_service.send_message(
+                    message=user_message_pass2b,
+                    model=None,
+                    max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS,
+                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2B,
+                )
+            except Exception as e:
+                logger.warning('backlog-overview: pass2b failed (partial overview): %s', e)
+                overview_incomplete = True
+                omitted_sections.append('priority_deep_refine')
+                incomplete_reasons.append(f'Deep priority refine failed: {getattr(e, "message", None) or str(e)}')
+                first_failed_optional_step = first_failed_optional_step or 'pass2b'
+                yield _overview_progress_event('pass2b', 'error', completed)
+            else:
+                part2b_out, dropped2b = _validate_reprioritization_rows(
+                    (r2b.content or '').strip(),
+                    source_priorities=source_priorities,
+                )
+                tokens_used += getattr(r2b, 'tokens_used', 0) or 0
+                models_used.append(r2b.model)
+                llm_rounds = 3
+                dropped_invalid_rows += dropped2b.get('invalid', 0)
+                dropped_mismatch_rows += dropped2b.get('mismatch', 0)
+                pass2b_ok = bool(part2b_out.strip()) and (
+                    '### Recommended Jira priority changes' in part2b_out
+                )
+                if pass2b_ok:
+                    part2 = _assemble_priority_review_with_snapshot(batch, part2b_out)
+                    deep_pass_applied = True
+                    completed.append('pass2b')
+                    yield _overview_progress_event('pass2b', 'done', completed)
+                    logger.info(
+                        'backlog-overview: pass2b description refine issues=%s keys=%s',
+                        len(batch),
+                        deep_key_count,
+                    )
+                else:
+                    logger.warning(
+                        'backlog-overview: pass2b missing valid ### Recommended Jira priority changes; keeping pass2 output keys=%s',
+                        deep_key_count,
+                    )
+                    completed.append('pass2b')
+                    yield _overview_progress_event('pass2b', 'done', completed)
+
+    if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED:
+        all_keys = list(source_by_key.keys())
+        max_keys = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS)
+        max_rows = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS)
+        if all_keys and max_keys > 0 and max_rows > 0:
+            user_message_title_scan = _format_issues_for_overview_prompt(
+                batch,
+                truncated,
+                total_submitted,
+                prompt_variant='title_scan',
+            )
+            if protector:
+                user_message_title_scan = protector.redact_text(user_message_title_scan)
+            yield _overview_progress_event('title_scan', 'start', completed)
+            try:
+                r_title_scan = claude_service.send_message(
+                    message=user_message_title_scan,
+                    model=None,
+                    max_tokens=min(250, max(120, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS // 2)),
+                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_SCAN,
+                )
+            except Exception as e:
+                logger.warning('backlog-overview: title_scan failed (partial overview): %s', e)
+                overview_incomplete = True
+                omitted_sections.append('title_suggestions')
+                incomplete_reasons.append(f'Title scan failed: {getattr(e, "message", None) or str(e)}')
+                first_failed_optional_step = first_failed_optional_step or 'title_scan'
+                yield _overview_progress_event('title_scan', 'error', completed)
+            else:
+                tokens_used += getattr(r_title_scan, 'tokens_used', 0) or 0
+                models_used.append(r_title_scan.model)
+                llm_rounds += 1
+                candidate_keys = _extract_title_rewrite_keys(
+                    r_title_scan.content or '',
+                    all_keys,
+                    max_keys,
+                )
+                title_rewrite_candidates = len(candidate_keys)
+                completed.append('title_scan')
+                yield _overview_progress_event('title_scan', 'done', completed)
+                if candidate_keys:
+                    user_message_title_rewrite = _format_issues_for_overview_prompt(
+                        batch,
+                        truncated,
+                        total_submitted,
+                        prompt_variant='title_rewrite',
+                        description_keys_ordered=candidate_keys,
+                    )
+                    if protector:
+                        user_message_title_rewrite = protector.redact_text(user_message_title_rewrite)
+                    yield _overview_progress_event('title_rewrite', 'start', completed)
+                    try:
+                        r_title_rewrite = claude_service.send_message(
+                            message=user_message_title_rewrite,
+                            model=None,
+                            max_tokens=Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS,
+                            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE,
+                        )
+                    except Exception as e:
+                        logger.warning('backlog-overview: title_rewrite failed (partial overview): %s', e)
+                        overview_incomplete = True
+                        omitted_sections.append('title_suggestions')
+                        incomplete_reasons.append(
+                            f'Title rewrite failed: {getattr(e, "message", None) or str(e)}'
+                        )
+                        first_failed_optional_step = first_failed_optional_step or 'title_rewrite'
+                        yield _overview_progress_event('title_rewrite', 'error', completed)
+                    else:
+                        tokens_used += getattr(r_title_rewrite, 'tokens_used', 0) or 0
+                        models_used.append(r_title_rewrite.model)
+                        llm_rounds += 1
+                        title_rewrite_section, title_counts = _validate_title_rewrite_rows(
+                            (r_title_rewrite.content or '').strip(),
+                            source_by_key=source_by_key,
+                            max_rows=max_rows,
+                        )
+                        title_rewrite_rows = title_counts.get('kept', 0)
+                        title_rewrite_rows_dropped = title_counts.get('dropped', 0)
+                        title_rewrite_pass_applied = title_rewrite_rows > 0
+                        completed.append('title_rewrite')
+                        yield _overview_progress_event('title_rewrite', 'done', completed)
+
+    chunks: List[str] = []
+    if part2:
+        chunks.append(part2.strip())
+    if part1:
+        chunks.append(part1.strip())
+    if title_rewrite_section:
+        chunks.append(title_rewrite_section.strip())
+    overview_text = '\n\n'.join(c for c in chunks if c).strip()
+    logger.info(
+        'backlog-overview: complete issues=%s llm_rounds=%s output_tokens≈%s incomplete=%s',
+        len(batch),
+        llm_rounds,
+        tokens_used,
+        overview_incomplete,
+    )
+    meta: Dict[str, Any] = {
+        'issue_count': len(batch),
+        'truncated': truncated,
+        'submitted_count': total_submitted,
+        'model': models_used[-1],
+        'overview_passes': llm_rounds,
+        'models': models_used,
+        'output_tokens': tokens_used,
+        'priority_deep_pass_keys': deep_key_count,
+        'priority_deep_pass_applied': deep_pass_applied,
+        'priority_rows_dropped_invalid': dropped_invalid_rows,
+        'priority_rows_dropped_mismatch': dropped_mismatch_rows,
+        'title_rewrite_enabled': Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED,
+        'title_rewrite_candidates': title_rewrite_candidates,
+        'title_rewrite_rows': title_rewrite_rows,
+        'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
+        'title_rewrite_pass_applied': title_rewrite_pass_applied,
+        'parent_context_filter_applied': True,
+        'submitted_count_before_parent_filter': submitted_count_before_parent_filter,
+        'submitted_count_after_parent_filter': submitted_count_after_parent_filter,
+        'snapshot_stats': snapshot_stats,
+        'overview_incomplete': overview_incomplete,
+        'omitted_sections': omitted_sections,
+        'incomplete_reason': '; '.join(incomplete_reasons) if incomplete_reasons else None,
+        'failed_step': first_failed_optional_step,
+    }
+    yield {
+        'type': 'result',
+        'status': 'success',
+        'http_status': 200,
+        'overview': overview_text,
+        'meta': meta,
+    }
+
+
 @jira_bp.route('/backlog-overview', methods=['POST'])
 def backlog_overview():
     """
@@ -1109,6 +1447,8 @@ def backlog_overview():
     Flow: pass1 (themes/duplicates), pass2 (priority review from titles/metadata), optional pass2b
     (re-does ## Priority review with description excerpts for keys that appeared in the reprioritization table).
     Optional `description` per issue (truncated) enables pass2b; omit deep pass via Config / env.
+
+    Query: stream=1 streams NDJSON lines (progress + terminal result). Default is a single JSON response.
     """
     if not request.is_json:
         return jsonify({'status': 'error', 'message': 'Content-Type must be application/json'}), 400
@@ -1171,205 +1511,69 @@ def backlog_overview():
             'message': 'Claude API is not configured (set ANTHROPIC_API_KEY).',
         }), 503
 
+    use_stream = (request.args.get('stream') or '').strip().lower() in ('1', 'true', 'yes')
+
+    def run_events():
+        return _iter_backlog_overview_events(
+            claude_service,
+            batch,
+            truncated,
+            total_submitted,
+            user_message_pass1,
+            user_message_pass2,
+            protector,
+            submitted_count_before_parent_filter,
+            submitted_count_after_parent_filter,
+        )
+
+    if use_stream:
+        def ndjson_gen():
+            try:
+                for ev in run_events():
+                    yield json.dumps(ev, default=str) + '\n'
+            except Exception as e:
+                logger.exception('backlog-overview stream failed: %s', e)
+                err = _overview_error_result(e, failed_step='unknown', completed_steps=[])
+                yield json.dumps(err, default=str) + '\n'
+
+        return Response(
+            stream_with_context(ndjson_gen()),
+            mimetype='application/x-ndjson',
+        )
+
+    last_result: Optional[Dict[str, Any]] = None
     try:
-        r1 = claude_service.send_message(
-            message=user_message_pass1,
-            model=None,
-            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS,
-            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS1,
-        )
-        r2 = claude_service.send_message(
-            message=user_message_pass2,
-            model=None,
-            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
-            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
-        )
-        part1 = (r1.content or '').strip()
-        source_priorities = {
-            str(i.get('key', '')).strip().upper(): (_normalize_priority_label(i.get('priority')) or '')
-            for i in batch
-            if i.get('key')
-        }
-        source_by_key = {
-            str(i.get('key', '')).strip().upper(): {
-                'priority': str(i.get('priority') or '').strip(),
-                'title': str(i.get('title') or '').strip(),
-                'description': str(i.get('description') or '').strip(),
-            }
-            for i in batch
-            if i.get('key')
-        }
-        part2_draft, dropped2 = _validate_reprioritization_rows(
-            (r2.content or '').strip(),
-            source_priorities=source_priorities,
-        )
-        tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
-        models_used: List[str] = [r1.model, r2.model]
-        llm_rounds = 2
-        part2 = _assemble_priority_review_with_snapshot(batch, part2_draft)
-        snapshot_stats = _compute_backlog_snapshot_stats(batch)
-        deep_key_count = 0
-        deep_pass_applied = False
-        dropped_invalid_rows = dropped2.get('invalid', 0)
-        dropped_mismatch_rows = dropped2.get('mismatch', 0)
-        title_rewrite_candidates = 0
-        title_rewrite_rows = 0
-        title_rewrite_rows_dropped = 0
-        title_rewrite_pass_applied = False
-        title_rewrite_section = ''
-
-        if (
-            Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED
-            and part2_draft
-            and 'Recommended Jira priority changes' in part2_draft
-        ):
-            deep_keys = _extract_reprioritization_keys(part2_draft)
-            max_deep = max(0, Config.JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS)
-            if deep_keys and max_deep > 0:
-                if len(deep_keys) > max_deep:
-                    deep_keys = deep_keys[:max_deep]
-                deep_key_count = len(deep_keys)
-                user_message_pass2b = _format_issues_for_overview_prompt(
-                    batch,
-                    truncated,
-                    total_submitted,
-                    prompt_variant='pass2b',
-                    description_keys_ordered=deep_keys,
-                )
-                if protector:
-                    user_message_pass2b = protector.redact_text(user_message_pass2b)
-                r2b = claude_service.send_message(
-                    message=user_message_pass2b,
-                    model=None,
-                    max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS,
-                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2B,
-                )
-                part2b_out, dropped2b = _validate_reprioritization_rows(
-                    (r2b.content or '').strip(),
-                    source_priorities=source_priorities,
-                )
-                tokens_used += getattr(r2b, 'tokens_used', 0) or 0
-                models_used.append(r2b.model)
-                llm_rounds = 3
-                dropped_invalid_rows += dropped2b.get('invalid', 0)
-                dropped_mismatch_rows += dropped2b.get('mismatch', 0)
-                pass2b_ok = bool(part2b_out.strip()) and (
-                    '### Recommended Jira priority changes' in part2b_out
-                )
-                if pass2b_ok:
-                    part2 = _assemble_priority_review_with_snapshot(batch, part2b_out)
-                    deep_pass_applied = True
-                    logger.info(
-                        'backlog-overview: pass2b description refine issues=%s keys=%s',
-                        len(batch),
-                        deep_key_count,
-                    )
-                else:
-                    logger.warning(
-                        'backlog-overview: pass2b missing valid ### Recommended Jira priority changes; keeping pass2 output keys=%s',
-                        deep_key_count,
-                    )
-
-        if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED:
-            all_keys = list(source_by_key.keys())
-            max_keys = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS)
-            max_rows = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS)
-            if all_keys and max_keys > 0 and max_rows > 0:
-                user_message_title_scan = _format_issues_for_overview_prompt(
-                    batch,
-                    truncated,
-                    total_submitted,
-                    prompt_variant='title_scan',
-                )
-                if protector:
-                    user_message_title_scan = protector.redact_text(user_message_title_scan)
-                r_title_scan = claude_service.send_message(
-                    message=user_message_title_scan,
-                    model=None,
-                    max_tokens=min(250, max(120, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS // 2)),
-                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_SCAN,
-                )
-                tokens_used += getattr(r_title_scan, 'tokens_used', 0) or 0
-                models_used.append(r_title_scan.model)
-                llm_rounds += 1
-                candidate_keys = _extract_title_rewrite_keys(
-                    r_title_scan.content or '',
-                    all_keys,
-                    max_keys,
-                )
-                title_rewrite_candidates = len(candidate_keys)
-                if candidate_keys:
-                    user_message_title_rewrite = _format_issues_for_overview_prompt(
-                        batch,
-                        truncated,
-                        total_submitted,
-                        prompt_variant='title_rewrite',
-                        description_keys_ordered=candidate_keys,
-                    )
-                    if protector:
-                        user_message_title_rewrite = protector.redact_text(user_message_title_rewrite)
-                    r_title_rewrite = claude_service.send_message(
-                        message=user_message_title_rewrite,
-                        model=None,
-                        max_tokens=Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS,
-                        system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE,
-                    )
-                    tokens_used += getattr(r_title_rewrite, 'tokens_used', 0) or 0
-                    models_used.append(r_title_rewrite.model)
-                    llm_rounds += 1
-                    title_rewrite_section, title_counts = _validate_title_rewrite_rows(
-                        (r_title_rewrite.content or '').strip(),
-                        source_by_key=source_by_key,
-                        max_rows=max_rows,
-                    )
-                    title_rewrite_rows = title_counts.get('kept', 0)
-                    title_rewrite_rows_dropped = title_counts.get('dropped', 0)
-                    title_rewrite_pass_applied = title_rewrite_rows > 0
-
-        # Priority review first in the recap (actionable Jira changes), then themes / clarification / duplicates.
-        chunks: List[str] = []
-        if part2:
-            chunks.append(part2.strip())
-        if part1:
-            chunks.append(part1.strip())
-        if title_rewrite_section:
-            chunks.append(title_rewrite_section.strip())
-        overview_text = '\n\n'.join(c for c in chunks if c).strip()
-        logger.info(
-            'backlog-overview: complete issues=%s llm_rounds=%s output_tokens≈%s',
-            len(batch),
-            llm_rounds,
-            tokens_used,
-        )
-        return jsonify({
-            'status': 'success',
-            'overview': overview_text,
-            'meta': {
-                'issue_count': len(batch),
-                'truncated': truncated,
-                'submitted_count': total_submitted,
-                'model': models_used[-1],
-                'overview_passes': llm_rounds,
-                'models': models_used,
-                'output_tokens': tokens_used,
-                'priority_deep_pass_keys': deep_key_count,
-                'priority_deep_pass_applied': deep_pass_applied,
-                'priority_rows_dropped_invalid': dropped_invalid_rows,
-                'priority_rows_dropped_mismatch': dropped_mismatch_rows,
-                'title_rewrite_enabled': Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED,
-                'title_rewrite_candidates': title_rewrite_candidates,
-                'title_rewrite_rows': title_rewrite_rows,
-                'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
-                'title_rewrite_pass_applied': title_rewrite_pass_applied,
-                'parent_context_filter_applied': True,
-                'submitted_count_before_parent_filter': submitted_count_before_parent_filter,
-                'submitted_count_after_parent_filter': submitted_count_after_parent_filter,
-                'snapshot_stats': snapshot_stats,
-            },
-        })
+        for ev in run_events():
+            if ev.get('type') == 'result':
+                last_result = ev
     except Exception as e:
-        logger.exception('Backlog overview Claude call failed: %s', e)
+        logger.exception('Backlog overview pipeline failed: %s', e)
         return jsonify({
             'status': 'error',
             'message': str(e) or 'Failed to generate backlog overview',
+            'error_code': 'BACKLOG_OVERVIEW_ERROR',
+            'failed_step': 'unknown',
+            'completed_steps': [],
+            'details': {},
         }), 500
+
+    if not last_result:
+        return jsonify({'status': 'error', 'message': 'No result from overview pipeline'}), 500
+
+    if last_result.get('status') == 'error':
+        http = int(last_result.get('http_status') or 500)
+        return jsonify({
+            'status': 'error',
+            'message': last_result.get('message') or 'Failed to generate backlog overview',
+            'error_code': last_result.get('error_code'),
+            'failed_step': last_result.get('failed_step'),
+            'completed_steps': last_result.get('completed_steps') or [],
+            'details': last_result.get('details') or {},
+            'retry_after_seconds': last_result.get('retry_after_seconds'),
+        }), http
+
+    return jsonify({
+        'status': 'success',
+        'overview': last_result.get('overview') or '',
+        'meta': last_result.get('meta') or {},
+    }), 200

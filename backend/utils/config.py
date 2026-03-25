@@ -19,6 +19,10 @@ class Config:
     # Claude 4 models (claude-sonnet-4, claude-opus-4) may not be available with all API keys
     CLAUDE_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-3-haiku-20240307')
     CLAUDE_API_TIMEOUT: int = int(os.getenv('CLAUDE_API_TIMEOUT', '120'))  # Default 120 seconds for complex queries
+    # Bounded retries on HTTP 429 from Anthropic (respect Retry-When possible via Retry-After header).
+    CLAUDE_RETRY_MAX_ATTEMPTS: int = int(os.getenv('CLAUDE_RETRY_MAX_ATTEMPTS', '3'))
+    CLAUDE_RETRY_BASE_DELAY_SEC: float = float(os.getenv('CLAUDE_RETRY_BASE_DELAY_SEC', '2'))
+    CLAUDE_RETRY_MAX_DELAY_SEC: float = float(os.getenv('CLAUDE_RETRY_MAX_DELAY_SEC', '60'))
     
     @classmethod
     def get_api_key_status(cls) -> dict:

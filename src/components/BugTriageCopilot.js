@@ -29,6 +29,15 @@ import { rollupBacklogByPriorityAndStatus } from '../utils/backlogRollups';
 
 const STORAGE_KEY = 'bug_triage_decisions';
 const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
+
+/** Labels for backlog overview Claude steps (matches API `step` ids). */
+const OVERVIEW_STEP_LABELS = {
+  pass1: 'Themes & duplicates',
+  pass2: 'Priority review',
+  pass2b: 'Deep priority refine',
+  title_scan: 'Title scan',
+  title_rewrite: 'Title suggestions',
+};
 /** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
 const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -411,6 +420,8 @@ const BugTriageCopilot = () => {
   const [overviewMarkdown, setOverviewMarkdown] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState(null);
+  /** Live step while NDJSON stream is in progress */
+  const [overviewProgress, setOverviewProgress] = useState(null);
   const [overviewExpanded, setOverviewExpanded] = useState(false);
   /** Set when overview was restored from localStorage (auto-run only); cleared on fresh POST. */
   const [overviewCacheHint, setOverviewCacheHint] = useState(null);
@@ -589,6 +600,7 @@ const BugTriageCopilot = () => {
     if (!list.length) {
       setOverviewMarkdown(null);
       setOverviewError(null);
+      setOverviewProgress(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
       setOverviewMeta(null);
@@ -596,25 +608,132 @@ const BugTriageCopilot = () => {
     }
     setOverviewLoading(true);
     setOverviewError(null);
+    setOverviewProgress(null);
     setOverviewCacheHint(null);
     try {
       const slim = list.map(slimIssueForOverview);
-      const res = await fetch('/api/jira/backlog-overview', {
+      const res = await fetch('/api/jira/backlog-overview?stream=1', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+        },
         body: JSON.stringify({ issues: slim }),
         signal,
       });
-      const data = await res.json().catch(() => ({}));
       if (signal?.aborted) return;
-      if (!res.ok || data.status !== 'success') {
-        setOverviewError(data.message || 'Failed to generate backlog overview');
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('ndjson')) {
+        const data = await res.json().catch(() => ({}));
+        if (signal?.aborted) return;
+        if (!res.ok || data.status !== 'success') {
+          setOverviewError({
+            message: data.message || 'Failed to generate backlog overview',
+            errorCode: data.error_code,
+            failedStep: data.failed_step,
+            completedSteps: data.completed_steps,
+            retryAfterSeconds: data.retry_after_seconds,
+            details: data.details,
+          });
+          setOverviewMarkdown(null);
+          setOverviewMeta(null);
+          return;
+        }
+        const md = typeof data.overview === 'string' ? data.overview : '';
+        const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+        setOverviewMarkdown(md);
+        setOverviewMeta(meta);
+        if (fingerprintForCache != null) {
+          saveOverviewCache({
+            fingerprint: fingerprintForCache,
+            overview: md,
+            cachedAt: new Date().toISOString(),
+            ...(meta ? { meta } : {}),
+          });
+        }
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setOverviewError({ message: 'Streaming not supported in this browser' });
         setOverviewMarkdown(null);
         setOverviewMeta(null);
         return;
       }
-      const md = typeof data.overview === 'string' ? data.overview : '';
-      const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult = null;
+      let streamEnded = false;
+      while (!streamEnded) {
+        const { done, value } = await reader.read();
+        if (signal?.aborted) {
+          reader.cancel().catch(() => {});
+          return;
+        }
+        if (done) {
+          streamEnded = true;
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev;
+          try {
+            ev = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (ev.type === 'progress') {
+            setOverviewProgress({
+              step: ev.step,
+              phase: ev.phase,
+              completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+            });
+          }
+          if (ev.type === 'result') {
+            finalResult = ev;
+          }
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer);
+          if (ev.type === 'result') finalResult = ev;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (signal?.aborted) return;
+
+      if (!finalResult) {
+        setOverviewError({ message: 'No result from overview service' });
+        setOverviewMarkdown(null);
+        setOverviewMeta(null);
+        return;
+      }
+
+      if (finalResult.status === 'error') {
+        setOverviewError({
+          message: finalResult.message || 'Failed to generate backlog overview',
+          errorCode: finalResult.error_code,
+          failedStep: finalResult.failed_step,
+          completedSteps: finalResult.completed_steps,
+          retryAfterSeconds: finalResult.retry_after_seconds,
+          details: finalResult.details,
+        });
+        setOverviewMarkdown(null);
+        setOverviewMeta(null);
+        return;
+      }
+
+      const md = typeof finalResult.overview === 'string' ? finalResult.overview : '';
+      const meta = finalResult.meta && typeof finalResult.meta === 'object' ? finalResult.meta : null;
       setOverviewMarkdown(md);
       setOverviewMeta(meta);
       if (fingerprintForCache != null) {
@@ -627,11 +746,12 @@ const BugTriageCopilot = () => {
       }
     } catch (e) {
       if (e.name === 'AbortError') return;
-      setOverviewError(e.message || 'Request failed');
+      setOverviewError({ message: e.message || 'Request failed' });
       setOverviewMarkdown(null);
       setOverviewMeta(null);
     } finally {
       setOverviewLoading(false);
+      setOverviewProgress(null);
     }
   }, []);
 
@@ -640,6 +760,7 @@ const BugTriageCopilot = () => {
     if (filteredAndSorted.length === 0) {
       setOverviewMarkdown(null);
       setOverviewError(null);
+      setOverviewProgress(null);
       setOverviewLoading(false);
       setOverviewCacheHint(null);
       setOverviewMeta(null);
@@ -676,6 +797,14 @@ const BugTriageCopilot = () => {
     () => (overviewCacheHint ? 'from cache' : 'fresh'),
     [overviewCacheHint],
   );
+  const overviewProgressLabel = useMemo(() => {
+    if (!overviewProgress?.step) return null;
+    const name = OVERVIEW_STEP_LABELS[overviewProgress.step] || overviewProgress.step;
+    if (overviewProgress.phase === 'start') return `Running: ${name}…`;
+    if (overviewProgress.phase === 'done') return `Finished: ${name}`;
+    if (overviewProgress.phase === 'error') return `Skipped: ${name} (error)`;
+    return name;
+  }, [overviewProgress]);
   const titleSuggestionsCount = useMemo(() => {
     const n = Number(overviewMeta?.title_rewrite_rows);
     return Number.isFinite(n) && n > 0 ? n : 0;
@@ -1405,7 +1534,7 @@ const BugTriageCopilot = () => {
                   <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
                   {!overviewExpanded && overviewLoading && (
                     <span className="text-xs font-normal text-amber-800 truncate">
-                      — generating...
+                      — {overviewProgressLabel || 'generating…'}
                     </span>
                   )}
                   {!overviewExpanded && overviewError && !overviewLoading && (
@@ -1449,6 +1578,14 @@ const BugTriageCopilot = () => {
                     Analysis cap: batch smaller than submitted — see Backlog metrics.
                   </p>
                 )}
+                {!overviewLoading && !overviewError && overviewMeta?.overview_incomplete && (
+                  <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
+                    Partial overview: {overviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
+                    {overviewMeta.omitted_sections?.length
+                      ? `(Omitted: ${overviewMeta.omitted_sections.join(', ')})`
+                      : ''}
+                  </p>
+                )}
                 {!overviewExpanded && overviewPreviewText && !overviewError && (
                   <p className="text-xs text-amber-900/90 truncate">
                     {overviewPreviewText}
@@ -1457,9 +1594,9 @@ const BugTriageCopilot = () => {
               </div>
               <div className="flex items-center gap-2 shrink-0 pt-0.5">
                 {overviewExpanded && overviewLoading && (
-                  <span className="text-xs text-amber-900 flex items-center gap-1">
+                  <span className="text-xs text-amber-900 flex items-center gap-1 min-w-0">
                     <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
-                    Generating…
+                    <span className="truncate">{overviewProgressLabel || 'Generating…'}</span>
                   </span>
                 )}
                 <button
@@ -1509,11 +1646,36 @@ const BugTriageCopilot = () => {
                     Analysis cap: see Backlog metrics for submitted vs analyzed.
                   </p>
                 )}
+                {!overviewLoading && !overviewError && overviewMeta?.overview_incomplete && (
+                  <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
+                    Partial overview: {overviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
+                    {overviewMeta.omitted_sections?.length
+                      ? `(Omitted: ${overviewMeta.omitted_sections.join(', ')})`
+                      : ''}
+                  </p>
+                )}
                 {overviewError && (
                   <div className="flex items-start justify-between gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2">
-                    <p className="text-sm text-red-800 flex-1" role="alert">
-                      {overviewError}
-                    </p>
+                    <div className="text-sm text-red-800 flex-1 space-y-1" role="alert">
+                      <p>{overviewError.message}</p>
+                      {overviewError.failedStep && (
+                        <p className="text-xs text-red-900/90">
+                          Failed step:{' '}
+                          <strong>{OVERVIEW_STEP_LABELS[overviewError.failedStep] || overviewError.failedStep}</strong>
+                          {overviewError.completedSteps?.length
+                            ? ` · Completed: ${overviewError.completedSteps.join(', ')}`
+                            : ''}
+                        </p>
+                      )}
+                      {overviewError.retryAfterSeconds != null && Number.isFinite(overviewError.retryAfterSeconds) && (
+                        <p className="text-xs text-red-900/90">
+                          Suggested wait: ~{Math.ceil(overviewError.retryAfterSeconds)}s before retry.
+                        </p>
+                      )}
+                      {overviewError.errorCode && (
+                        <p className="text-[11px] text-red-700/90 font-mono">{overviewError.errorCode}</p>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => setOverviewError(null)}
