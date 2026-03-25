@@ -38,6 +38,22 @@ const OVERVIEW_STEP_LABELS = {
   title_scan: 'Title scan',
   title_rewrite: 'Title suggestions',
 };
+
+const OVERVIEW_CONSOLE_GROUP = '[BugTriage overview] AI run';
+
+function overviewStepLabel(step) {
+  return (step && OVERVIEW_STEP_LABELS[step]) || step || 'unknown';
+}
+
+/** Console-only transparency for overview timing (keeps the page UI clean). */
+function logOverviewConsole(event, detail) {
+  if (detail !== undefined) {
+    console.info(OVERVIEW_CONSOLE_GROUP, event, detail);
+  } else {
+    console.info(OVERVIEW_CONSOLE_GROUP, event);
+  }
+}
+
 /** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
 const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -610,38 +626,210 @@ const BugTriageCopilot = () => {
     setOverviewError(null);
     setOverviewProgress(null);
     setOverviewCacheHint(null);
-    try {
-      const slim = list.map(slimIssueForOverview);
-      const res = await fetch('/api/jira/backlog-overview?stream=1', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/x-ndjson',
-        },
-        body: JSON.stringify({ issues: slim }),
-        signal,
-      });
-      if (signal?.aborted) return;
+    const runStartedAt = performance.now();
+    const stepStartedAt = Object.create(null);
+    let overviewLogGroupOpened = false;
 
-      const contentType = (res.headers.get('content-type') || '').toLowerCase();
-      if (!contentType.includes('ndjson')) {
-        const data = await res.json().catch(() => ({}));
+    try {
+      try {
+        console.groupCollapsed(`${OVERVIEW_CONSOLE_GROUP} · ${list.length} issue(s)`);
+        overviewLogGroupOpened = true;
+        logOverviewConsole('Request started', {
+          issues: list.length,
+          time: new Date().toISOString(),
+        });
+
+        const slim = list.map(slimIssueForOverview);
+        const fetchStartedAt = performance.now();
+        const res = await fetch('/api/jira/backlog-overview?stream=1', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+          },
+          body: JSON.stringify({ issues: slim }),
+          signal,
+        });
+        logOverviewConsole('Response headers', {
+          ms: Math.round(performance.now() - fetchStartedAt),
+          status: res.status,
+        });
         if (signal?.aborted) return;
-        if (!res.ok || data.status !== 'success') {
+
+        const contentType = (res.headers.get('content-type') || '').toLowerCase();
+        if (!contentType.includes('ndjson')) {
+          const parseStartedAt = performance.now();
+          const data = await res.json().catch(() => ({}));
+          logOverviewConsole('JSON body parsed', { ms: Math.round(performance.now() - parseStartedAt) });
+          if (signal?.aborted) return;
+          if (!res.ok || data.status !== 'success') {
+            logOverviewConsole('Non-stream error', {
+              wallClockMs: Math.round(performance.now() - runStartedAt),
+              httpStatus: res.status,
+              errorCode: data.error_code,
+              failedStep: data.failed_step,
+              completedSteps: data.completed_steps,
+              retryAfterSeconds: data.retry_after_seconds,
+            });
+            setOverviewError({
+              message: data.message || 'Failed to generate backlog overview',
+              errorCode: data.error_code,
+              failedStep: data.failed_step,
+              completedSteps: data.completed_steps,
+              retryAfterSeconds: data.retry_after_seconds,
+              details: data.details,
+            });
+            setOverviewMarkdown(null);
+            setOverviewMeta(null);
+            return;
+          }
+          const md = typeof data.overview === 'string' ? data.overview : '';
+          const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+          logOverviewConsole('Non-stream success', {
+            wallClockMs: Math.round(performance.now() - runStartedAt),
+            overviewChars: md.length,
+            overviewIncomplete: meta?.overview_incomplete,
+            issueCount: meta?.issue_count,
+          });
+          setOverviewMarkdown(md);
+          setOverviewMeta(meta);
+          if (fingerprintForCache != null) {
+            saveOverviewCache({
+              fingerprint: fingerprintForCache,
+              overview: md,
+              cachedAt: new Date().toISOString(),
+              ...(meta ? { meta } : {}),
+            });
+          }
+          return;
+        }
+
+        const reader = res.body?.getReader();
+        if (!reader) {
+          logOverviewConsole('Streaming unsupported', {
+            wallClockMs: Math.round(performance.now() - runStartedAt),
+          });
+          setOverviewError({ message: 'Streaming not supported in this browser' });
+          setOverviewMarkdown(null);
+          setOverviewMeta(null);
+          return;
+        }
+
+        const streamStartedAt = performance.now();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult = null;
+        let streamEnded = false;
+        while (!streamEnded) {
+          const { done, value } = await reader.read();
+          if (signal?.aborted) {
+            reader.cancel().catch(() => {});
+            logOverviewConsole('Aborted during stream', {
+              wallClockMs: Math.round(performance.now() - runStartedAt),
+            });
+            return;
+          }
+          if (done) {
+            streamEnded = true;
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let ev;
+            try {
+              ev = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (ev.type === 'progress') {
+              const step = ev.step;
+              const phase = ev.phase;
+              const label = overviewStepLabel(step);
+              if (phase === 'start') {
+                stepStartedAt[step] = performance.now();
+                logOverviewConsole(`Step start · ${label}`, {
+                  step,
+                  completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+                });
+              } else if (phase === 'done' || phase === 'error') {
+                const t0 = stepStartedAt[step];
+                const durationMs = t0 != null ? Math.round(performance.now() - t0) : null;
+                logOverviewConsole(`Step ${phase} · ${label}`, {
+                  step,
+                  durationMs,
+                  completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+                });
+              }
+              setOverviewProgress({
+                step: ev.step,
+                phase: ev.phase,
+                completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
+              });
+            }
+            if (ev.type === 'result') {
+              finalResult = ev;
+            }
+          }
+        }
+        if (buffer.trim()) {
+          try {
+            const ev = JSON.parse(buffer);
+            if (ev.type === 'result') finalResult = ev;
+          } catch {
+            /* ignore */
+          }
+        }
+
+        logOverviewConsole('Stream bytes finished', {
+          ms: Math.round(performance.now() - streamStartedAt),
+        });
+
+        if (signal?.aborted) return;
+
+        if (!finalResult) {
+          logOverviewConsole('No terminal result event', {
+            wallClockMs: Math.round(performance.now() - runStartedAt),
+          });
+          setOverviewError({ message: 'No result from overview service' });
+          setOverviewMarkdown(null);
+          setOverviewMeta(null);
+          return;
+        }
+
+        if (finalResult.status === 'error') {
+          logOverviewConsole('Terminal result: error', {
+            wallClockMs: Math.round(performance.now() - runStartedAt),
+            errorCode: finalResult.error_code,
+            failedStep: finalResult.failed_step,
+            completedSteps: finalResult.completed_steps,
+            retryAfterSeconds: finalResult.retry_after_seconds,
+          });
           setOverviewError({
-            message: data.message || 'Failed to generate backlog overview',
-            errorCode: data.error_code,
-            failedStep: data.failed_step,
-            completedSteps: data.completed_steps,
-            retryAfterSeconds: data.retry_after_seconds,
-            details: data.details,
+            message: finalResult.message || 'Failed to generate backlog overview',
+            errorCode: finalResult.error_code,
+            failedStep: finalResult.failed_step,
+            completedSteps: finalResult.completed_steps,
+            retryAfterSeconds: finalResult.retry_after_seconds,
+            details: finalResult.details,
           });
           setOverviewMarkdown(null);
           setOverviewMeta(null);
           return;
         }
-        const md = typeof data.overview === 'string' ? data.overview : '';
-        const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
+
+        const md = typeof finalResult.overview === 'string' ? finalResult.overview : '';
+        const meta = finalResult.meta && typeof finalResult.meta === 'object' ? finalResult.meta : null;
+        logOverviewConsole('Terminal result: success', {
+          wallClockMs: Math.round(performance.now() - runStartedAt),
+          overviewChars: md.length,
+          overviewIncomplete: meta?.overview_incomplete,
+          failedStep: meta?.failed_step,
+          issueCount: meta?.issue_count,
+          truncated: meta?.truncated,
+        });
         setOverviewMarkdown(md);
         setOverviewMeta(meta);
         if (fingerprintForCache != null) {
@@ -652,100 +840,26 @@ const BugTriageCopilot = () => {
             ...(meta ? { meta } : {}),
           });
         }
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) {
-        setOverviewError({ message: 'Streaming not supported in this browser' });
-        setOverviewMarkdown(null);
-        setOverviewMeta(null);
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finalResult = null;
-      let streamEnded = false;
-      while (!streamEnded) {
-        const { done, value } = await reader.read();
-        if (signal?.aborted) {
-          reader.cancel().catch(() => {});
-          return;
+      } finally {
+        if (overviewLogGroupOpened) {
+          logOverviewConsole('Run finished (wall clock)', {
+            ms: Math.round(performance.now() - runStartedAt),
+          });
+          console.groupEnd();
+          overviewLogGroupOpened = false;
         }
-        if (done) {
-          streamEnded = true;
-          break;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let ev;
-          try {
-            ev = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (ev.type === 'progress') {
-            setOverviewProgress({
-              step: ev.step,
-              phase: ev.phase,
-              completedSteps: Array.isArray(ev.completed) ? ev.completed : [],
-            });
-          }
-          if (ev.type === 'result') {
-            finalResult = ev;
-          }
-        }
-      }
-      if (buffer.trim()) {
-        try {
-          const ev = JSON.parse(buffer);
-          if (ev.type === 'result') finalResult = ev;
-        } catch {
-          /* ignore */
-        }
-      }
-
-      if (signal?.aborted) return;
-
-      if (!finalResult) {
-        setOverviewError({ message: 'No result from overview service' });
-        setOverviewMarkdown(null);
-        setOverviewMeta(null);
-        return;
-      }
-
-      if (finalResult.status === 'error') {
-        setOverviewError({
-          message: finalResult.message || 'Failed to generate backlog overview',
-          errorCode: finalResult.error_code,
-          failedStep: finalResult.failed_step,
-          completedSteps: finalResult.completed_steps,
-          retryAfterSeconds: finalResult.retry_after_seconds,
-          details: finalResult.details,
-        });
-        setOverviewMarkdown(null);
-        setOverviewMeta(null);
-        return;
-      }
-
-      const md = typeof finalResult.overview === 'string' ? finalResult.overview : '';
-      const meta = finalResult.meta && typeof finalResult.meta === 'object' ? finalResult.meta : null;
-      setOverviewMarkdown(md);
-      setOverviewMeta(meta);
-      if (fingerprintForCache != null) {
-        saveOverviewCache({
-          fingerprint: fingerprintForCache,
-          overview: md,
-          cachedAt: new Date().toISOString(),
-          ...(meta ? { meta } : {}),
-        });
       }
     } catch (e) {
+      if (overviewLogGroupOpened) {
+        console.groupEnd();
+        overviewLogGroupOpened = false;
+      }
       if (e.name === 'AbortError') return;
+      console.info(OVERVIEW_CONSOLE_GROUP, 'Client error', {
+        wallClockMs: Math.round(performance.now() - runStartedAt),
+        name: e.name,
+        message: e.message,
+      });
       setOverviewError({ message: e.message || 'Request failed' });
       setOverviewMarkdown(null);
       setOverviewMeta(null);
