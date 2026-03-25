@@ -71,8 +71,11 @@ function isOverviewStreamTransportFailure(err) {
   return false;
 }
 
-/** POST without ?stream=1 above this size — long NDJSON streams often hit HTTP/2 / proxy resets (still 200). */
-const BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES = 350;
+/**
+ * Prefer ?stream=1 for backlog overview: NDJSON progress lines keep bytes moving so reverse proxies
+ * are less likely to return 504 than a single JSON body that stays silent until the full run finishes.
+ * Transport failures still fall back to one non-stream POST (may also need a higher proxy_read_timeout).
+ */
 
 /** Auto-run skips POST when cache matches fingerprint and is newer than this (ms). */
 const BACKLOG_OVERVIEW_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -654,12 +657,7 @@ const BugTriageCopilot = () => {
     const applyOverviewJsonResponse = (jsonRes, data, traceKind) => {
       if (signal?.aborted) return;
       if (!jsonRes.ok || data.status !== 'success') {
-        const errLabel =
-          traceKind === 'fallback'
-            ? 'Fallback error payload'
-            : traceKind === 'large-batch'
-              ? 'Large-batch error payload'
-              : 'Non-stream error';
+        const errLabel = traceKind === 'fallback' ? 'Fallback error payload' : 'Non-stream error';
         logOverviewConsole(errLabel, {
           wallClockMs: Math.round(performance.now() - runStartedAt),
           httpStatus: jsonRes.status,
@@ -669,7 +667,10 @@ const BugTriageCopilot = () => {
           retryAfterSeconds: data.retry_after_seconds,
         });
         setOverviewError({
-          message: data.message || 'Failed to generate backlog overview',
+          message:
+            jsonRes.status === 504
+              ? `${data.message?.trim() || 'Gateway timeout (504).'} Large overviews often exceed a ~60s proxy limit when the body is empty until the end. The default request uses NDJSON streaming to keep the link busy; otherwise narrow filters or raise proxy_read_timeout for POST /api/jira/backlog-overview.`
+              : data.message || 'Failed to generate backlog overview',
           errorCode: data.error_code,
           failedStep: data.failed_step,
           completedSteps: data.completed_steps,
@@ -682,12 +683,7 @@ const BugTriageCopilot = () => {
       }
       const md = typeof data.overview === 'string' ? data.overview : '';
       const meta = data.meta && typeof data.meta === 'object' ? data.meta : null;
-      const okLabel =
-        traceKind === 'fallback'
-          ? 'Fallback success'
-          : traceKind === 'large-batch'
-            ? 'Large-batch success'
-            : 'Non-stream success';
+      const okLabel = traceKind === 'fallback' ? 'Fallback success' : 'Non-stream success';
       logOverviewConsole(okLabel, {
         wallClockMs: Math.round(performance.now() - runStartedAt),
         overviewChars: md.length,
@@ -714,31 +710,6 @@ const BugTriageCopilot = () => {
           issues: list.length,
           time: new Date().toISOString(),
         });
-
-        if (list.length >= BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES) {
-          logOverviewConsole('Large batch: non-streaming overview only (avoids HTTP/2 NDJSON stream drops)', {
-            issues: list.length,
-            threshold: BACKLOG_OVERVIEW_SKIP_STREAM_MIN_ISSUES,
-          });
-          const lbFetchAt = performance.now();
-          const resLb = await fetch('/api/jira/backlog-overview', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issues: slim }),
-            signal,
-          });
-          logOverviewConsole('Large-batch response headers', {
-            ms: Math.round(performance.now() - lbFetchAt),
-            status: resLb.status,
-          });
-          if (signal?.aborted) return;
-          const lbParseAt = performance.now();
-          const dataLb = await resLb.json().catch(() => ({}));
-          logOverviewConsole('Large-batch JSON parsed', { ms: Math.round(performance.now() - lbParseAt) });
-          if (signal?.aborted) return;
-          applyOverviewJsonResponse(resLb, dataLb, 'large-batch');
-          return;
-        }
 
         const fetchStartedAt = performance.now();
         const res = await fetch('/api/jira/backlog-overview?stream=1', {
