@@ -94,6 +94,13 @@ _PRIORITY_ALIASES = {
 }
 
 
+def _issue_has_parent_context(issue: Dict[str, Any]) -> bool:
+    """Keep issue when it belongs to a parent/epic context."""
+    parent_key = str(issue.get('parentKey') or '').strip()
+    epic_key = str(issue.get('epicKey') or '').strip()
+    return bool(parent_key or epic_key)
+
+
 def _markdown_table_row_cells(line: str) -> Optional[List[str]]:
     """Parse a pipe table row into stripped cells, or None if not a table row."""
     m = _RE_MD_TABLE_ROW.match(line)
@@ -1055,17 +1062,24 @@ def get_issues():
         ancestor_key = (request.args.get('ancestor_key') or request.args.get('parent_key') or '').strip() or None
         issuetype_arg = (request.args.get('issuetype') or 'Bug').strip()
         issuetype = None if issuetype_arg.lower() in ('', 'all', '*') else issuetype_arg
+        require_parent_context_arg = (request.args.get('require_parent_context') or '1').strip().lower()
+        require_parent_context = require_parent_context_arg not in ('0', 'false', 'no')
         client = JiraClient()
-        issues = client.fetch_issues_for_triage(
+        triage_result = client.fetch_issues_for_triage(
             project=project,
             max_results=max_results,
             ancestor_key=ancestor_key,
             issuetype=issuetype,  # default from param is Bug; None means all types (e.g. ?issuetype=all)
+            require_parent_context=require_parent_context,
         )
+        issues = triage_result.get('issues', [])
         return jsonify({
             'status': 'success',
             'data': issues,
             'count': len(issues),
+            'count_before_parent_filter': triage_result.get('count_before_parent_filter', len(issues)),
+            'count_after_parent_filter': triage_result.get('count_after_parent_filter', len(issues)),
+            'parent_filter_applied': triage_result.get('parent_filter_applied', False),
         })
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
@@ -1113,6 +1127,15 @@ def backlog_overview():
         return jsonify({
             'status': 'error',
             'message': 'No valid issues to analyze (each item needs at least a key).',
+        }), 400
+
+    submitted_count_before_parent_filter = len(sanitized)
+    sanitized = [i for i in sanitized if _issue_has_parent_context(i)]
+    submitted_count_after_parent_filter = len(sanitized)
+    if not sanitized:
+        return jsonify({
+            'status': 'error',
+            'message': 'No parent/epic-linked issues to analyze after parent-context filter.',
         }), 400
 
     total_submitted = len(sanitized)
@@ -1337,6 +1360,9 @@ def backlog_overview():
                 'title_rewrite_rows': title_rewrite_rows,
                 'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
                 'title_rewrite_pass_applied': title_rewrite_pass_applied,
+                'parent_context_filter_applied': True,
+                'submitted_count_before_parent_filter': submitted_count_before_parent_filter,
+                'submitted_count_after_parent_filter': submitted_count_after_parent_filter,
                 'snapshot_stats': snapshot_stats,
             },
         })

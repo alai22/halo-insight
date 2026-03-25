@@ -405,6 +405,8 @@ const BugTriageCopilot = () => {
   const [jiraStatus, setJiraStatus] = useState({ configured: false });
   const [jiraLoading, setJiraLoading] = useState(false);
   const [jiraError, setJiraError] = useState(null);
+  const [jiraParentFilterStats, setJiraParentFilterStats] = useState(null);
+  const [includeUnparentedTickets, setIncludeUnparentedTickets] = useState(false);
   const [overviewMarkdown, setOverviewMarkdown] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState(null);
@@ -435,6 +437,7 @@ const BugTriageCopilot = () => {
     setJiraError(null);
     setJiraLoading(true);
     const params = new URLSearchParams({ project: 'HALO', max_results: '1000' });
+    params.set('require_parent_context', includeUnparentedTickets ? '0' : '1');
     const ancestor = (jiraAncestorKeyRef.current || '').trim();
     if (ancestor) params.set('ancestor_key', ancestor);
     fetch(`/api/jira/issues?${params}`)
@@ -443,22 +446,29 @@ const BugTriageCopilot = () => {
         if (status !== 200 || data.status !== 'success') {
           setJiraError(data.message || 'Failed to load issues from Jira');
           setIssues([]);
+          setJiraParentFilterStats(null);
           return;
         }
         setIssues(Array.isArray(data.data) ? data.data : []);
+        setJiraParentFilterStats({
+          parentFilterApplied: data.parent_filter_applied === true,
+          countBefore: Number(data.count_before_parent_filter ?? data.count ?? 0),
+          countAfter: Number(data.count_after_parent_filter ?? data.count ?? 0),
+        });
       })
       .catch((err) => {
         setJiraError(err.message || 'Failed to fetch Jira issues');
         setIssues([]);
+        setJiraParentFilterStats(null);
       })
       .finally(() => setJiraLoading(false));
-  }, [jiraStatus.configured]);
+  }, [jiraStatus.configured, includeUnparentedTickets]);
 
-  // Fetch issues when Jira is configured
+  // Fetch issues when Jira is configured / parent-context mode changes
   useEffect(() => {
     if (!jiraStatus.configured) return;
     fetchJiraIssues();
-  }, [jiraStatus.configured, fetchJiraIssues]);
+  }, [jiraStatus.configured, fetchJiraIssues, includeUnparentedTickets]);
 
   const setDecisions = (next) => {
     setDecisionsState((prev) => {
@@ -689,6 +699,13 @@ const BugTriageCopilot = () => {
     const n = Number(overviewMeta?.title_rewrite_rows);
     return Number.isFinite(n) && n > 0 ? n : 0;
   }, [overviewMeta]);
+  const parentFilteredOutCount = useMemo(() => {
+    if (!jiraParentFilterStats?.parentFilterApplied) return 0;
+    const before = Number(jiraParentFilterStats.countBefore ?? 0);
+    const after = Number(jiraParentFilterStats.countAfter ?? 0);
+    if (!Number.isFinite(before) || !Number.isFinite(after)) return 0;
+    return Math.max(0, before - after);
+  }, [jiraParentFilterStats]);
 
   const groupedByCluster = useMemo(() => {
     if (!groupByCluster) return null;
@@ -1020,6 +1037,15 @@ const BugTriageCopilot = () => {
             />
             Group by cluster
           </label>
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer py-1 min-h-[44px] sm:min-h-0">
+            <input
+              type="checkbox"
+              checked={includeUnparentedTickets}
+              onChange={(e) => setIncludeUnparentedTickets(e.target.checked)}
+              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+            />
+            Include unparented tickets
+          </label>
         </div>
       </div>
 
@@ -1105,6 +1131,12 @@ const BugTriageCopilot = () => {
             ? 'Backlog (Loading…)'
             : `Backlog (${filteredAndSorted.length} of ${issues.length} issues)`}
         </h2>
+        {jiraParentFilterStats?.parentFilterApplied && !includeUnparentedTickets && (
+          <p className="mb-3 text-xs text-gray-600">
+            Showing tickets with parent/epic context only.
+            {parentFilteredOutCount > 0 ? ` Filtered out ${parentFilteredOutCount} unparented tickets.` : ''}
+          </p>
+        )}
 
         {!jiraLoading && filteredAndSorted.length > 0 && (
           <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-lg overflow-hidden">
@@ -1138,6 +1170,11 @@ const BugTriageCopilot = () => {
                   <span className="text-amber-900">
                     Cards below pull Jira fields directly; AI recommendations are advisory.
                   </span>
+                  {jiraParentFilterStats?.parentFilterApplied && !includeUnparentedTickets && (
+                    <span className="text-amber-900/90">
+                      Parent/epic-linked tickets only.
+                    </span>
+                  )}
                   {!overviewLoading && !overviewError && overviewMarkdown && (
                     <span className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900">
                       {overviewFreshnessLabel}

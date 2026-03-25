@@ -171,6 +171,13 @@ def _map_jira_issue_to_triage(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _has_parent_context(issue: Dict[str, Any]) -> bool:
+    """Keep issue when it belongs to a parent/epic context."""
+    parent_key = str(issue.get('parentKey') or '').strip()
+    epic_key = str(issue.get('epicKey') or '').strip()
+    return bool(parent_key or epic_key)
+
+
 class JiraClient:
     """Client for Jira Cloud REST API v3. Prefers Basic auth (email + API token) when set; otherwise uses OAuth."""
 
@@ -265,6 +272,7 @@ class JiraClient:
         next_page_token: Optional[str] = None,
         fields: Optional[List[str]] = None,
         issuetype: Optional[str] = None,
+        require_parent_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Search issues using JQL via POST /rest/api/3/search/jql (GET can return 0 issues;
@@ -277,6 +285,9 @@ class JiraClient:
             base = f"project = {project}"
             if issuetype:
                 base += f' AND issuetype = "{issuetype}"'
+            if require_parent_context:
+                # Best-effort server-side narrowing; deterministic filter still runs after mapping.
+                base += ' AND (parent IS NOT EMPTY OR "Epic Link" IS NOT EMPTY)'
             jql = f"{base} ORDER BY updated DESC"
         field_list = fields or [
             'summary', 'description', 'issuetype', 'components', 'priority',
@@ -302,7 +313,8 @@ class JiraClient:
         max_results: int = 100,
         ancestor_key: Optional[str] = None,
         issuetype: Optional[str] = 'Bug',
-    ) -> List[Dict[str, Any]]:
+        require_parent_context: bool = True,
+    ) -> Dict[str, Any]:
         """
         Fetch issues for the given project and return them in Bug Triage Copilot shape.
         Jira's API returns at most 100 per request; we paginate with nextPageToken to fetch up to max_results.
@@ -320,6 +332,7 @@ class JiraClient:
                 max_results=to_fetch,
                 next_page_token=next_page_token,
                 issuetype=issuetype,
+                require_parent_context=require_parent_context,
             )
             page = data.get('issues') or []
             all_issues.extend(page)
@@ -328,9 +341,17 @@ class JiraClient:
                 break
 
         mapped = [_map_jira_issue_to_triage(issue) for issue in all_issues[:max_results]]
+        before_parent_filter = len(mapped)
+        if require_parent_context:
+            mapped = [i for i in mapped if _has_parent_context(i)]
         if ancestor_key:
             mapped = _filter_issues_under_ancestor(mapped, ancestor_key)
-        return mapped
+        return {
+            'issues': mapped,
+            'count_before_parent_filter': before_parent_filter,
+            'count_after_parent_filter': len(mapped),
+            'parent_filter_applied': bool(require_parent_context),
+        }
 
 
 def _filter_issues_under_ancestor(issues: List[Dict[str, Any]], ancestor_key: str) -> List[Dict[str, Any]]:
