@@ -10,6 +10,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_float_clamped(env_name: str, default: str, lo: float, hi: float) -> float:
+    """Parse env as float; invalid values fall back to default; clamp to [lo, hi]."""
+    try:
+        v = float(os.getenv(env_name, default))
+    except (TypeError, ValueError):
+        v = float(default)
+    return max(lo, min(hi, v))
+
+
 class Config:
     """Application configuration"""
     
@@ -106,6 +115,10 @@ class Config:
     # Default 4096 per pass — values above 4096 often return 400 from Anthropic for claude-3-haiku; set to 8192 only if your CLAUDE_MODEL supports it.
     JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS', '4096'))
     JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '4096'))
+    # Claude sampling for all backlog-overview passes (pass1/2/2b/title). Default 0 reduces run-to-run variance.
+    JIRA_BACKLOG_OVERVIEW_TEMPERATURE: float = _env_float_clamped(
+        'JIRA_BACKLOG_OVERVIEW_TEMPERATURE', '0', 0.0, 1.0
+    )
     # Optional third call: refine ## Priority review using description excerpts for keys from pass-2 reprioritization table.
     JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED: bool = os.getenv('JIRA_BACKLOG_OVERVIEW_DEEP_PASS', '1').lower() in (
         '1', 'true', 'yes',

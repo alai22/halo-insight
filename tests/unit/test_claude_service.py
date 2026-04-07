@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch, MagicMock
 from backend.services.claude_service import ClaudeService
 from backend.models.response import ClaudeResponse
 from backend.core.interfaces import IClaudeService
+from backend.core.exceptions import ConfigurationError, TimeoutError as AppTimeoutError
 
 
 class TestClaudeService:
@@ -28,7 +29,7 @@ class TestClaudeService:
         """Test ClaudeService initialization fails without API key"""
         # Mock Config.ANTHROPIC_API_KEY to be None
         with patch('backend.services.claude_service.Config.ANTHROPIC_API_KEY', None):
-            with pytest.raises(ValueError, match="API key not provided"):
+            with pytest.raises(ConfigurationError, match="API key not provided"):
                 ClaudeService(api_key=None)
     
     @patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-api-key'})
@@ -51,7 +52,27 @@ class TestClaudeService:
         assert response.content == "Hello, Claude!"
         assert response.tokens_used == 10
         mock_post.assert_called_once()
+        sent = mock_post.call_args[1]['json']
+        assert 'temperature' not in sent
     
+    @patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-api-key'})
+    @patch('backend.services.claude_service.requests.post')
+    def test_send_message_includes_temperature_when_set(self, mock_post):
+        """Explicit temperature is forwarded in the API payload."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'content': [{'type': 'text', 'text': 'ok'}],
+            'usage': {'output_tokens': 1}
+        }
+        mock_response.status_code = 200
+        mock_post.return_value = mock_response
+
+        service = ClaudeService(api_key='test-api-key')
+        service.send_message('Hello', max_tokens=10, temperature=0.0)
+
+        sent = mock_post.call_args[1]['json']
+        assert sent.get('temperature') == 0.0
+
     @patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-api-key'})
     @patch('backend.services.claude_service.requests.post')
     def test_send_message_with_system_prompt(self, mock_post):
@@ -79,7 +100,7 @@ class TestClaudeService:
         mock_post.side_effect = requests.exceptions.Timeout("Request timed out")
         
         service = ClaudeService(api_key='test-api-key')
-        with pytest.raises(TimeoutError):
+        with pytest.raises(AppTimeoutError):
             service.send_message("Hello")
     
     @patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-api-key'})

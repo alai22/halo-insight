@@ -27,7 +27,8 @@ class IClaudeService(ABC):
                     message: str, 
                     model: str = None,
                     max_tokens: int = 1000,
-                    system_prompt: Optional[str] = None) -> ClaudeResponse:
+                    system_prompt: Optional[str] = None,
+                    temperature: Optional[float] = None) -> ClaudeResponse:
         """Send a message to Claude API"""
         pass
     

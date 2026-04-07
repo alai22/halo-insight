@@ -259,6 +259,170 @@ def _validate_reprioritization_rows(
     return '\n'.join(out), {'invalid': dropped_invalid, 'mismatch': dropped_mismatch}
 
 
+_REPR_SECTION_HEADING = '### Recommended Jira priority changes'
+_REPR_BUCKET_ORDER: Tuple[Tuple[str, str], ...] = (
+    ('ios', '#### iOS'),
+    ('android', '#### Android'),
+    ('both', '#### iOS and Android'),
+    ('other', '#### Other components'),
+)
+
+
+def _issue_component_names(issue: Dict[str, Any]) -> List[str]:
+    """Jira component display names for an issue (same aggregation as overview TSV)."""
+    if not issue:
+        return []
+    comps = issue.get('components')
+    if isinstance(comps, list):
+        out = [str(c).strip() for c in comps if c is not None and str(c).strip()]
+        if out:
+            return out
+    c = issue.get('component')
+    if c is None:
+        return []
+    s = str(c).strip()
+    return [s] if s else []
+
+
+def _component_bucket_from_issue(issue: Dict[str, Any]) -> str:
+    """Partition key for reprioritization rows: ios | android | both | other."""
+    names = _issue_component_names(issue)
+    has_ios = any(n.lower() == 'ios' for n in names)
+    has_android = any(n.lower() == 'android' for n in names)
+    if has_ios and has_android:
+        return 'both'
+    if has_ios:
+        return 'ios'
+    if has_android:
+        return 'android'
+    return 'other'
+
+
+def _regroup_reprioritization_section_by_component(
+    markdown: str,
+    issues: List[Dict[str, Any]],
+) -> str:
+    """
+    After validation, split the reprioritization pipe table into per-platform tables using
+    Jira components from the same issue batch (#### subheadings only—pass2b key extraction).
+    Prose-only sections (no data rows) are left unchanged.
+    """
+    if not markdown or _REPR_SECTION_HEADING not in markdown:
+        return markdown
+
+    issues_by_key = {
+        str(i.get('key', '')).strip().upper(): i
+        for i in issues
+        if i.get('key')
+    }
+
+    lines = markdown.split('\n')
+    start: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if line.strip().startswith(_REPR_SECTION_HEADING):
+            start = idx
+            break
+    if start is None:
+        return markdown
+
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        s = lines[j].strip()
+        if s.startswith('## ') and not s.startswith('###'):
+            end = j
+            break
+
+    body = lines[start + 1 : end]
+    leading_prose: List[str] = []
+    header_line: Optional[str] = None
+    sep_line: Optional[str] = None
+    rows_by_bucket: Dict[str, List[str]] = {bid: [] for bid, _ in _REPR_BUCKET_ORDER}
+
+    i = 0
+    while i < len(body):
+        line = body[i]
+        cells = _markdown_table_row_cells(line)
+        if cells is None:
+            if header_line is None:
+                leading_prose.append(line)
+            i += 1
+            continue
+
+        c0 = (cells[0] or '').strip()
+        c0l = c0.lower()
+        if c0l.startswith('ticket'):
+            header_line = line
+            i += 1
+            if i < len(body):
+                nxt_cells = _markdown_table_row_cells(body[i])
+                if nxt_cells and _RE_HEADER_SEP.match((nxt_cells[0] or '').strip()):
+                    sep_line = body[i]
+                    i += 1
+            continue
+
+        if sep_line is None and header_line is not None and _RE_HEADER_SEP.match(c0):
+            sep_line = line
+            i += 1
+            continue
+
+        if _RE_HEADER_SEP.match(c0):
+            i += 1
+            continue
+
+        cur_rec = _repr_row_current_and_recommendation(cells)
+        ticket = (cells[0] or '').strip().upper()
+        if cur_rec and _RE_TICKET_KEY_CELL.match(ticket):
+            b = _component_bucket_from_issue(issues_by_key.get(ticket, {}))
+            rows_by_bucket[b].append(line)
+        i += 1
+
+    total_rows = sum(len(v) for v in rows_by_bucket.values())
+    if total_rows == 0:
+        return markdown
+
+    if header_line is None or sep_line is None:
+        sample: Optional[str] = None
+        for bid, _ in _REPR_BUCKET_ORDER:
+            if rows_by_bucket[bid]:
+                sample = rows_by_bucket[bid][0]
+                break
+        sc = _markdown_table_row_cells(sample) if sample else None
+        ncol = len(sc) if sc else 5
+        if ncol >= 5:
+            header_line = '| Ticket | Title | Current priority | Jira priority recommendation | Reason |'
+            sep_line = '|---|---|---|---|---|'
+        else:
+            header_line = '| Ticket | Current priority | Jira priority recommendation | Reason |'
+            sep_line = '|---|---|---|---|'
+
+    while leading_prose and not leading_prose[-1].strip():
+        leading_prose.pop()
+
+    out_section: List[str] = [lines[start].rstrip()]
+    if leading_prose:
+        out_section.append('')
+        out_section.extend(leading_prose)
+
+    first_bucket_out = True
+    for bid, h4 in _REPR_BUCKET_ORDER:
+        b_rows = rows_by_bucket[bid]
+        if not b_rows:
+            continue
+        if first_bucket_out:
+            out_section.append('')
+            first_bucket_out = False
+        else:
+            out_section.append('')
+        out_section.append(h4)
+        out_section.append('')
+        out_section.append(header_line.rstrip())
+        out_section.append(sep_line.rstrip())
+        out_section.extend(b_rows)
+
+    new_section = '\n'.join(out_section).rstrip()
+    return '\n'.join(lines[:start] + [new_section] + lines[end:])
+
+
 def _extract_reprioritization_keys(markdown: str) -> List[str]:
     """
     Parse issue keys from the pipe table under ### Recommended Jira priority changes.
@@ -467,7 +631,7 @@ _BACKLOG_OVERVIEW_SYSTEM_PASS2 = (
 
 """
     + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
-    + """**Output:** Produce **only** the markdown subsection starting with `### Recommended Jira priority changes` (see Format below). Do **not** output `## Priority review`—the application prepends backlog statistics. Do **not** output an aggregate “count by priority” table; a snapshot is injected for you. No preamble, no other `##` sections, no themes or duplicates here.
+    + """**Output:** Produce **only** the markdown subsection starting with `### Recommended Jira priority changes` (see Format below). Do **not** output `## Priority review`—the application prepends backlog statistics. Do **not** output an aggregate “count by priority” table; a snapshot is injected for you. No preamble, no other `##` sections, no themes or duplicates here. The app may regroup your **single** reprioritization table by Jira component (e.g. iOS vs Android) for display—still output **one** table here, not multiple.
 
 Assess **every** issue in the table for Jira priority vs title/metadata. **Only tabulate** tickets where you recommend changing the Jira priority field in the reprioritization table.
 
@@ -1197,6 +1361,7 @@ def _iter_backlog_overview_events(
     omitted_sections: List[str] = []
     incomplete_reasons: List[str] = []
     first_failed_optional_step: Optional[str] = None
+    overview_temperature = Config.JIRA_BACKLOG_OVERVIEW_TEMPERATURE
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1205,6 +1370,7 @@ def _iter_backlog_overview_events(
             model=None,
             max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS,
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS1,
+            temperature=overview_temperature,
         )
     except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
         logger.exception('backlog-overview: pass1 failed: %s', e)
@@ -1224,6 +1390,7 @@ def _iter_backlog_overview_events(
             model=None,
             max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
+            temperature=overview_temperature,
         )
     except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
         logger.exception('backlog-overview: pass2 failed: %s', e)
@@ -1255,6 +1422,7 @@ def _iter_backlog_overview_events(
         (r2.content or '').strip(),
         source_priorities=source_priorities,
     )
+    part2_draft = _regroup_reprioritization_section_by_component(part2_draft, batch)
     tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
     models_used: List[str] = [r1.model, r2.model]
     llm_rounds = 2
@@ -1299,6 +1467,7 @@ def _iter_backlog_overview_events(
                     model=None,
                     max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS,
                     system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2B,
+                    temperature=overview_temperature,
                 )
             except Exception as e:
                 logger.warning('backlog-overview: pass2b failed (partial overview): %s', e)
@@ -1312,6 +1481,7 @@ def _iter_backlog_overview_events(
                     (r2b.content or '').strip(),
                     source_priorities=source_priorities,
                 )
+                part2b_out = _regroup_reprioritization_section_by_component(part2b_out, batch)
                 tokens_used += getattr(r2b, 'tokens_used', 0) or 0
                 models_used.append(r2b.model)
                 llm_rounds = 3
@@ -1361,6 +1531,7 @@ def _iter_backlog_overview_events(
                     model=None,
                     max_tokens=min(250, max(120, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS // 2)),
                     system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_SCAN,
+                    temperature=overview_temperature,
                 )
             except Exception as e:
                 logger.warning('backlog-overview: title_scan failed (partial overview): %s', e)
@@ -1398,6 +1569,7 @@ def _iter_backlog_overview_events(
                             model=None,
                             max_tokens=Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS,
                             system_prompt=_BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE,
+                            temperature=overview_temperature,
                         )
                     except Exception as e:
                         logger.warning('backlog-overview: title_rewrite failed (partial overview): %s', e)
@@ -1499,6 +1671,8 @@ def backlog_overview():
     Optional `description` per issue (truncated) enables pass2b; omit deep pass via Config / env.
 
     Query: stream=1 streams NDJSON lines (progress + terminal result). Default is a single JSON response.
+
+    Env JIRA_BACKLOG_OVERVIEW_TEMPERATURE (0.0-1.0, default 0): Claude sampling for all overview passes.
     """
     if not request.is_json:
         return jsonify({'status': 'error', 'message': 'Content-Type must be application/json'}), 400
