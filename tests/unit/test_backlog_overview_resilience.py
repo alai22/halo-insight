@@ -85,7 +85,8 @@ def test_backlog_overview_structured_error_on_pass1(mock_get_container, client):
 @patch('app.get_service_container')
 def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, client, monkeypatch):
     monkeypatch.setenv('JIRA_BACKLOG_OVERVIEW_DEEP_PASS', '0')
-    monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '0')
+    monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '1')
+    monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_DISABLED', '0')
 
     pass1 = _resp('## Themes\nx\n')
     pass2 = _resp(
@@ -94,9 +95,10 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
         '| --- | --- | --- |\n'
         '| HALO-1 | Major | Keep |\n'
     )
+    title_scan = _resp('{"keys":[]}')
 
     mock_claude = MagicMock()
-    mock_claude.send_message.side_effect = [pass1, pass2]
+    mock_claude.send_message.side_effect = [pass1, pass2, title_scan]
 
     container = MagicMock()
     container.get_claude_service.return_value = mock_claude
@@ -124,3 +126,7 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
     assert 'overview' in terminal[0]
     final_md = (terminal[0].get('overview') or '').strip()
     assert final_md.startswith(pm0)
+    meta = terminal[0].get('meta') or {}
+    assert meta.get('title_rewrite_no_candidates') is True
+    assert 'No tickets were selected for title rewrite' in final_md
+    assert 'completed_steps' in meta and 'title_rewrite' in (meta.get('completed_steps') or [])

@@ -521,6 +521,7 @@ Output JSON only:
 Rules:
 - Use only keys from input.
 - Return at most 20 keys.
+- Prefer keys where the title is vague, generic, missing platform or repro context, or ambiguous—when in doubt between listing and omitting, include the key if it would help a reader.
 - No markdown, no prose."""
 
 _BACKLOG_OVERVIEW_SYSTEM_TITLE_REWRITE = """You rewrite unclear Jira titles into clearer, specific titles using metadata and description excerpts.
@@ -1126,6 +1127,16 @@ def _overview_partial_event(milestone: str, markdown: str) -> Dict[str, Any]:
     return {'type': 'partial', 'milestone': milestone, 'markdown': markdown}
 
 
+def _title_suggestions_no_candidates_markdown(max_keys: int) -> str:
+    """Explicit markdown when the title scan returns no keys (so the overview always documents title pass)."""
+    return (
+        '### Title clarity suggestions\n\n'
+        '*No tickets were selected for title rewrite in this run.* '
+        'The title scan did not flag any issue keys as unclear enough to propose new titles '
+        f'(scan cap: **{max_keys}** keys).'
+    )
+
+
 def _overview_error_result(
     exc: Exception,
     *,
@@ -1258,6 +1269,7 @@ def _iter_backlog_overview_events(
     title_rewrite_rows = 0
     title_rewrite_rows_dropped = 0
     title_rewrite_pass_applied = False
+    title_rewrite_no_candidates = False
     title_rewrite_section = ''
 
     if (
@@ -1329,7 +1341,7 @@ def _iter_backlog_overview_events(
     if 'pass2b' in completed:
         yield _overview_partial_event('after_pass2b', _join_overview_chunks(part2, part1, ''))
 
-    if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED:
+    if Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED and not Config.JIRA_BACKLOG_TITLE_REWRITE_DISABLED:
         all_keys = list(source_by_key.keys())
         max_keys = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS)
         max_rows = max(0, Config.JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS)
@@ -1410,6 +1422,11 @@ def _iter_backlog_overview_events(
                         title_rewrite_pass_applied = title_rewrite_rows > 0
                         completed.append('title_rewrite')
                         yield _overview_progress_event('title_rewrite', 'done', completed)
+                else:
+                    title_rewrite_no_candidates = True
+                    title_rewrite_section = _title_suggestions_no_candidates_markdown(max_keys)
+                    completed.append('title_rewrite')
+                    yield _overview_progress_event('title_rewrite', 'done', completed)
 
     if title_rewrite_section.strip():
         yield _overview_partial_event(
@@ -1444,11 +1461,15 @@ def _iter_backlog_overview_events(
         'priority_deep_pass_applied': deep_pass_applied,
         'priority_rows_dropped_invalid': dropped_invalid_rows,
         'priority_rows_dropped_mismatch': dropped_mismatch_rows,
-        'title_rewrite_enabled': Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED,
+        'title_rewrite_enabled': (
+            Config.JIRA_BACKLOG_TITLE_REWRITE_ENABLED and not Config.JIRA_BACKLOG_TITLE_REWRITE_DISABLED
+        ),
         'title_rewrite_candidates': title_rewrite_candidates,
         'title_rewrite_rows': title_rewrite_rows,
         'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
         'title_rewrite_pass_applied': title_rewrite_pass_applied,
+        'title_rewrite_no_candidates': title_rewrite_no_candidates,
+        'completed_steps': list(completed),
         'parent_context_filter_applied': True,
         'submitted_count_before_parent_filter': submitted_count_before_parent_filter,
         'submitted_count_after_parent_filter': submitted_count_after_parent_filter,

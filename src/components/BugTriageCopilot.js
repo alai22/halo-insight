@@ -19,6 +19,8 @@ import {
   Copy,
   X,
   RefreshCw,
+  Loader2,
+  Minus,
 } from 'lucide-react';
 import {
   PLATFORMS,
@@ -38,6 +40,109 @@ const OVERVIEW_STEP_LABELS = {
   title_scan: 'Title scan',
   title_rewrite: 'Title suggestions',
 };
+
+/** Fixed order for the visual phase rail (ids match API `step`). */
+const OVERVIEW_PHASE_RAIL = [
+  { id: 'pass1', short: 'Themes', sub: 'Pass 1' },
+  { id: 'pass2', short: 'Priority', sub: 'Pass 2' },
+  { id: 'pass2b', short: 'Deep', sub: 'Refine' },
+  { id: 'title_scan', short: 'Scan', sub: 'Titles' },
+  { id: 'title_rewrite', short: 'Rewrite', sub: 'Titles' },
+];
+
+/**
+ * Horizontal phase indicator: done / active / pending / skipped / error.
+ */
+function OverviewPhaseRail({ loading, progress, meta, titlePipelineEnabled = true }) {
+  const steps = useMemo(() => {
+    if (!titlePipelineEnabled) {
+      return OVERVIEW_PHASE_RAIL.filter((s) => !['title_scan', 'title_rewrite'].includes(s.id));
+    }
+    return OVERVIEW_PHASE_RAIL;
+  }, [titlePipelineEnabled]);
+
+  const completedSteps = useMemo(() => {
+    if (loading && progress?.completedSteps?.length) return progress.completedSteps;
+    if (!loading && meta?.completed_steps?.length) return meta.completed_steps;
+    if (progress?.completedSteps?.length) return progress.completedSteps;
+    return [];
+  }, [loading, progress, meta]);
+
+  const getStatus = useCallback(
+    (stepId) => {
+      if (completedSteps.includes(stepId)) return 'done';
+      if (progress?.step === stepId) {
+        if (progress.phase === 'start') return 'active';
+        if (progress.phase === 'error') return 'error';
+      }
+      if (
+        stepId === 'pass2b' &&
+        completedSteps.includes('title_scan') &&
+        !completedSteps.includes('pass2b')
+      ) {
+        return 'skipped';
+      }
+      if (
+        !loading &&
+        stepId === 'pass2b' &&
+        meta &&
+        meta.priority_deep_pass_applied === false &&
+        !completedSteps.includes('pass2b')
+      ) {
+        return 'skipped';
+      }
+      return 'pending';
+    },
+    [completedSteps, progress, loading, meta],
+  );
+
+  if (!loading && meta && !meta.completed_steps?.length) {
+    return null;
+  }
+
+  const gridCols = steps.length <= 3 ? 'grid-cols-3' : 'grid-cols-5';
+
+  return (
+    <div className="w-full min-w-0" aria-label="Overview generation phases">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80 mb-2">
+        AI run phases
+      </p>
+      <div className={`grid ${gridCols} gap-1 w-full max-w-3xl mx-auto`}>
+        {steps.map((step, i) => {
+          const status = getStatus(step.id);
+          const circleBase =
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 text-xs font-semibold transition-colors';
+          let circleClass = `${circleBase} border-slate-300 bg-white text-slate-500`;
+          let inner = <span className="text-[10px] tabular-nums">{i + 1}</span>;
+          if (status === 'done') {
+            circleClass = `${circleBase} border-emerald-500 bg-emerald-500 text-white`;
+            inner = <CheckCircle className="h-4 w-4" aria-hidden />;
+          } else if (status === 'active') {
+            circleClass = `${circleBase} border-amber-500 bg-amber-100 text-amber-900 ring-2 ring-amber-300/80`;
+            inner = <Loader2 className="h-4 w-4 animate-spin" aria-hidden />;
+          } else if (status === 'error') {
+            circleClass = `${circleBase} border-red-400 bg-red-50 text-red-700`;
+            inner = <AlertCircle className="h-4 w-4" aria-hidden />;
+          } else if (status === 'skipped') {
+            circleClass = `${circleBase} border-slate-200 bg-slate-50 text-slate-400 border-dashed`;
+            inner = <Minus className="h-4 w-4" aria-hidden />;
+          }
+          return (
+            <div key={step.id} className="flex flex-col items-center min-w-0">
+              <div className={circleClass} title={OVERVIEW_STEP_LABELS[step.id] || step.id}>
+                {inner}
+              </div>
+              <span className="mt-1 text-center text-[10px] font-medium leading-tight text-amber-950/90">
+                {step.short}
+              </span>
+              <span className="text-center text-[9px] text-amber-800/70 leading-tight">{step.sub}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const OVERVIEW_CONSOLE_GROUP = '[BugTriage overview] AI run';
 
@@ -1822,6 +1927,14 @@ const BugTriageCopilot = () => {
                       title suggestions: {titleSuggestionsCount}
                     </span>
                   )}
+                  {!overviewLoading && !overviewError && overviewMeta?.title_rewrite_no_candidates && (
+                    <span
+                      className="inline-flex items-center rounded-full border border-dashed border-amber-400 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900"
+                      title="Title scan ran; no issue keys were selected for proposed rewrites."
+                    >
+                      title rewrite: no candidates
+                    </span>
+                  )}
                   {overviewCacheHint && !overviewLoading && !overviewError && (
                     <span className="text-amber-800/85">{overviewCacheHint}</span>
                   )}
@@ -1868,6 +1981,18 @@ const BugTriageCopilot = () => {
                   Regenerate
                 </button>
               </div>
+            </div>
+            <div className="px-3 pb-3 border-t border-amber-200/60 bg-gradient-to-b from-amber-50/50 to-transparent">
+              {(overviewLoading || overviewMarkdown || overviewMeta) && !overviewError && (
+                <OverviewPhaseRail
+                  loading={overviewLoading}
+                  progress={overviewProgress}
+                  meta={overviewMeta}
+                  titlePipelineEnabled={
+                    overviewMeta == null || overviewMeta.title_rewrite_enabled !== false
+                  }
+                />
+              )}
             </div>
             <div className="px-3 pb-2">
               <button

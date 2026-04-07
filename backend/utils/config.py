@@ -112,8 +112,12 @@ class Config:
     )
     JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS', '40'))
     JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS', '4096'))
-    # Optional title clarity suggestions pass (kept lightweight to avoid slowing priority recommendations).
+    # Title scan + rewrite run on every backlog overview by default (unless disabled below).
     JIRA_BACKLOG_TITLE_REWRITE_ENABLED: bool = os.getenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '1').lower() in (
+        '1', 'true', 'yes',
+    )
+    # Emergency kill switch: set to 1 to skip title scan/rewrite entirely.
+    JIRA_BACKLOG_TITLE_REWRITE_DISABLED: bool = os.getenv('JIRA_BACKLOG_TITLE_REWRITE_DISABLED', '0').lower() in (
         '1', 'true', 'yes',
     )
     JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_ROWS', '5'))
