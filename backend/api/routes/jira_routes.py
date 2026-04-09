@@ -18,6 +18,16 @@ from backend.core.exceptions import AppException, ClaudeAPIError, RateLimitError
 from backend.core.exceptions import TimeoutError as AppTimeoutError
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
+from backend.services.jira_triage_scorecard import (
+    ScorecardBreakpoints,
+    ScorecardWeights,
+    build_scorecards_by_key_meta,
+    parse_scorecard_json,
+    parse_shortlist_keys_json,
+    recommendations_to_reprioritization_markdown,
+    union_shortlist_with_ga_blockers,
+    weights_config_hash,
+)
 from backend.utils.config import Config
 from backend.utils.pii_protection import create_pii_protector
 
@@ -637,7 +647,7 @@ Assess **every** issue in the table for Jira priority vs title/metadata. **Only 
 
 **Coverage (mandatory):** Pay deliberate attention to **Major**, **Normal**, and **Minor** tickets—not only Blocker/Critical. Many mis-prioritizations appear as severe user impact in the title while priority is still Normal or Major. Scan those tiers before concluding.
 
-**Row targets (when justified—do not invent recommendations):** If the issue count is **≥100**, aim for **at least 8** rows in `### Recommended Jira priority changes` when that many **distinct, justified** Raise/Lower recommendations exist. If the issue count is **≥300**, aim for **at least 15** such rows when that many exist. If fewer are genuinely justified, say so in one sentence under that subheading (do not pad with weak rows).
+**Do not pad:** Only include tickets where a Raise/Lower change is clearly justified; omit weak or uncertain rows. If none apply, state that in one sentence under the subheading (no table).
 
 For tickets in the reprioritization table, use this **exact vocabulary** for the Jira **priority field** only:
 - **Raise Jira priority** — move **up** the ladder. State the **target** level (e.g. "Raise to Blocker").
@@ -699,6 +709,78 @@ Rules:
 - Current title should reflect input title.
 - Proposed title must be materially clearer and concise.
 - No extra sections or prose."""
+
+_SCORECARD_RUBRIC_INSTRUCTIONS = """
+**Rubric (integers 1–5 each, 1 = lowest/negligible, 5 = highest/severe):**
+- **severity**: user harm / correctness. Use Halo product context: core fence, location-for-containment, geofence safety vs peripheral profile/photo/onboarding polish.
+- **frequency**: reproducibility and likelihood users hit the issue.
+- **customer_impact**: support load, churn or brand risk only when inferable from the ticket.
+- **scope**: breadth of platforms or user flows affected.
+- **release_risk**: regression or GA/release blockage risk.
+- **confidence**: strength of evidence **in the provided text only** (missing data → lower confidence).
+
+Output **JSON only** (no markdown fences):
+{"version":"1","rows":[{"key":"PROJ-123","severity":3,"frequency":2,"customer_impact":4,"scope":2,"release_risk":3,"confidence":3,"notes":{"severity":"one line","frequency":"…"}}]}
+
+Rules:
+- Exactly **one** row per issue key listed in the user message (same keys, same order if possible).
+- **notes** optional; short strings per dimension (≤120 chars each).
+- All six integers must be between 1 and 5 inclusive.
+- Use only keys from the input; do not invent issue keys.
+"""
+
+_BACKLOG_OVERVIEW_SYSTEM_PASS2_SHORTLIST = (
+    """You are an engineering lead triaging a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive the **full** backlog as **TAB-separated** lines; **priority** is the 4th column (authoritative Jira priority—not inferred from the title text).
+
+"""
+    + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
+    + """
+**Task:** Pick issue keys that most deserve **follow-up structured priority scoring** (likely mis-prioritized, high user-visible impact vs current Major/Normal/Minor, **GA-blocker** flag, or core safety/geofence/location flows).
+
+Output **JSON only**:
+{"keys":["PROJ-1","PROJ-2"]}
+
+Rules:
+- Keys must appear in the input; order by **descending** triage urgency (most important first).
+- The user message states a **shortlist cap**—return **at most** that many keys.
+- **Do not pad:** include only keys that justify scoring; fewer is fine.
+- No markdown fences, no prose outside JSON.
+"""
+)
+
+_BACKLOG_OVERVIEW_SYSTEM_PASS2_SCORECARD = (
+    """You are an engineering lead scoring Jira bugs for **Halo Collar** (pet GPS / smart collar). You receive **TAB-separated** metadata for a **subset** of issues (priority = 4th column; authoritative).
+
+"""
+    + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
+    + _SCORECARD_RUBRIC_INSTRUCTIONS
+)
+
+_BACKLOG_OVERVIEW_SCORECARD_PASS2B_EXTRA = """
+
+**Second pass (description-enriched):** After a line containing only `---`, **description_excerpts** rows are `key<TAB>excerpt`. For keys listed there, you **must** use the excerpt with title/metadata when scoring. For keys not listed, use metadata only. Re-output the **same JSON shape** (full rows for every key in the metadata table)—do not switch to markdown."""
+
+_BACKLOG_OVERVIEW_SYSTEM_PASS2B_SCORECARD = (
+    _BACKLOG_OVERVIEW_SYSTEM_PASS2_SCORECARD + _BACKLOG_OVERVIEW_SCORECARD_PASS2B_EXTRA
+)
+
+
+def _scorecard_weights_and_breakpoints() -> Tuple[ScorecardWeights, ScorecardBreakpoints]:
+    w = ScorecardWeights()
+    if Config.JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON:
+        try:
+            w = ScorecardWeights.model_validate_json(Config.JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON.strip())
+        except Exception as ex:
+            logger.warning('JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON invalid, using defaults: %s', ex)
+    b = ScorecardBreakpoints()
+    if Config.JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON:
+        try:
+            raw = json.loads(Config.JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON.strip())
+            if isinstance(raw, dict) and isinstance(raw.get('breakpoints'), list):
+                b = ScorecardBreakpoints(breakpoints=raw['breakpoints'])
+        except Exception as ex:
+            logger.warning('JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON invalid, using defaults: %s', ex)
+    return w, b
 
 
 def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
@@ -886,21 +968,52 @@ def _format_issues_for_overview_prompt(
     *,
     prompt_variant: str = 'pass1',
     description_keys_ordered: Optional[List[str]] = None,
+    keys_filter_ordered: Optional[List[str]] = None,
+    shortlist_cap: Optional[int] = None,
 ) -> str:
-    """Build user message text for Claude (pass1 / pass2 / pass2b / title_scan / title_rewrite)."""
+    """Build user message text for Claude (pass1 / pass2 / pass2b / title_scan / title_rewrite / scorecard variants)."""
+    by_key_upper = {
+        str(i.get('key', '')).strip().upper(): i
+        for i in issues
+        if i.get('key')
+    }
+    if keys_filter_ordered:
+        issue_list: List[Dict[str, Any]] = []
+        for k in keys_filter_ordered:
+            u = (k or '').strip().upper()
+            if u in by_key_upper:
+                issue_list.append(by_key_upper[u])
+    else:
+        issue_list = list(issues)
+
     if prompt_variant == 'pass2b':
         lines = [
-            f"The following {len(issues)} issues: first block is metadata for **every** issue (tab-separated). "
+            f"The following {len(issue_list)} issues: first block is metadata for **every** issue (tab-separated). "
             f"After a line that is only `---`, **description_excerpts** rows apply **only** to those keys—use them for Raise/Lower per system prompt.",
         ]
     elif prompt_variant == 'title_rewrite':
         lines = [
-            f"The following {len(issues)} issues: first block is metadata for **every** issue (tab-separated). "
+            f"The following {len(issue_list)} issues: first block is metadata for **every** issue (tab-separated). "
             f"After a line that is only `---`, **description_excerpts** rows apply **only** to those keys—use them when rewriting titles.",
         ]
+    elif prompt_variant == 'pass2_shortlist':
+        cap = int(shortlist_cap) if shortlist_cap is not None else 40
+        lines = [
+            f"The following {len(issue_list)} issues are the current filtered backlog (metadata only).",
+            f"**Shortlist cap:** return at most **{cap}** keys in the JSON array.",
+        ]
+    elif prompt_variant in ('pass2_score', 'pass2b_score'):
+        lines = [
+            f"The following {len(issue_list)} issues are the **scoring subset** (tab-separated metadata). "
+            f"You must output one scorecard row per key in this list.",
+        ]
+        if prompt_variant == 'pass2b_score':
+            lines.append(
+                "After `---`, **description_excerpts** apply only to listed keys—use them when scoring those keys."
+            )
     else:
         lines = [
-            f"The following {len(issues)} issues are the current filtered backlog (metadata only).",
+            f"The following {len(issue_list)} issues are the current filtered backlog (metadata only).",
         ]
     if truncated:
         lines.append(f"Note: Analyzing first {len(issues)} of {total_submitted} issues submitted (cap for context size).")
@@ -930,6 +1043,21 @@ def _format_issues_for_overview_prompt(
             'Raise to Blocker only when Current is Critical or lower. Self-check: target must not equal Current. '
             'For keys present in **description_excerpts** after `---`, you **must** incorporate those excerpts into judgment and Reason.'
         )
+    elif prompt_variant == 'pass2_shortlist':
+        lines.append(
+            'Your task for this message: return **only** JSON `{"keys":["PROJ-1",...]}` per the system prompt (shortlist for scoring). '
+            'No markdown, no prose.'
+        )
+    elif prompt_variant == 'pass2_score':
+        lines.append(
+            'Your task for this message: return **only** the JSON scorecard object per the system prompt (one row per issue key in the table). '
+            'No markdown tables, no `## Priority review`.'
+        )
+    elif prompt_variant == 'pass2b_score':
+        lines.append(
+            'Your task for this message: return **only** the JSON scorecard object (description-enriched pass). '
+            'One row per key in the metadata table; incorporate **description_excerpts** where provided.'
+        )
     else:
         lines.append(
             'Your task for this message: output **only** the `### Recommended Jira priority changes` subsection (and its table when applicable)—do **not** output `## Priority review` or aggregate snapshot tables. '
@@ -950,7 +1078,7 @@ def _format_issues_for_overview_prompt(
             ['key', 'title', 'type', 'priority', 'status', 'components', 'labels', 'parent', 'epic', 'flags']
         )
     )
-    for i in issues:
+    for i in issue_list:
         comps = i.get('components') or ([] if not i.get('component') else [i['component']])
         comp_s = ','.join(comps) if comps else ''
         labels = ','.join(i.get('labels') or [])
@@ -990,11 +1118,6 @@ def _format_issues_for_overview_prompt(
             'Truncated plain text; use for Jira priority judgment for these keys only.'
         )
         lines.append('\t'.join(['key', 'description_excerpt']))
-        by_key_upper = {
-            str(i.get('key', '')).strip().upper(): i
-            for i in issues
-            if i.get('key')
-        }
         for dk in description_keys_ordered:
             issue = by_key_upper.get((dk or '').strip().upper())
             key_field = _overview_tsv_field(dk)
@@ -1021,6 +1144,12 @@ def _format_issues_for_overview_prompt(
         lines.append(
             'Produce **only** the `### Recommended Jira priority changes` fragment as instructed (second pass / description excerpts).'
         )
+    elif prompt_variant == 'pass2_shortlist':
+        lines.append('Return only JSON: {"keys":[...]} matching the shortlist cap.')
+    elif prompt_variant == 'pass2_score':
+        lines.append('Return only the JSON scorecard object (version + rows) as instructed.')
+    elif prompt_variant == 'pass2b_score':
+        lines.append('Return only the JSON scorecard object (description-enriched pass).')
     else:
         lines.append(
             'Produce **only** the `### Recommended Jira priority changes` fragment as instructed in the system prompt.'
@@ -1351,6 +1480,8 @@ def _iter_backlog_overview_events(
     protector: Any,
     submitted_count_before_parent_filter: int,
     submitted_count_after_parent_filter: int,
+    *,
+    use_scorecard: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     """
     Yields progress dicts, optional partial markdown (type=='partial'), and a terminal result (type=='result').
@@ -1362,6 +1493,13 @@ def _iter_backlog_overview_events(
     incomplete_reasons: List[str] = []
     first_failed_optional_step: Optional[str] = None
     overview_temperature = Config.JIRA_BACKLOG_OVERVIEW_TEMPERATURE
+    min_scorecard_confidence = Config.JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE
+    min_scorecard_delta = Config.JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS
+    scorecards_by_key: Dict[str, Any] = {}
+    scorecard_errors: List[str] = []
+    scorecard_config_hash: Optional[str] = None
+    scorecard_shortlist_size = 0
+    scorecard_scored_keys = 0
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1383,26 +1521,6 @@ def _iter_backlog_overview_events(
     completed.append('pass1')
     yield _overview_progress_event('pass1', 'done', completed)
 
-    yield _overview_progress_event('pass2', 'start', completed)
-    try:
-        r2 = claude_service.send_message(
-            message=user_message_pass2,
-            model=None,
-            max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
-            system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
-            temperature=overview_temperature,
-        )
-    except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
-        logger.exception('backlog-overview: pass2 failed: %s', e)
-        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
-        return
-    except Exception as e:
-        logger.exception('backlog-overview: pass2 failed: %s', e)
-        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
-        return
-    completed.append('pass2')
-    yield _overview_progress_event('pass2', 'done', completed)
-
     part1 = (r1.content or '').strip()
     source_priorities = {
         str(i.get('key', '')).strip().upper(): (_normalize_priority_label(i.get('priority')) or '')
@@ -1418,14 +1536,126 @@ def _iter_backlog_overview_events(
         for i in batch
         if i.get('key')
     }
+
+    yield _overview_progress_event('pass2', 'start', completed)
+    try:
+        if use_scorecard:
+            w_sc, b_sc = _scorecard_weights_and_breakpoints()
+            scorecard_config_hash = weights_config_hash(w_sc, b_sc)
+            msg_sl = _format_issues_for_overview_prompt(
+                batch,
+                truncated,
+                total_submitted,
+                prompt_variant='pass2_shortlist',
+                shortlist_cap=Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS,
+            )
+            if protector:
+                msg_sl = protector.redact_text(msg_sl)
+            r_sl = claude_service.send_message(
+                message=msg_sl,
+                model=None,
+                max_tokens=Config.JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS,
+                system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2_SHORTLIST,
+                temperature=overview_temperature,
+            )
+            valid_keys_set = set(source_by_key.keys())
+            sl_keys, sl_errs = parse_shortlist_keys_json(
+                r_sl.content or '',
+                valid_keys_set,
+                Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS,
+            )
+            scorecard_errors.extend(sl_errs)
+            scorecard_shortlist_size = len(sl_keys)
+            if Config.JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS:
+                scored_keys = union_shortlist_with_ga_blockers(
+                    sl_keys,
+                    batch,
+                    Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS,
+                )
+            else:
+                cap = max(0, Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS)
+                scored_keys = sl_keys[:cap] if cap else []
+            scorecard_scored_keys = len(scored_keys)
+            tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r_sl, 'tokens_used', 0) or 0)
+            models_used = [r1.model, r_sl.model]
+            llm_rounds = 2
+            if not scored_keys:
+                part2_draft = (
+                    '### Recommended Jira priority changes\n\n'
+                    '*No keys were selected for scorecard triage in this run.*'
+                )
+            else:
+                msg_sc = _format_issues_for_overview_prompt(
+                    batch,
+                    truncated,
+                    total_submitted,
+                    prompt_variant='pass2_score',
+                    keys_filter_ordered=scored_keys,
+                )
+                if protector:
+                    msg_sc = protector.redact_text(msg_sc)
+                r_sc = claude_service.send_message(
+                    message=msg_sc,
+                    model=None,
+                    max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
+                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2_SCORECARD,
+                    temperature=overview_temperature,
+                )
+                tokens_used += getattr(r_sc, 'tokens_used', 0) or 0
+                models_used.append(r_sc.model)
+                llm_rounds = 3
+                batch_parsed, perrs = parse_scorecard_json(r_sc.content or '')
+                scorecard_errors.extend(perrs)
+                if batch_parsed and batch_parsed.rows:
+                    part2_draft = recommendations_to_reprioritization_markdown(
+                        batch_parsed,
+                        source_by_key,
+                        w_sc,
+                        b_sc,
+                        min_scorecard_confidence,
+                        min_scorecard_delta,
+                    )
+                    scorecards_by_key = build_scorecards_by_key_meta(
+                        batch_parsed,
+                        source_by_key,
+                        w_sc,
+                        b_sc,
+                        min_scorecard_confidence,
+                        min_scorecard_delta,
+                    )
+                else:
+                    part2_draft = (
+                        '### Recommended Jira priority changes\n\n'
+                        '*Scorecard JSON was missing, empty, or could not be parsed.*'
+                    )
+        else:
+            r2 = claude_service.send_message(
+                message=user_message_pass2,
+                model=None,
+                max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS,
+                system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2,
+                temperature=overview_temperature,
+            )
+            part2_draft = (r2.content or '').strip()
+            tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
+            models_used = [r1.model, r2.model]
+            llm_rounds = 2
+    except (RateLimitError, AppTimeoutError, ClaudeAPIError, AppException) as e:
+        logger.exception('backlog-overview: pass2 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
+        return
+    except Exception as e:
+        logger.exception('backlog-overview: pass2 failed: %s', e)
+        yield _overview_error_result(e, failed_step='pass2', completed_steps=completed)
+        return
+    completed.append('pass2')
+    yield _overview_progress_event('pass2', 'done', completed)
+
     part2_draft, dropped2 = _validate_reprioritization_rows(
-        (r2.content or '').strip(),
+        part2_draft,
         source_priorities=source_priorities,
     )
     part2_draft = _regroup_reprioritization_section_by_component(part2_draft, batch)
-    tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r2, 'tokens_used', 0) or 0)
-    models_used: List[str] = [r1.model, r2.model]
-    llm_rounds = 2
     part2 = _assemble_priority_review_with_snapshot(batch, part2_draft)
     yield _overview_partial_event('after_pass2', _join_overview_chunks(part2, part1, ''))
     snapshot_stats = _compute_backlog_snapshot_stats(batch)
@@ -1451,13 +1681,25 @@ def _iter_backlog_overview_events(
             if len(deep_keys) > max_deep:
                 deep_keys = deep_keys[:max_deep]
             deep_key_count = len(deep_keys)
-            user_message_pass2b = _format_issues_for_overview_prompt(
-                batch,
-                truncated,
-                total_submitted,
-                prompt_variant='pass2b',
-                description_keys_ordered=deep_keys,
-            )
+            if use_scorecard:
+                user_message_pass2b = _format_issues_for_overview_prompt(
+                    batch,
+                    truncated,
+                    total_submitted,
+                    prompt_variant='pass2b_score',
+                    keys_filter_ordered=deep_keys,
+                    description_keys_ordered=deep_keys,
+                )
+                pass2b_system = _BACKLOG_OVERVIEW_SYSTEM_PASS2B_SCORECARD
+            else:
+                user_message_pass2b = _format_issues_for_overview_prompt(
+                    batch,
+                    truncated,
+                    total_submitted,
+                    prompt_variant='pass2b',
+                    description_keys_ordered=deep_keys,
+                )
+                pass2b_system = _BACKLOG_OVERVIEW_SYSTEM_PASS2B
             if protector:
                 user_message_pass2b = protector.redact_text(user_message_pass2b)
             yield _overview_progress_event('pass2b', 'start', completed)
@@ -1466,7 +1708,7 @@ def _iter_backlog_overview_events(
                     message=user_message_pass2b,
                     model=None,
                     max_tokens=Config.JIRA_BACKLOG_OVERVIEW_PASS2B_MAX_TOKENS,
-                    system_prompt=_BACKLOG_OVERVIEW_SYSTEM_PASS2B,
+                    system_prompt=pass2b_system,
                     temperature=overview_temperature,
                 )
             except Exception as e:
@@ -1477,8 +1719,34 @@ def _iter_backlog_overview_events(
                 first_failed_optional_step = first_failed_optional_step or 'pass2b'
                 yield _overview_progress_event('pass2b', 'error', completed)
             else:
+                if use_scorecard:
+                    w_b, b_b = _scorecard_weights_and_breakpoints()
+                    batch_b, perrs_b = parse_scorecard_json(r2b.content or '')
+                    scorecard_errors.extend(perrs_b)
+                    if batch_b and batch_b.rows:
+                        part2b_out = recommendations_to_reprioritization_markdown(
+                            batch_b,
+                            source_by_key,
+                            w_b,
+                            b_b,
+                            min_scorecard_confidence,
+                            min_scorecard_delta,
+                        )
+                        scorecards_by_key = build_scorecards_by_key_meta(
+                            batch_b,
+                            source_by_key,
+                            w_b,
+                            b_b,
+                            min_scorecard_confidence,
+                            min_scorecard_delta,
+                        )
+                        scorecard_config_hash = weights_config_hash(w_b, b_b)
+                    else:
+                        part2b_out = ''
+                else:
+                    part2b_out = (r2b.content or '').strip()
                 part2b_out, dropped2b = _validate_reprioritization_rows(
-                    (r2b.content or '').strip(),
+                    part2b_out,
                     source_priorities=source_priorities,
                 )
                 part2b_out = _regroup_reprioritization_section_by_component(part2b_out, batch)
@@ -1496,9 +1764,10 @@ def _iter_backlog_overview_events(
                     completed.append('pass2b')
                     yield _overview_progress_event('pass2b', 'done', completed)
                     logger.info(
-                        'backlog-overview: pass2b description refine issues=%s keys=%s',
+                        'backlog-overview: pass2b description refine issues=%s keys=%s scorecard=%s',
                         len(batch),
                         deep_key_count,
+                        use_scorecard,
                     )
                 else:
                     logger.warning(
@@ -1650,6 +1919,13 @@ def _iter_backlog_overview_events(
         'omitted_sections': omitted_sections,
         'incomplete_reason': '; '.join(incomplete_reasons) if incomplete_reasons else None,
         'failed_step': first_failed_optional_step,
+        'scorecard_enabled': use_scorecard,
+        'scorecards_by_key': scorecards_by_key if use_scorecard else {},
+        'scorecard_config_hash': scorecard_config_hash,
+        'scorecard_schema_version': Config.JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION if use_scorecard else None,
+        'scorecard_shortlist_size': scorecard_shortlist_size if use_scorecard else None,
+        'scorecard_scored_keys': scorecard_scored_keys if use_scorecard else None,
+        'scorecard_errors': scorecard_errors[:25] if use_scorecard else [],
     }
     yield {
         'type': 'result',
@@ -1669,6 +1945,12 @@ def backlog_overview():
     Flow: pass1 (themes/duplicates), pass2 (priority review from titles/metadata), optional pass2b
     (re-does ## Priority review with description excerpts for keys that appeared in the reprioritization table).
     Optional `description` per issue (truncated) enables pass2b; omit deep pass via Config / env.
+
+    When JIRA_TRIAGE_SCORECARD_ENABLED=1: pass2 becomes JSON shortlist → JSON scorecard → deterministic
+    Raise/Lower from weighted rubric + thresholds; optional pass2b re-scores with description excerpts.
+    See env: JIRA_TRIAGE_SCORECARD_MAX_KEYS, JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON,
+    JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON, JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE,
+    JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS.
 
     Query: stream=1 streams NDJSON lines (progress + terminal result). Default is a single JSON response.
 
@@ -1707,18 +1989,24 @@ def backlog_overview():
     truncated = total_submitted > _OVERVIEW_MAX_ISSUES
     batch = sanitized[:_OVERVIEW_MAX_ISSUES]
 
+    use_scorecard = Config.JIRA_TRIAGE_SCORECARD_ENABLED
     user_message_pass1 = _format_issues_for_overview_prompt(
         batch, truncated, total_submitted, prompt_variant='pass1'
     )
-    user_message_pass2 = _format_issues_for_overview_prompt(
-        batch, truncated, total_submitted, prompt_variant='pass2'
+    user_message_pass2 = (
+        ''
+        if use_scorecard
+        else _format_issues_for_overview_prompt(
+            batch, truncated, total_submitted, prompt_variant='pass2'
+        )
     )
 
     pii_config = Config.get_pii_config()
     protector = create_pii_protector(pii_config) if pii_config.get('redact_mode') else None
     if protector:
         user_message_pass1 = protector.redact_text(user_message_pass1)
-        user_message_pass2 = protector.redact_text(user_message_pass2)
+        if user_message_pass2:
+            user_message_pass2 = protector.redact_text(user_message_pass2)
 
     service_container = getattr(g, 'service_container', None)
     if not service_container:
@@ -1748,6 +2036,7 @@ def backlog_overview():
             protector,
             submitted_count_before_parent_filter,
             submitted_count_after_parent_filter,
+            use_scorecard=use_scorecard,
         )
 
     if use_stream:

@@ -1785,6 +1785,101 @@ const BugTriageCopilot = () => {
                   </div>
                 </section>
               )}
+
+              {overviewMeta?.scorecard_enabled && (
+                <section className="min-w-0 mt-3 pt-2 border-t border-slate-200/80">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                    Scorecard triage
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mb-2">
+                    Structured rubric + server-side thresholds produced the priority table. Config hash lets you
+                    compare runs.
+                  </p>
+                  <dl className="grid gap-1 text-[11px] sm:text-xs text-slate-700 mb-3">
+                    <div className="flex flex-wrap gap-x-2">
+                      <dt className="text-slate-500">Schema</dt>
+                      <dd className="font-mono tabular-nums">
+                        {overviewMeta.scorecard_schema_version ?? '—'}
+                      </dd>
+                    </div>
+                    <div className="flex flex-wrap gap-x-2">
+                      <dt className="text-slate-500">Config hash</dt>
+                      <dd className="font-mono text-[10px] break-all">
+                        {overviewMeta.scorecard_config_hash || '—'}
+                      </dd>
+                    </div>
+                    <div className="flex flex-wrap gap-x-2">
+                      <dt className="text-slate-500">Shortlist / scored keys</dt>
+                      <dd className="tabular-nums">
+                        {overviewMeta.scorecard_shortlist_size ?? '—'} /{' '}
+                        {overviewMeta.scorecard_scored_keys ?? '—'}
+                      </dd>
+                    </div>
+                  </dl>
+                  {Array.isArray(overviewMeta.scorecard_errors) &&
+                    overviewMeta.scorecard_errors.length > 0 && (
+                      <div className="mb-3 text-[11px] text-amber-900 bg-amber-50 border border-amber-200/80 rounded-md px-2 py-1.5">
+                        <span className="font-semibold">Parse notes: </span>
+                        {overviewMeta.scorecard_errors.join(' · ')}
+                      </div>
+                    )}
+                  {(() => {
+                    const sc = overviewMeta.scorecards_by_key;
+                    if (!sc || typeof sc !== 'object') return null;
+                    const entries = Object.entries(sc);
+                    const withRec = entries.filter(([, v]) => v && v.recommendation);
+                    const rest = entries.filter(([, v]) => !v || !v.recommendation);
+                    const rowBlock = (key, v) => (
+                      <details
+                        key={key}
+                        className="border border-slate-200 rounded-md bg-white mb-1.5 px-2 py-1"
+                        open={Boolean(v.recommendation)}
+                      >
+                        <summary className="cursor-pointer text-[11px] font-medium text-slate-800">
+                          {key}
+                          {v.recommendation ? (
+                            <span className="ml-2 font-normal text-slate-600">
+                              {v.recommendation.action} → {v.recommendation.target} (score {v.computed_score}
+                              , implied {v.implied_priority})
+                            </span>
+                          ) : (
+                            <span className="ml-2 font-normal text-slate-500">
+                              no threshold crossing (implied {v.implied_priority}, score {v.computed_score})
+                            </span>
+                          )}
+                        </summary>
+                        <div className="mt-1.5 text-[10px] text-slate-600 grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-0.5">
+                          <span>severity {v.severity}</span>
+                          <span>frequency {v.frequency}</span>
+                          <span>customer_impact {v.customer_impact}</span>
+                          <span>scope {v.scope}</span>
+                          <span>release_risk {v.release_risk}</span>
+                          <span>confidence {v.confidence}</span>
+                        </div>
+                        {v.recommendation?.reason ? (
+                          <p className="mt-1 text-[10px] text-slate-600 break-words">{v.recommendation.reason}</p>
+                        ) : null}
+                      </details>
+                    );
+                    return (
+                      <div className="max-h-64 overflow-y-auto pr-0.5">
+                        {withRec.length ? (
+                          <p className="text-[10px] font-semibold text-slate-500 mb-1">Recommendations</p>
+                        ) : null}
+                        {withRec.map(([k, v]) => rowBlock(k, v))}
+                        {rest.length ? (
+                          <details className="mt-2 text-[11px]">
+                            <summary className="cursor-pointer text-slate-600">
+                              Other scored tickets ({rest.length})
+                            </summary>
+                            <div className="mt-1">{rest.map(([k, v]) => rowBlock(k, v))}</div>
+                          </details>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+                </section>
+              )}
             </div>
           )}
         </div>

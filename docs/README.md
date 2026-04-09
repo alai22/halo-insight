@@ -22,6 +22,8 @@ All documentation has been consolidated into the main `README.md` file in the pr
 - Troubleshooting
 - Production considerations
 
+**Jira Bug Triage (scorecard):** [jira-bug-triage-scorecard.md](jira-bug-triage-scorecard.md) — environment variables and scorecard vs legacy backlog overview.
+
 ## Why This Change?
 
 The original documentation was fragmented across multiple files with overlapping content, making it difficult for users to find the information they needed. The consolidated `README.md` provides a single source of truth with all necessary information organized logically.

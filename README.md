@@ -161,6 +161,12 @@ Search through conversation data using keyword queries.
 ### 3. Ask Claude (RAG) - **Default Mode**
 RAG-powered analysis where Claude plans, retrieves, and analyzes conversation data to answer complex questions.
 
+### 4. Bug Triage Copilot (Jira)
+Jira-linked bug backlog views and AI backlog overview (`/api/jira/backlog-overview`). Optional **scorecard mode** uses a structured rubric and server-side thresholds for more repeatable Raise/Lower suggestions.
+
+- **Configuration:** environment variables on `Config` in `backend/utils/config.py` (loaded from `.env` via `load_dotenv`).
+- **Details:** see [docs/jira-bug-triage-scorecard.md](docs/jira-bug-triage-scorecard.md) and commented examples in `env.example`.
+
 ## 🌐 Deployment Options
 
 ### Option A: EC2 Deployment
