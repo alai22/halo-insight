@@ -138,15 +138,11 @@ echo ℹ Deploying application...
 
 REM Build and deploy the application
 echo ✓ Building Docker image...
-docker build -t gladly-conversation-analyzer:%ENVIRONMENT% .
+docker build -t halo-insight:%ENVIRONMENT% .
 
-REM Stop existing container if running
-docker ps -q -f name=gladly-prod >nul 2>&1
-if not errorlevel 1 (
-    echo ✓ Stopping existing container...
-    docker stop gladly-prod
-    docker rm gladly-prod
-)
+REM Remove existing container if present (running or stopped)
+echo ✓ Removing existing container if present...
+docker rm -f gladly-prod >nul 2>&1
 
 echo ✓ Deploying application container...
 docker run -d ^
@@ -159,7 +155,7 @@ docker run -d ^
     -e AWS_DEFAULT_REGION="%AWS_REGION%" ^
     -e AWS_REGION="%AWS_REGION%" ^
     --name gladly-prod ^
-    gladly-conversation-analyzer:%ENVIRONMENT%
+    halo-insight:%ENVIRONMENT%
 
 REM Wait for application to start
 echo ✓ Waiting for application to start...

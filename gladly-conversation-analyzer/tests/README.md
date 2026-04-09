@@ -140,7 +140,7 @@ Tests should be run automatically in CI/CD pipelines. The `pytest.ini` configura
 
 Make sure you're running tests from the project root:
 ```bash
-cd /path/to/gladly-conversation-analyzer
+cd /path/to/halo-insight
 pytest
 ```
 

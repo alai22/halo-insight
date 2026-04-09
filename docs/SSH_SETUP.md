@@ -16,7 +16,7 @@ You need the private key file (`gladly-key.pem` or similar) that was used when c
 
 **Keep the key outside this repo and maintain it separately.**
 
-- **Do not** put it inside the `gladly-conversation-analyzer` project folder. Even though `*.pem` is in `.gitignore`, project folders get copied, shared, and deleted; keys should live in a dedicated place.
+- **Do not** put it inside the `halo-insight` project folder. Even though `*.pem` is in `.gitignore`, project folders get copied, shared, and deleted; keys should live in a dedicated place.
 - **Recommended (Linux/Mac):** Put it in your SSH directory with your other keys, e.g. `~/.ssh/gladly-key.pem`. That keeps all keys in one place and makes the path in `~/.ssh/config` simple and consistent across machines.
 - **Windows:** Use a dedicated folder outside any repo, e.g. `C:\Users\<username>\.ssh\gladly-key.pem` or another path you use only for keys.
 

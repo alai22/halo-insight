@@ -57,7 +57,7 @@ Parameters:
   
   EnvironmentName:
     Type: String
-    Default: gladly-production
+    Default: halo-insight-production
     Description: Environment name for resource identification
 
 # Resources

@@ -93,8 +93,8 @@ If you already have an SSL certificate in AWS Certificate Manager:
 
 ```bash
 # Clone your repository (if not already done)
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight
+cd halo-insight
 
 # Set your environment variables
 export ANTHROPIC_API_KEY="your-anthropic-api-key"

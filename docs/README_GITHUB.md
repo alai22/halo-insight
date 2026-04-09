@@ -12,8 +12,8 @@ A powerful web interface for analyzing customer support conversations using Clau
 
 ### 1. Clone and Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Copy environment template
 cp env.example .env

@@ -12,7 +12,7 @@
 ### Step 1: Push to GitHub
 ```bash
 # Create repository on GitHub first, then:
-git remote add origin https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
+git remote add origin https://github.com/YOUR_USERNAME/halo-insight.git
 git branch -M main
 git push -u origin main
 ```
@@ -60,8 +60,8 @@ exit
 ssh -i your-key.pem ec2-user@YOUR_EC2_PUBLIC_IP
 
 # Clone your repository
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Set environment variables
 export ANTHROPIC_API_KEY="your-anthropic-api-key"

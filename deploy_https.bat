@@ -191,7 +191,10 @@ echo ℹ Deploying application...
 
 REM Build and deploy the application
 echo ✓ Building Docker image...
-docker build -t gladly-conversation-analyzer:%ENVIRONMENT% .
+docker build -t halo-insight:%ENVIRONMENT% .
+
+echo ✓ Removing existing container if present...
+docker rm -f gladly-prod >nul 2>&1
 
 echo ✓ Deploying application container...
 docker run -d ^
@@ -206,7 +209,7 @@ docker run -d ^
     -e AWS_ACCESS_KEY_ID="%AWS_ACCESS_KEY_ID%" ^
     -e AWS_SECRET_ACCESS_KEY="%AWS_SECRET_ACCESS_KEY%" ^
     --name gladly-prod ^
-    gladly-conversation-analyzer:%ENVIRONMENT%
+    halo-insight:%ENVIRONMENT%
 
 REM Wait for application to start
 echo ✓ Waiting for application to start...

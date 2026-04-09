@@ -39,7 +39,7 @@ variable "instance_type" {
 variable "github_repository" {
   description = "GitHub repository URL for cloning"
   type        = string
-  default     = "https://github.com/YOUR_USERNAME/gladly-conversation-analyzer"
+  default     = "https://github.com/YOUR_USERNAME/halo-insight"
   
   validation {
     condition     = can(regex("^https://github\\.com/.+", var.github_repository))

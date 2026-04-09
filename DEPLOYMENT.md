@@ -29,7 +29,7 @@ git add .
 git commit -m "Initial commit: Gladly conversation analyzer"
 
 # Create repository on GitHub, then connect:
-git remote add origin https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
+git remote add origin https://github.com/YOUR_USERNAME/halo-insight.git
 git branch -M main
 git push -u origin main
 ```
@@ -124,8 +124,8 @@ exit
 #### Step 3: Deploy Application
 ```bash
 # Clone your repository
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Build and deploy
 chmod +x deploy.sh
@@ -137,16 +137,16 @@ export AWS_SECRET_ACCESS_KEY="your-secret-key"
 
 # Or transfer pre-built image from local machine:
 # From local machine:
-docker save gladly-conversation-analyzer:production | gzip > gladly-production.tar.gz
-scp -i your-key.pem gladly-production.tar.gz ec2-user@your-ec2-ip:~/
+docker save halo-insight:production | gzip > halo-insight-production.tar.gz
+scp -i your-key.pem halo-insight-production.tar.gz ec2-user@your-ec2-ip:~/
 
 # On EC2:
-gunzip -c gladly-production.tar.gz | sudo docker load
+gunzip -c halo-insight-production.tar.gz | sudo docker load
 sudo docker run -d -p 80:5000 --restart unless-stopped \
   --name gladly-app \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   -e S3_BUCKET_NAME="$S3_BUCKET_NAME" \
-  gladly-conversation-analyzer:production
+  halo-insight:production
 ```
 
 #### Step 4: Set up Auto-scaling (Optional)

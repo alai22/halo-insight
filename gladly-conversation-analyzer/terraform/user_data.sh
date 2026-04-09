@@ -23,8 +23,8 @@ chmod +x /usr/local/bin/docker-compose
 
 # Clone repository
 cd /home/ec2-user
-git clone ${github_repository} gladly-conversation-analyzer
-cd gladly-conversation-analyzer
+git clone ${github_repository} halo-insight
+cd halo-insight
 
 # Create environment file from template
 if [ ! -f .env ]; then
@@ -48,7 +48,7 @@ cat > /home/ec2-user/start-gladly.sh << 'EOF'
 #!/bin/bash
 set -e
 
-cd /home/ec2-user/gladly-conversation-analyzer
+cd /home/ec2-user/halo-insight
 
 # Log startup
 echo "Starting Gladly deployment at $(date)" >> /var/log/gladly-deploy.log

@@ -185,7 +185,10 @@ print_info "Deploying application..."
 
 # Build and deploy the application
 print_status "Building Docker image..."
-docker build -t gladly-conversation-analyzer:$ENVIRONMENT .
+docker build -t halo-insight:$ENVIRONMENT .
+
+print_status "Removing existing container if present..."
+docker rm -f gladly-prod 2>/dev/null || true
 
 print_status "Deploying application container..."
 docker run -d \
@@ -200,7 +203,7 @@ docker run -d \
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
     --name gladly-prod \
-    gladly-conversation-analyzer:$ENVIRONMENT
+    halo-insight:$ENVIRONMENT
 
 # Wait for application to start
 print_status "Waiting for application to start..."

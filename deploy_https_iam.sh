@@ -148,14 +148,11 @@ print_info "Deploying application..."
 
 # Build and deploy the application
 print_status "Building Docker image..."
-docker build -t gladly-conversation-analyzer:$ENVIRONMENT .
+docker build -t halo-insight:$ENVIRONMENT .
 
-# Stop existing container if running
-if docker ps -q -f name=gladly-prod | grep -q .; then
-    print_status "Stopping existing container..."
-    docker stop gladly-prod
-    docker rm gladly-prod
-fi
+# Remove existing container if present (running or stopped)
+print_status "Removing existing container if present..."
+docker rm -f gladly-prod 2>/dev/null || true
 
 print_status "Deploying application container..."
 docker run -d \
@@ -168,7 +165,7 @@ docker run -d \
     -e AWS_DEFAULT_REGION="${AWS_REGION}" \
     -e AWS_REGION="${AWS_REGION}" \
     --name gladly-prod \
-    gladly-conversation-analyzer:$ENVIRONMENT
+    halo-insight:$ENVIRONMENT
 
 # Wait for application to start
 print_status "Waiting for application to start..."

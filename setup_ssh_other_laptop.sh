@@ -6,7 +6,7 @@ echo "🔧 Setting up SSH config for gladly-ec2..."
 
 # Step 1: Check if key file exists
 echo ""
-read -p "Enter the full path to your gladly-key.pem file (e.g., ~/Code/gladly-conversation-analyzer/gladly-key.pem): " keyFile
+read -p "Enter the full path to your gladly-key.pem file (e.g., ~/Code/halo-insight/gladly-key.pem): " keyFile
 
 # Expand ~ to home directory
 keyFile="${keyFile/#\~/$HOME}"
@@ -14,7 +14,7 @@ keyFile="${keyFile/#\~/$HOME}"
 if [ ! -f "$keyFile" ]; then
     echo "❌ ERROR: Key file not found at: $keyFile"
     echo "Please copy the key file from your Windows laptop first!"
-    echo "The key file should be at: C:\\Users\\alai2\\Code\\gladly-conversation-analyzer\\gladly-key.pem"
+    echo "The key file should be at: C:\\Users\\alai2\\Code\\halo-insight\\gladly-key.pem"
     exit 1
 fi
 

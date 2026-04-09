@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 # Default values
 ENVIRONMENT=${1:-development}
 REGION=${2:-us-east-1}
-PROJECT_NAME=${3:-gladly-conversation-analyzer}
+PROJECT_NAME=${3:-halo-insight}
 
 print_status() {
     echo -e "${GREEN}✓${NC} $1"
@@ -121,12 +121,9 @@ case $ENVIRONMENT in
         print_warning "Make sure all required environment variables are set!"
         print_status "Starting container as daemon..."
         
-        # Stop existing container if running
-        if docker ps -q -f name=gladly-prod | grep -q .; then
-            print_status "Stopping existing container..."
-            docker stop gladly-prod
-            docker rm gladly-prod
-        fi
+        # Remove existing container if present (running or stopped — name must be free)
+        print_status "Removing existing container if present..."
+        docker rm -f gladly-prod 2>/dev/null || true
         
         # Use --env-file to load all variables from .env (handles spaces and special chars)
         # Also explicitly pass critical variables as -e flags to ensure they're set

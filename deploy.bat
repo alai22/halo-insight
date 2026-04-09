@@ -12,7 +12,7 @@ set "REGION=%2"
 if "%REGION%"=="" set "REGION=us-east-1"
 
 set "PROJECT_NAME=%3"
-if "%PROJECT_NAME%"=="" set "PROJECT_NAME=gladly-conversation-analyzer"
+if "%PROJECT_NAME%"=="" set "PROJECT_NAME=halo-insight"
 
 REM Check if Docker is running
 docker info >nul 2>&1
@@ -52,6 +52,8 @@ if "%ENVIRONMENT%"=="development" (
     echo ✓ Deploying for production...
     echo ⚠ Make sure to set all required environment variables!
     echo ✓ Starting container as daemon...
+    echo ✓ Removing existing container if present...
+    docker rm -f gladly-prod >nul 2>&1
     docker run -d ^
         -p 80:5000 ^
         --restart unless-stopped ^

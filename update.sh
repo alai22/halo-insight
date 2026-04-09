@@ -2,7 +2,7 @@
 echo "🔄 Updating Gladly application..."
 
 # Navigate to project directory
-cd ~/gladly-conversation-analyzer
+cd ~/halo-insight
 
 # Pull latest changes
 echo "📥 Pulling latest changes from GitHub..."

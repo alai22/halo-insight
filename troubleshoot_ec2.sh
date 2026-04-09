@@ -143,9 +143,9 @@ print_info "Step 7: Check Application Files"
 echo "-----------------------------"
 
 # Check if application files exist
-if [ -d "/home/ec2-user/gladly-conversation-analyzer" ]; then
+if [ -d "/home/ec2-user/halo-insight" ]; then
     print_status "Application directory exists"
-    cd /home/ec2-user/gladly-conversation-analyzer
+    cd /home/ec2-user/halo-insight
     
     # Check key files
     for file in "app.py" "serve.py" "Dockerfile" "requirements.txt"; do
@@ -177,15 +177,15 @@ echo "   sudo docker stop gladly-prod"
 echo "   sudo docker rm gladly-prod"
 echo ""
 echo "2. Rebuild and restart:"
-echo "   cd /home/ec2-user/gladly-conversation-analyzer"
-echo "   sudo docker build -t gladly-conversation-analyzer:production ."
+echo "   cd /home/ec2-user/halo-insight"
+echo "   sudo docker build -t halo-insight:production ."
 echo "   sudo docker run -d -p 80:5000 --restart unless-stopped \\"
 echo "     -e ANTHROPIC_API_KEY=\$ANTHROPIC_API_KEY \\"
 echo "     -e S3_BUCKET_NAME=\$S3_BUCKET_NAME \\"
 echo "     -e AWS_ACCESS_KEY_ID=\$AWS_ACCESS_KEY_ID \\"
 echo "     -e AWS_SECRET_ACCESS_KEY=\$AWS_SECRET_ACCESS_KEY \\"
 echo "     --name gladly-prod \\"
-echo "     gladly-conversation-analyzer:production"
+echo "     halo-insight:production"
 echo ""
 echo "3. Check logs:"
 echo "   sudo docker logs gladly-prod -f"

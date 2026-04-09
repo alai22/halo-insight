@@ -12,8 +12,8 @@ A powerful web interface for analyzing customer support conversations using Clau
 
 ### 1. Clone and Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Copy environment template
 cp env.example .env
@@ -204,8 +204,8 @@ exit
 **On Linux/Mac:**
 ```bash
 # Clone your repository
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Build and deploy
 chmod +x deploy.sh
@@ -219,8 +219,8 @@ export AWS_SECRET_ACCESS_KEY="your-secret-key"
 **On Windows:**
 ```cmd
 # Clone your repository
-git clone https://github.com/YOUR_USERNAME/gladly-conversation-analyzer.git
-cd gladly-conversation-analyzer
+git clone https://github.com/YOUR_USERNAME/halo-insight.git
+cd halo-insight
 
 # Build and deploy
 set ANTHROPIC_API_KEY=your-api-key
