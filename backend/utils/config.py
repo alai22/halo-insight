@@ -137,7 +137,7 @@ class Config:
     JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_KEYS', '10'))
     JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_TITLE_REWRITE_MAX_TOKENS', '700'))
 
-    # Jira triage scorecard (optional): shortlist JSON → rubric JSON → deterministic Raise/Lower from thresholds.
+    # Jira triage scorecard (optional): shortlist JSON → rubric JSON (v2, 14-point) → deterministic Raise/Lower.
     # Default off: same backlog-overview flow as before; enable per env. See docs/jira-bug-triage-scorecard.md
     JIRA_TRIAGE_SCORECARD_ENABLED: bool = os.getenv('JIRA_TRIAGE_SCORECARD_ENABLED', '0').lower() in (
         '1', 'true', 'yes',
@@ -146,15 +146,17 @@ class Config:
     JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS: bool = os.getenv(
         'JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS', '1'
     ).lower() in ('1', 'true', 'yes')
+    # Legacy v1 scorecard only (ignored for schema v2).
     JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE: int = max(
         1, min(5, int(os.getenv('JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE', '2')))
     )
     JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS: int = max(
         1, min(5, int(os.getenv('JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS', '1')))
     )
+    # Legacy v1 scorecard only (ignored for schema v2).
     JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON: Optional[str] = os.getenv('JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON')
     JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON: Optional[str] = os.getenv('JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON')
-    JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION: str = os.getenv('JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION', '1')
+    JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION: str = os.getenv('JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION', '2')
     JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS: int = int(
         os.getenv('JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS', '1536')
     )

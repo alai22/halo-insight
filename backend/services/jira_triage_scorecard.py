@@ -1,5 +1,6 @@
 """
-Deterministic Jira triage scorecard: parse LLM rubric JSON, compute implied priority, emit Raise/Lower rows.
+Deterministic Jira triage scorecard (v2): parse LLM rubric JSON (14-point additive rubric),
+compute GA verdict + implied Jira priority on the server, emit Raise/Lower rows.
 
 Used when JIRA_TRIAGE_SCORECARD_ENABLED; keeps markdown table output compatible with _validate_reprioritization_rows.
 """
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
-SCORECARD_SCHEMA_VERSION = "1"
+SCORECARD_SCHEMA_VERSION = "2"
 
 # Jira ladder: index 0 = highest
 _PRIORITY_ORDER: Tuple[str, ...] = (
@@ -49,15 +50,6 @@ def normalize_jira_priority_label(value: Any) -> Optional[str]:
         return key
     return None
 
-_DIMS: Tuple[str, ...] = (
-    "severity",
-    "frequency",
-    "customer_impact",
-    "scope",
-    "release_risk",
-    "confidence",
-)
-
 
 def priority_rank(name: Optional[str]) -> Optional[int]:
     if not name:
@@ -69,72 +61,33 @@ def priority_rank(name: Optional[str]) -> Optional[int]:
         return None
 
 
-class ScorecardWeights(BaseModel):
-    severity: float = 1.0
-    frequency: float = 1.0
-    customer_impact: float = 1.0
-    scope: float = 0.8
-    release_risk: float = 1.0
-    confidence: float = 0.5
-
-    def as_tuple(self) -> Tuple[float, ...]:
-        return tuple(getattr(self, d) for d in _DIMS)
-
-
-class ScorecardBreakpoints(BaseModel):
-    """Higher min_score → more severe implied priority. First matching row wins (list must be sorted desc by min_score)."""
-
-    breakpoints: List[Dict[str, Any]] = Field(
-        default_factory=lambda: [
-            {"min_score": 88.0, "priority": "blocker"},
-            {"min_score": 72.0, "priority": "critical"},
-            {"min_score": 58.0, "priority": "major"},
-            {"min_score": 44.0, "priority": "normal"},
-            {"min_score": 30.0, "priority": "minor"},
-            {"min_score": 0.0, "priority": "trivial"},
-        ]
+def scorecard_framework_config_hash() -> str:
+    """Stable id for audit when using fixed v2 rules (no env weights/thresholds)."""
+    payload = json.dumps(
+        {"framework": "jira_triage_scorecard_v2", "schema": SCORECARD_SCHEMA_VERSION},
+        sort_keys=True,
     )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
-    @field_validator("breakpoints")
-    @classmethod
-    def sort_breakpoints(cls, v: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        out = []
-        for row in v:
-            if not isinstance(row, dict):
-                continue
-            ms = row.get("min_score")
-            pr = row.get("priority")
-            if ms is None or pr is None:
-                continue
-            try:
-                ms_f = float(ms)
-            except (TypeError, ValueError):
-                continue
-            p = str(pr).strip().lower()
-            if priority_rank(p) is None:
-                continue
-            out.append({"min_score": ms_f, "priority": p})
-        out.sort(key=lambda x: -x["min_score"])
-        if not out:
-            return [
-                {"min_score": 88.0, "priority": "blocker"},
-                {"min_score": 72.0, "priority": "critical"},
-                {"min_score": 58.0, "priority": "major"},
-                {"min_score": 44.0, "priority": "normal"},
-                {"min_score": 30.0, "priority": "minor"},
-                {"min_score": 0.0, "priority": "trivial"},
-            ]
-        return out
+
+def _clamp_int(v: Any, lo: int, hi: int) -> int:
+    try:
+        x = int(v)
+    except (TypeError, ValueError):
+        return lo
+    return max(lo, min(hi, x))
 
 
 class ScorecardRowIn(BaseModel):
     key: str
-    severity: int = Field(ge=1, le=5)
-    frequency: int = Field(ge=1, le=5)
-    customer_impact: int = Field(ge=1, le=5)
-    scope: int = Field(ge=1, le=5)
-    release_risk: int = Field(ge=1, le=5)
-    confidence: int = Field(ge=1, le=5)
+    feature_importance: int = Field(ge=0, le=4)
+    reach: int = Field(ge=0, le=3)
+    technical_severity: int = Field(ge=0, le=3)
+    workaround_quality: int = Field(ge=0, le=2)
+    regression_risk: int = Field(ge=0, le=2)
+    raw_total: Optional[int] = None  # LLM advisory; server uses sum(dimensions)
+    ga_verdict: Optional[str] = None
+    jira_priority: Optional[str] = None
     notes: Optional[Dict[str, str]] = None
 
     @field_validator("key")
@@ -148,26 +101,48 @@ class ScorecardBatchIn(BaseModel):
     rows: List[ScorecardRowIn] = Field(default_factory=list)
 
 
-def weights_config_hash(weights: ScorecardWeights, breakpoints: ScorecardBreakpoints) -> str:
-    payload = json.dumps(
-        {"w": weights.model_dump(), "b": breakpoints.model_dump()},
-        sort_keys=True,
-        default=str,
+def raw_total_from_row(row: ScorecardRowIn) -> int:
+    return (
+        row.feature_importance
+        + row.reach
+        + row.technical_severity
+        + row.workaround_quality
+        + row.regression_risk
     )
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def _clamp_int(v: Any, lo: int = 1, hi: int = 5) -> int:
-    try:
-        x = int(v)
-    except (TypeError, ValueError):
-        return lo
-    return max(lo, min(hi, x))
+def ga_verdict_from_total(total: int) -> str:
+    if total >= 10:
+        return "Block GA"
+    if total >= 6:
+        return "Fix if capacity"
+    return "PostGA"
+
+
+def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:
+    """
+    Server-side Jira priority from dimensions + raw total (not LLM jira_priority).
+    Order: safety Blocker override, then total bands.
+    """
+    total = raw_total_from_row(row)
+    fi = row.feature_importance
+    ts = row.technical_severity
+    wq = row.workaround_quality
+
+    if total >= 10 or (fi == 4 and (ts >= 2 or wq >= 1)):
+        return "blocker"
+    if 8 <= total <= 9:
+        return "critical"
+    if 6 <= total <= 7:
+        return "major"
+    if 4 <= total <= 5:
+        return "normal"
+    return "minor"
 
 
 def parse_scorecard_json(raw: str) -> Tuple[Optional[ScorecardBatchIn], List[str]]:
     """
-    Parse model output: strip optional ```json fences, validate rows.
+    Parse model output: strip optional ```json fences, validate rows (schema v2 only).
     Returns (batch, error_messages).
     """
     if not raw or not raw.strip():
@@ -183,6 +158,9 @@ def parse_scorecard_json(raw: str) -> Tuple[Optional[ScorecardBatchIn], List[str
 
     if not isinstance(data, dict):
         return None, ["root must be object"]
+    ver = str(data.get("version", "")).strip()
+    if ver != SCORECARD_SCHEMA_VERSION:
+        return None, [f'root "version" must be "{SCORECARD_SCHEMA_VERSION}" (got {ver!r})']
     rows_in = data.get("rows")
     if not isinstance(rows_in, list):
         return None, ["rows must be array"]
@@ -204,23 +182,52 @@ def parse_scorecard_json(raw: str) -> Tuple[Optional[ScorecardBatchIn], List[str
             continue
         seen.add(key)
         try:
+            rt = item.get("raw_total")
+            raw_total_llm = _clamp_int(rt, 0, 14) if rt is not None else None
+            gv = item.get("ga_verdict")
+            ga_verdict_llm = str(gv).strip() if gv is not None and str(gv).strip() else None
+            jp = item.get("jira_priority")
+            jira_priority_llm = str(jp).strip() if jp is not None and str(jp).strip() else None
             row = ScorecardRowIn(
                 key=key,
-                severity=_clamp_int(item.get("severity")),
-                frequency=_clamp_int(item.get("frequency")),
-                customer_impact=_clamp_int(item.get("customer_impact")),
-                scope=_clamp_int(item.get("scope")),
-                release_risk=_clamp_int(item.get("release_risk")),
-                confidence=_clamp_int(item.get("confidence")),
+                feature_importance=_clamp_int(item.get("feature_importance"), 0, 4),
+                reach=_clamp_int(item.get("reach"), 0, 3),
+                technical_severity=_clamp_int(item.get("technical_severity"), 0, 3),
+                workaround_quality=_clamp_int(item.get("workaround_quality"), 0, 2),
+                regression_risk=_clamp_int(item.get("regression_risk"), 0, 2),
+                raw_total=raw_total_llm,
+                ga_verdict=ga_verdict_llm,
+                jira_priority=jira_priority_llm,
                 notes=item.get("notes") if isinstance(item.get("notes"), dict) else None,
             )
             parsed_rows.append(row)
         except Exception as e:
             errors.append(f"row {key}: {e}")
 
-    ver = str(data.get("version", SCORECARD_SCHEMA_VERSION))
-    batch = ScorecardBatchIn(version=ver, rows=parsed_rows)
+    batch = ScorecardBatchIn(version=SCORECARD_SCHEMA_VERSION, rows=parsed_rows)
     return batch, errors
+
+
+def scorecard_row_mismatch_warnings(row: ScorecardRowIn) -> List[str]:
+    """Non-fatal checks: LLM totals vs server sum."""
+    out: List[str] = []
+    computed = raw_total_from_row(row)
+    if row.raw_total is not None and row.raw_total != computed:
+        out.append(f"{row.key}: raw_total LLM={row.raw_total} != sum(dimensions)={computed}")
+    if row.ga_verdict:
+        server_gv = ga_verdict_from_total(computed)
+        gv = row.ga_verdict.strip()
+        if gv != server_gv:
+            out.append(f"{row.key}: ga_verdict LLM={gv!r} != server={server_gv!r} (from total {computed})")
+    if row.jira_priority:
+        implied = implied_jira_priority_from_row(row)
+        jp = normalize_jira_priority_label(row.jira_priority)
+        if jp and jp != implied:
+            out.append(
+                f"{row.key}: jira_priority LLM={row.jira_priority!r} != server implied={implied} "
+                f"(total {computed})"
+            )
+    return out
 
 
 def parse_shortlist_keys_json(raw: str, valid_keys: set, max_keys: int) -> Tuple[List[str], List[str]]:
@@ -255,52 +262,21 @@ def parse_shortlist_keys_json(raw: str, valid_keys: set, max_keys: int) -> Tuple
     return out, errors
 
 
-def composite_score(row: ScorecardRowIn, weights: ScorecardWeights) -> float:
-    """0–100: weighted average of dimensions mapped linearly from 1..5."""
-    w = weights.as_tuple()
-    vals = (
-        row.severity,
-        row.frequency,
-        row.customer_impact,
-        row.scope,
-        row.release_risk,
-        row.confidence,
-    )
-    tw = sum(w)
-    if tw <= 0:
-        return 0.0
-    acc = 0.0
-    for vi, wi in zip(vals, w):
-        acc += wi * (vi - 1) / 4.0 * 100.0
-    return acc / tw
-
-
-def implied_priority_from_score(score: float, breakpoints: ScorecardBreakpoints) -> str:
-    for row in breakpoints.breakpoints:
-        if score >= row["min_score"]:
-            return str(row["priority"])
-    return "trivial"
-
-
 def merge_scorecard_to_recommendation(
     row: ScorecardRowIn,
     current_priority: str,
-    weights: ScorecardWeights,
-    breakpoints: ScorecardBreakpoints,
-    min_confidence: int,
     min_delta_ranks: int,
 ) -> Optional[Dict[str, Any]]:
     """
-    If confidence and rank delta vs Jira pass thresholds, return dict with action, target, reason, metadata.
+    If rank delta vs Jira passes threshold, return dict with action, target, reason, metadata.
+    Schema v2: no confidence gate.
     """
-    if row.confidence < min_confidence:
-        return None
     cur_label = normalize_jira_priority_label(current_priority)
     cur = priority_rank(cur_label)
     if cur is None:
         return None
-    sc = composite_score(row, weights)
-    implied = implied_priority_from_score(sc, breakpoints)
+    total = raw_total_from_row(row)
+    implied = implied_jira_priority_from_row(row)
     imp = priority_rank(implied)
     if imp is None:
         return None
@@ -316,14 +292,9 @@ def merge_scorecard_to_recommendation(
     else:
         return None
 
-    notes = row.notes or {}
-    note_bits = [f"{k}={getattr(row, k)}" for k in _DIMS if k != "confidence"]
-    note_bits.append(f"conf={row.confidence}")
-    reason = (
-        f"Scorecard {sc:.0f}/100 → {implied}; "
-        + ", ".join(note_bits[:4])
-        + ("…" if len(note_bits) > 4 else "")
-    )
+    safety = row.feature_importance == 4 and (row.technical_severity >= 2 or row.workaround_quality >= 1)
+    rule = "safety Blocker (fi=4 ∧ (ts≥2 ∨ wq≥1))" if safety and implied == "blocker" and total < 10 else f"total {total}/14"
+    reason = f"Scorecard v2 {total}/14 → {implied}; {rule}; fi={row.feature_importance} r={row.reach} ts={row.technical_severity} wq={row.workaround_quality} rr={row.regression_risk}"
     if len(reason) > 200:
         reason = reason[:197] + "…"
 
@@ -331,7 +302,7 @@ def merge_scorecard_to_recommendation(
         "action": action,
         "target": target,
         "reason": reason,
-        "computed_score": round(sc, 2),
+        "raw_total": total,
         "implied_priority": implied,
         "current_priority_normalized": _PRIORITY_ORDER[cur],
     }
@@ -340,9 +311,6 @@ def merge_scorecard_to_recommendation(
 def build_scorecards_by_key_meta(
     batch: ScorecardBatchIn,
     source_by_key: Dict[str, Dict[str, str]],
-    weights: ScorecardWeights,
-    breakpoints: ScorecardBreakpoints,
-    min_confidence: int,
     min_delta_ranks: int,
 ) -> Dict[str, Any]:
     """Structured meta for UI: every scored key, with optional recommendation."""
@@ -351,25 +319,22 @@ def build_scorecards_by_key_meta(
         key = row.key
         src = source_by_key.get(key) or {}
         cur_p = src.get("priority") or ""
-        sc = composite_score(row, weights)
-        implied = implied_priority_from_score(sc, breakpoints)
-        rec = merge_scorecard_to_recommendation(
-            row,
-            cur_p,
-            weights,
-            breakpoints,
-            min_confidence=min_confidence,
-            min_delta_ranks=min_delta_ranks,
-        )
+        total = raw_total_from_row(row)
+        implied = implied_jira_priority_from_row(row)
+        ga = ga_verdict_from_total(total)
+        rec = merge_scorecard_to_recommendation(row, cur_p, min_delta_ranks=min_delta_ranks)
         entry: Dict[str, Any] = {
-            "severity": row.severity,
-            "frequency": row.frequency,
-            "customer_impact": row.customer_impact,
-            "scope": row.scope,
-            "release_risk": row.release_risk,
-            "confidence": row.confidence,
-            "computed_score": round(sc, 2),
+            "feature_importance": row.feature_importance,
+            "reach": row.reach,
+            "technical_severity": row.technical_severity,
+            "workaround_quality": row.workaround_quality,
+            "regression_risk": row.regression_risk,
+            "raw_total": total,
+            "ga_verdict": ga,
             "implied_priority": implied,
+            "llm_raw_total": row.raw_total,
+            "llm_ga_verdict": row.ga_verdict,
+            "llm_jira_priority": row.jira_priority,
             "notes": row.notes or {},
         }
         if rec:
@@ -387,9 +352,6 @@ def build_scorecards_by_key_meta(
 def recommendations_to_reprioritization_markdown(
     batch: ScorecardBatchIn,
     source_by_key: Dict[str, Dict[str, str]],
-    weights: ScorecardWeights,
-    breakpoints: ScorecardBreakpoints,
-    min_confidence: int,
     min_delta_ranks: int,
 ) -> str:
     """
@@ -408,9 +370,6 @@ def recommendations_to_reprioritization_markdown(
         rec = merge_scorecard_to_recommendation(
             row,
             cur_display,
-            weights,
-            breakpoints,
-            min_confidence=min_confidence,
             min_delta_ranks=min_delta_ranks,
         )
         if not rec:
@@ -427,7 +386,7 @@ def recommendations_to_reprioritization_markdown(
     if not table_rows:
         lines.append(
             "*No Jira priority changes recommended by the scorecard thresholds "
-            "(confidence floor, rank delta vs current priority, or scores aligned with current priority).*"
+            "(rank delta vs current priority, or scores aligned with current priority).*"
         )
         return "\n".join(lines)
 

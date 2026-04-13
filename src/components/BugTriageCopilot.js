@@ -1792,8 +1792,8 @@ const BugTriageCopilot = () => {
                     Scorecard triage
                   </h3>
                   <p className="text-[11px] text-slate-500 mb-2">
-                    Structured rubric + server-side thresholds produced the priority table. Config hash lets you
-                    compare runs.
+                    14-point scorecard (v2): five dimensions summed on the server; GA verdict and implied Jira
+                    priority follow team rules. Config hash identifies the framework version for comparing runs.
                   </p>
                   <dl className="grid gap-1 text-[11px] sm:text-xs text-slate-700 mb-3">
                     <div className="flex flex-wrap gap-x-2">
@@ -1839,22 +1839,35 @@ const BugTriageCopilot = () => {
                           {key}
                           {v.recommendation ? (
                             <span className="ml-2 font-normal text-slate-600">
-                              {v.recommendation.action} → {v.recommendation.target} (score {v.computed_score}
-                              , implied {v.implied_priority})
+                              {v.recommendation.action} → {v.recommendation.target} (total {v.raw_total}/14, GA:{' '}
+                              {v.ga_verdict}, implied {v.implied_priority})
                             </span>
                           ) : (
                             <span className="ml-2 font-normal text-slate-500">
-                              no threshold crossing (implied {v.implied_priority}, score {v.computed_score})
+                              no rank-delta recommendation (total {v.raw_total}/14, GA: {v.ga_verdict}, implied{' '}
+                              {v.implied_priority})
                             </span>
                           )}
                         </summary>
                         <div className="mt-1.5 text-[10px] text-slate-600 grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-0.5">
-                          <span>severity {v.severity}</span>
-                          <span>frequency {v.frequency}</span>
-                          <span>customer_impact {v.customer_impact}</span>
-                          <span>scope {v.scope}</span>
-                          <span>release_risk {v.release_risk}</span>
-                          <span>confidence {v.confidence}</span>
+                          <span>feature_importance {v.feature_importance}/4</span>
+                          <span>reach {v.reach}/3</span>
+                          <span>technical_severity {v.technical_severity}/3</span>
+                          <span>workaround_quality {v.workaround_quality}/2</span>
+                          <span>regression_risk {v.regression_risk}/2</span>
+                          <span className="col-span-2 sm:col-span-3 font-medium text-slate-700">
+                            raw_total {v.raw_total}/14 · GA {v.ga_verdict} · implied Jira {v.implied_priority}
+                          </span>
+                          {(v.llm_raw_total != null && v.llm_raw_total !== v.raw_total) ||
+                          (v.llm_ga_verdict && v.llm_ga_verdict !== v.ga_verdict) ||
+                          (v.llm_jira_priority &&
+                            String(v.llm_jira_priority).toLowerCase().replace(/\s+/g, '') !==
+                              String(v.implied_priority || '').toLowerCase()) ? (
+                            <span className="col-span-2 sm:col-span-3 text-amber-800">
+                              LLM fields: raw_total {v.llm_raw_total ?? '—'}, ga {v.llm_ga_verdict ?? '—'}, jira{' '}
+                              {v.llm_jira_priority ?? '—'} (server values above win for Raise/Lower)
+                            </span>
+                          ) : null}
                         </div>
                         {v.recommendation?.reason ? (
                           <p className="mt-1 text-[10px] text-slate-600 break-words">{v.recommendation.reason}</p>

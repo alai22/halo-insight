@@ -19,14 +19,14 @@ from backend.core.exceptions import TimeoutError as AppTimeoutError
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
 from backend.services.jira_triage_scorecard import (
-    ScorecardBreakpoints,
-    ScorecardWeights,
+    SCORECARD_SCHEMA_VERSION,
     build_scorecards_by_key_meta,
     parse_scorecard_json,
     parse_shortlist_keys_json,
     recommendations_to_reprioritization_markdown,
+    scorecard_framework_config_hash,
+    scorecard_row_mismatch_warnings,
     union_shortlist_with_ga_blockers,
-    weights_config_hash,
 )
 from backend.utils.config import Config
 from backend.utils.pii_protection import create_pii_protector
@@ -711,22 +711,63 @@ Rules:
 - No extra sections or prose."""
 
 _SCORECARD_RUBRIC_INSTRUCTIONS = """
-**Rubric (integers 1–5 each, 1 = lowest/negligible, 5 = highest/severe):**
-- **severity**: user harm / correctness. Use Halo product context: core fence, location-for-containment, geofence safety vs peripheral profile/photo/onboarding polish.
-- **frequency**: reproducibility and likelihood users hit the issue.
-- **customer_impact**: support load, churn or brand risk only when inferable from the ticket.
-- **scope**: breadth of platforms or user flows affected.
-- **release_risk**: regression or GA/release blockage risk.
-- **confidence**: strength of evidence **in the provided text only** (missing data → lower confidence).
+**14-point scorecard (five dimensions — integers only, ranges as given):**
+
+**A) feature_importance** (0–4) — product area (Confluence-aligned; infer from title/labels/component/description):
+- **4** — Safety-critical / containment promise: fence setup & containment, escape prevention, safety alerts; anything that could show a dog as safe/contained when they are not, or blocks core safety actions.
+- **3** — Daily-use / primary flows: walk, onboarding, other high-frequency broadly used flows.
+- **2** — Supporting platform / account & commerce: devices, account, login, subscriptions, billing.
+- **1** — Edge / niche: beacons, remotes, analytics, low-adoption power-user utilities.
+- **0** — Unreleased / N/A.
+
+**B) reach** (0–3) — unique users/week (Amplitude + sanity; infer from ticket or use 0 if no data):
+- **3** — > 5,000 / week
+- **2** — 1,000–5,000
+- **1** — 100–1,000
+- **0** — < 100 OR no Amplitude data.
+
+**C) technical_severity** (0–3) — Jira / QA:
+- **3** — Blocker/Critical in spirit: crash, data loss.
+- **2** — Major: feature broken, no output.
+- **1** — Minor: degraded UX, partial failure.
+- **0** — Trivial: cosmetic only.
+
+**D) workaround_quality** (0–2) — QA/manual:
+- **2** — No workaround; user is stuck.
+- **1** — Workaround exists but non-obvious or costly.
+- **0** — Easy workaround; user likely will not notice.
+
+**E) regression_risk** (0–2) — Jira + manual:
+- **2** — Worked in RC1, broke in RC2.
+- **1** — Intermittent or environment-specific.
+- **0** — Never worked / new feature gap.
+
+**Required per row (exact keys):**
+- The five scores above: `feature_importance`, `reach`, `technical_severity`, `workaround_quality`, `regression_risk`.
+- `raw_total` — must equal the sum of the five scores (max **14**).
+- `ga_verdict` — exactly one of: **Block GA** | **Fix if capacity** | **PostGA** (use thresholds below).
+- `jira_priority` — exactly one of: **Blocker** | **Critical** | **Major** | **Normal** | **Minor** (use mapping below).
+
+**GA verdict thresholds (from raw_total):**
+- raw_total **≥ 10** → `ga_verdict`: **Block GA**
+- raw_total **6–9** → **Fix if capacity**
+- raw_total **≤ 5** → **PostGA**
+
+**Jira priority mapping (same raw_total + safety override):**
+- **Blocker** if raw_total ≥ **10** OR (feature_importance == **4** AND (technical_severity ≥ **2** OR workaround_quality ≥ **1**))
+- **Critical** if raw_total **8–9** (and not Blocker by the line above)
+- **Major** if raw_total **6–7**
+- **Normal** if raw_total **4–5**
+- **Minor** if raw_total **≤ 3**
 
 Output **JSON only** (no markdown fences):
-{"version":"1","rows":[{"key":"PROJ-123","severity":3,"frequency":2,"customer_impact":4,"scope":2,"release_risk":3,"confidence":3,"notes":{"severity":"one line","frequency":"…"}}]}
+{"version":"2","rows":[{"key":"PROJ-123","feature_importance":3,"reach":2,"technical_severity":2,"workaround_quality":1,"regression_risk":0,"raw_total":8,"ga_verdict":"Fix if capacity","jira_priority":"Critical","notes":{"reach":"inferred from crash rate"}}]}
 
 Rules:
-- Exactly **one** row per issue key listed in the user message (same keys, same order if possible).
-- **notes** optional; short strings per dimension (≤120 chars each).
-- All six integers must be between 1 and 5 inclusive.
-- Use only keys from the input; do not invent issue keys.
+- Root **version** must be **"2"**.
+- Exactly **one** row per issue key in the user message (same keys; preserve order if possible).
+- **notes** optional object; short strings per field (≤120 chars each).
+- Use only keys from the input; do not invent keys.
 """
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS2_SHORTLIST = (
@@ -763,24 +804,6 @@ _BACKLOG_OVERVIEW_SCORECARD_PASS2B_EXTRA = """
 _BACKLOG_OVERVIEW_SYSTEM_PASS2B_SCORECARD = (
     _BACKLOG_OVERVIEW_SYSTEM_PASS2_SCORECARD + _BACKLOG_OVERVIEW_SCORECARD_PASS2B_EXTRA
 )
-
-
-def _scorecard_weights_and_breakpoints() -> Tuple[ScorecardWeights, ScorecardBreakpoints]:
-    w = ScorecardWeights()
-    if Config.JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON:
-        try:
-            w = ScorecardWeights.model_validate_json(Config.JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON.strip())
-        except Exception as ex:
-            logger.warning('JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON invalid, using defaults: %s', ex)
-    b = ScorecardBreakpoints()
-    if Config.JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON:
-        try:
-            raw = json.loads(Config.JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON.strip())
-            if isinstance(raw, dict) and isinstance(raw.get('breakpoints'), list):
-                b = ScorecardBreakpoints(breakpoints=raw['breakpoints'])
-        except Exception as ex:
-            logger.warning('JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON invalid, using defaults: %s', ex)
-    return w, b
 
 
 def _sanitize_overview_issue(raw: Any) -> Optional[Dict[str, Any]]:
@@ -1493,7 +1516,6 @@ def _iter_backlog_overview_events(
     incomplete_reasons: List[str] = []
     first_failed_optional_step: Optional[str] = None
     overview_temperature = Config.JIRA_BACKLOG_OVERVIEW_TEMPERATURE
-    min_scorecard_confidence = Config.JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE
     min_scorecard_delta = Config.JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS
     scorecards_by_key: Dict[str, Any] = {}
     scorecard_errors: List[str] = []
@@ -1540,8 +1562,7 @@ def _iter_backlog_overview_events(
     yield _overview_progress_event('pass2', 'start', completed)
     try:
         if use_scorecard:
-            w_sc, b_sc = _scorecard_weights_and_breakpoints()
-            scorecard_config_hash = weights_config_hash(w_sc, b_sc)
+            scorecard_config_hash = scorecard_framework_config_hash()
             msg_sl = _format_issues_for_overview_prompt(
                 batch,
                 truncated,
@@ -1607,20 +1628,16 @@ def _iter_backlog_overview_events(
                 batch_parsed, perrs = parse_scorecard_json(r_sc.content or '')
                 scorecard_errors.extend(perrs)
                 if batch_parsed and batch_parsed.rows:
+                    for rrow in batch_parsed.rows:
+                        scorecard_errors.extend(scorecard_row_mismatch_warnings(rrow))
                     part2_draft = recommendations_to_reprioritization_markdown(
                         batch_parsed,
                         source_by_key,
-                        w_sc,
-                        b_sc,
-                        min_scorecard_confidence,
                         min_scorecard_delta,
                     )
                     scorecards_by_key = build_scorecards_by_key_meta(
                         batch_parsed,
                         source_by_key,
-                        w_sc,
-                        b_sc,
-                        min_scorecard_confidence,
                         min_scorecard_delta,
                     )
                 else:
@@ -1720,27 +1737,22 @@ def _iter_backlog_overview_events(
                 yield _overview_progress_event('pass2b', 'error', completed)
             else:
                 if use_scorecard:
-                    w_b, b_b = _scorecard_weights_and_breakpoints()
                     batch_b, perrs_b = parse_scorecard_json(r2b.content or '')
                     scorecard_errors.extend(perrs_b)
                     if batch_b and batch_b.rows:
+                        for rrow in batch_b.rows:
+                            scorecard_errors.extend(scorecard_row_mismatch_warnings(rrow))
                         part2b_out = recommendations_to_reprioritization_markdown(
                             batch_b,
                             source_by_key,
-                            w_b,
-                            b_b,
-                            min_scorecard_confidence,
                             min_scorecard_delta,
                         )
                         scorecards_by_key = build_scorecards_by_key_meta(
                             batch_b,
                             source_by_key,
-                            w_b,
-                            b_b,
-                            min_scorecard_confidence,
                             min_scorecard_delta,
                         )
-                        scorecard_config_hash = weights_config_hash(w_b, b_b)
+                        scorecard_config_hash = scorecard_framework_config_hash()
                     else:
                         part2b_out = ''
                 else:
@@ -1922,7 +1934,7 @@ def _iter_backlog_overview_events(
         'scorecard_enabled': use_scorecard,
         'scorecards_by_key': scorecards_by_key if use_scorecard else {},
         'scorecard_config_hash': scorecard_config_hash,
-        'scorecard_schema_version': Config.JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION if use_scorecard else None,
+        'scorecard_schema_version': SCORECARD_SCHEMA_VERSION if use_scorecard else None,
         'scorecard_shortlist_size': scorecard_shortlist_size if use_scorecard else None,
         'scorecard_scored_keys': scorecard_scored_keys if use_scorecard else None,
         'scorecard_errors': scorecard_errors[:25] if use_scorecard else [],
@@ -1946,11 +1958,11 @@ def backlog_overview():
     (re-does ## Priority review with description excerpts for keys that appeared in the reprioritization table).
     Optional `description` per issue (truncated) enables pass2b; omit deep pass via Config / env.
 
-    When JIRA_TRIAGE_SCORECARD_ENABLED=1: pass2 becomes JSON shortlist → JSON scorecard → deterministic
-    Raise/Lower from weighted rubric + thresholds; optional pass2b re-scores with description excerpts.
-    See env: JIRA_TRIAGE_SCORECARD_MAX_KEYS, JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON,
-    JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON, JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE,
-    JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS.
+    When JIRA_TRIAGE_SCORECARD_ENABLED=1: pass2 becomes JSON shortlist → JSON scorecard (schema v2,
+    14-point additive rubric) → deterministic Raise/Lower from server-side Jira mapping; optional pass2b
+    re-scores with description excerpts.
+    See env: JIRA_TRIAGE_SCORECARD_MAX_KEYS, JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS.
+    Legacy v1 tuning vars (WEIGHTS_JSON, THRESHOLDS_JSON, MIN_CONFIDENCE) are ignored for scorecard v2.
 
     Query: stream=1 streams NDJSON lines (progress + terminal result). Default is a single JSON response.
 
