@@ -452,6 +452,10 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
   return {
     td({ node, children, ...props }) {
       const col = node?.properties?.dataOverviewCol;
+      const titleColClass =
+        col === '1'
+          ? 'max-w-[min(100%,28rem)] break-words whitespace-normal align-top text-[12px]'
+          : '';
 
       if (col === '0' && base) {
         const raw = hastPlainText(node).trim();
@@ -476,7 +480,12 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
 
       const recKind = node?.properties?.dataOverviewRecKind;
       if (recKind !== 'raise' && recKind !== 'lower') {
-        return <td {...props}>{children}</td>;
+        const cn = [props.className, titleColClass].filter(Boolean).join(' ');
+        return (
+          <td {...props} className={cn || undefined}>
+            {children}
+          </td>
+        );
       }
       const raw = hastPlainText(node).trim();
       const lower = raw.toLowerCase();
@@ -502,9 +511,14 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
         }
       }
       if (!extraClass) {
-        return <td {...props}>{children}</td>;
+        const cn = [props.className, titleColClass].filter(Boolean).join(' ');
+        return (
+          <td {...props} className={cn || undefined}>
+            {children}
+          </td>
+        );
       }
-      const className = [props.className, extraClass].filter(Boolean).join(' ');
+      const className = [props.className, titleColClass, extraClass].filter(Boolean).join(' ');
       return (
         <td {...props} className={className}>
           {prefix}

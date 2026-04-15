@@ -19,12 +19,15 @@ logger = logging.getLogger(__name__)
 
 SCORECARD_SCHEMA_VERSION = "2"
 
-# Reprioritization table: 5 fixed columns (validator / UI) + scorecard dimensions appended.
+# Legacy wide reprioritization table (13 cols); regroup fallback only.
 SCORECARD_REPRIORITIZATION_NUM_COLUMNS = 13
+
+# Narrow scorecard metrics table (no Title) after the main 5-col reprioritization table.
+SCORECARD_METRICS_NUM_COLUMNS = 9
 
 
 def scorecard_reprioritization_header_line() -> str:
-    """Pipe table header; must stay in sync with recommendations_to_reprioritization_markdown."""
+    """Legacy 13-column header; regroup fallback for old cached markdown."""
     return (
         "| Ticket | Title | Current priority | Jira priority recommendation | Reason | "
         "Total | FI | R | TS | WQ | RR | GA verdict | Block GA |"
@@ -33,6 +36,16 @@ def scorecard_reprioritization_header_line() -> str:
 
 def scorecard_reprioritization_separator_line() -> str:
     return "|" + "|".join(["---"] * SCORECARD_REPRIORITIZATION_NUM_COLUMNS) + "|"
+
+
+def scorecard_metrics_header_line() -> str:
+    return (
+        "| Ticket | Total | FI | R | TS | WQ | RR | GA verdict | Block GA |"
+    )
+
+
+def scorecard_metrics_separator_line() -> str:
+    return "|" + "|".join(["---"] * SCORECARD_METRICS_NUM_COLUMNS) + "|"
 
 
 # Jira ladder: index 0 = highest
@@ -410,21 +423,29 @@ def recommendations_to_reprioritization_markdown(
         )
         return "\n".join(lines)
 
-    lines.append(scorecard_reprioritization_header_line())
-    lines.append(scorecard_reprioritization_separator_line())
+    lines.append("| Ticket | Title | Current priority | Jira priority recommendation | Reason |")
+    lines.append("|---|---|---|---|---|")
     for srow, ticket, title, curp, rec_cell, reason in table_rows:
-        total = raw_total_from_row(srow)
-        ga = ga_verdict_from_total(total)
-        block_ga = "Yes" if ga == "Block GA" else "No"
         safe_title = title.replace("|", "\\|")
         safe_cur = curp.replace("|", "\\|")
         safe_rec = rec_cell.replace("|", "\\|")
         safe_reason = reason.replace("|", "\\|")
+        lines.append(f"| {ticket} | {safe_title} | {safe_cur} | {safe_rec} | {safe_reason} |")
+
+    lines.append("")
+    lines.append("#### Scorecard (14-point)")
+    lines.append("")
+    lines.append(scorecard_metrics_header_line())
+    lines.append(scorecard_metrics_separator_line())
+    for srow, ticket, _title, _curp, _rec_cell, _reason in table_rows:
+        total = raw_total_from_row(srow)
+        ga = ga_verdict_from_total(total)
+        block_ga = "Yes" if ga == "Block GA" else "No"
         safe_ga = ga.replace("|", "\\|")
         lines.append(
-            f"| {ticket} | {safe_title} | {safe_cur} | {safe_rec} | {safe_reason} | "
-            f"{total}/14 | {srow.feature_importance} | {srow.reach} | {srow.technical_severity} | "
-            f"{srow.workaround_quality} | {srow.regression_risk} | {safe_ga} | {block_ga} |"
+            f"| {ticket} | {total}/14 | {srow.feature_importance} | {srow.reach} | "
+            f"{srow.technical_severity} | {srow.workaround_quality} | {srow.regression_risk} | "
+            f"{safe_ga} | {block_ga} |"
         )
     return "\n".join(lines)
 

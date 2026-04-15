@@ -131,7 +131,7 @@ def test_regroup_legacy_four_column_table():
 
 
 def test_regroup_wide_scorecard_row_reconstructs_header():
-    """No header row: fallback must emit 13-column scorecard header to match wide data rows."""
+    """No header row: fallback must emit 13-column legacy header to match wide primary rows."""
     wide = (
         "| HALO-7 | Wide row title | Major | Lower to Normal | total ≥10 | "
         "6/14 | 2 | 1 | 2 | 1 | 0 | Fix if capacity | No |"
@@ -143,6 +143,31 @@ def test_regroup_wide_scorecard_row_reconstructs_header():
     assert "| Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in out
     assert "#### iOS" in out
     assert "HALO-7" in out
+
+
+def test_regroup_preserves_scorecard_suffix_after_buckets():
+    """Heading + narrow metrics table after the main reprior table must survive regroup."""
+    suffix = "\n".join(
+        [
+            "",
+            "#### Scorecard (14-point)",
+            "",
+            "| Ticket | Total | FI | R | TS | WQ | RR | GA verdict | Block GA |",
+            "|---|---|---|---|---|---|---|---|---|",
+            "| HALO-1 | 6/14 | 2 | 2 | 1 | 1 | 0 | Fix if capacity | No |",
+            "",
+        ]
+    )
+    md = _mk_table("| HALO-1 | a | Major | Lower to Normal | r |").rstrip() + suffix
+    cleaned, _ = _validate_reprioritization_rows(md, {"HALO-1": "major"})
+    issues = [_issue("HALO-1", components=["iOS"])]
+    out = _regroup_reprioritization_section_by_component(cleaned, issues)
+    assert "#### Scorecard (14-point)" in out
+    assert "| Ticket | Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in out
+    assert "6/14" in out
+    bucket_i = out.index("#### iOS")
+    score_i = out.index("#### Scorecard (14-point)")
+    assert bucket_i < score_i
 
 
 def test_extract_keys_after_regroup():

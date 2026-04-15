@@ -224,13 +224,8 @@ def _validate_reprioritization_rows(
         current = _normalize_priority_label(current_raw)
         parsed = _parse_recommendation_action_and_target(rec_raw)
         if current is None or parsed is None:
-            dropped_invalid += 1
-            logger.info(
-                'backlog-overview: dropped invalid repr row ticket=%s current=%s recommendation=%s',
-                ticket[:32],
-                (current_raw or '')[:32],
-                (rec_raw or '')[:64],
-            )
+            # Not a primary reprior row (e.g. scorecard metrics table); keep line.
+            out.append(line)
             continue
 
         action, target = parsed
@@ -350,6 +345,8 @@ def _regroup_reprioritization_section_by_component(
     header_line: Optional[str] = None
     sep_line: Optional[str] = None
     rows_by_bucket: Dict[str, List[str]] = {bid: [] for bid, _ in _REPR_BUCKET_ORDER}
+    suffix_lines: List[str] = []
+    primary_data_started = False
 
     i = 0
     while i < len(body):
@@ -358,6 +355,12 @@ def _regroup_reprioritization_section_by_component(
         if cells is None:
             if header_line is None:
                 leading_prose.append(line)
+            elif sep_line is not None:
+                if not primary_data_started and not line.strip():
+                    pass  # blank lines between separator and first data row
+                else:
+                    suffix_lines = body[i:]
+                    break
             i += 1
             continue
 
@@ -385,8 +388,12 @@ def _regroup_reprioritization_section_by_component(
         cur_rec = _repr_row_current_and_recommendation(cells)
         ticket = (cells[0] or '').strip().upper()
         if cur_rec and _RE_TICKET_KEY_CELL.match(ticket):
+            primary_data_started = True
             b = _component_bucket_from_issue(issues_by_key.get(ticket, {}))
             rows_by_bucket[b].append(line)
+        elif sep_line is not None:
+            suffix_lines = body[i:]
+            break
         i += 1
 
     total_rows = sum(len(v) for v in rows_by_bucket.values())
@@ -435,6 +442,10 @@ def _regroup_reprioritization_section_by_component(
         out_section.append(sep_line.rstrip())
         out_section.extend(b_rows)
 
+    if suffix_lines:
+        out_section.append('')
+        out_section.extend(s.rstrip() for s in suffix_lines)
+
     new_section = '\n'.join(out_section).rstrip()
     return '\n'.join(lines[:start] + [new_section] + lines[end:])
 
@@ -463,7 +474,11 @@ def _extract_reprioritization_keys(markdown: str) -> List[str]:
         cells = _markdown_table_row_cells(line)
         if not cells or len(cells) < 4:
             continue
-        if _repr_row_current_and_recommendation(cells) is None:
+        cur_rec = _repr_row_current_and_recommendation(cells)
+        if cur_rec is None:
+            continue
+        current_raw, rec_raw = cur_rec
+        if _normalize_priority_label(current_raw) is None or _parse_recommendation_action_and_target(rec_raw) is None:
             continue
         k = (cells[0] or '').strip()
         if not k or k.lower() == 'ticket':
