@@ -154,6 +154,7 @@ def test_recommendations_markdown_and_validator():
     assert cleaned.count("| Ticket | Title | Current priority | Recommended priority | Reason |") == 1
     assert "| Title | Current priority | Recommended priority | Reason | Total |" not in cleaned
     assert "#### Scorecard (14-point)" in cleaned
+    assert "FI — Feature importance · R — Reach · TS — Technical severity" in cleaned
     assert "| Ticket | Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in cleaned
     assert "13/14" in cleaned
     assert "| 3 | 3 | 3 | 2 | 2 |" in cleaned  # FI..RR

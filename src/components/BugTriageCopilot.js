@@ -31,6 +31,9 @@ import { rollupBacklogByPriorityAndStatus } from '../utils/backlogRollups';
 
 const STORAGE_KEY = 'bug_triage_decisions';
 const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
+/** Successful overview runs for calibration (browser-local ring buffer). */
+const OVERVIEW_HISTORY_STORAGE_KEY = 'bug_triage_backlog_overview_history_v1';
+const OVERVIEW_HISTORY_MAX_RUNS = 15;
 /** Cross-tab: only one client should POST for the same fingerprint at a time (best-effort). */
 const OVERVIEW_LOCK_STORAGE_KEY = 'bug_triage_backlog_overview_lock_v1';
 const OVERVIEW_LOCK_TTL_MS = 120_000;
@@ -214,6 +217,69 @@ function saveOverviewCache(entry) {
   } catch (e) {
     console.warn('Failed to save backlog overview cache', e);
   }
+}
+
+function loadOverviewHistory() {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(
+      (x) =>
+        x &&
+        typeof x.id === 'string' &&
+        typeof x.completedAt === 'string' &&
+        typeof x.fingerprint === 'string' &&
+        typeof x.overview === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistOverviewHistory(runs) {
+  try {
+    localStorage.setItem(OVERVIEW_HISTORY_STORAGE_KEY, JSON.stringify(runs));
+  } catch (e) {
+    const name = e && e.name;
+    const code = e && e.code;
+    if ((name === 'QuotaExceededError' || code === 22) && runs.length > 1) {
+      persistOverviewHistory(runs.slice(1));
+    } else {
+      console.warn('Failed to save overview run history', e);
+    }
+  }
+}
+
+/**
+ * Append a successful overview run. Skips if identical to the most recent entry (same fingerprint + body).
+ * Returns the new array for React state.
+ */
+function appendOverviewHistoryRun(fingerprint, overview, meta) {
+  const prev = loadOverviewHistory();
+  const last = prev[0];
+  if (last && last.fingerprint === fingerprint && last.overview === overview) {
+    return prev;
+  }
+  const id =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `h_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  const completedAt = new Date().toISOString();
+  const entry = {
+    id,
+    completedAt,
+    fingerprint,
+    issueCount: meta && typeof meta.issue_count === 'number' ? meta.issue_count : null,
+    truncated: !!(meta && meta.truncated),
+    overviewIncomplete: !!(meta && meta.overview_incomplete),
+    overview,
+    meta: meta && typeof meta === 'object' ? meta : null,
+  };
+  const next = [entry, ...prev].slice(0, OVERVIEW_HISTORY_MAX_RUNS);
+  persistOverviewHistory(next);
+  return next;
 }
 
 function loadOverviewLockEntry() {
@@ -678,6 +744,10 @@ const BugTriageCopilot = () => {
   const [overviewWaitingForOtherTab, setOverviewWaitingForOtherTab] = useState(false);
   const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
   const [showBacklogMetrics, setShowBacklogMetrics] = useState(false);
+  /** Browser-local successful runs (see appendOverviewHistoryRun). */
+  const [overviewRunHistory, setOverviewRunHistory] = useState(() => loadOverviewHistory());
+  /** When set, main markdown area shows that historical snapshot instead of the live overview. */
+  const [overviewHistoryViewId, setOverviewHistoryViewId] = useState(null);
 
   // Check Jira config on mount and load issues when configured
   useEffect(() => {
@@ -846,6 +916,22 @@ const BugTriageCopilot = () => {
     [filteredAndSorted],
   );
 
+  const displayedOverviewMarkdown = useMemo(() => {
+    if (overviewHistoryViewId) {
+      const e = overviewRunHistory.find((r) => r.id === overviewHistoryViewId);
+      return e ? e.overview : overviewMarkdown;
+    }
+    return overviewMarkdown;
+  }, [overviewHistoryViewId, overviewRunHistory, overviewMarkdown]);
+
+  const displayedOverviewMeta = useMemo(() => {
+    if (overviewHistoryViewId) {
+      const e = overviewRunHistory.find((r) => r.id === overviewHistoryViewId);
+      return e && e.meta ? e.meta : null;
+    }
+    return overviewMeta;
+  }, [overviewHistoryViewId, overviewRunHistory, overviewMeta]);
+
   const filteredAndSortedRef = useRef(filteredAndSorted);
   filteredAndSortedRef.current = filteredAndSorted;
   const overviewLockOwnerIdRef = useRef(null);
@@ -889,6 +975,7 @@ const BugTriageCopilot = () => {
     overviewFetchInFlightRef.current = true;
     setOverviewWaitingForOtherTab(false);
     setOverviewLoading(true);
+    setOverviewHistoryViewId(null);
     setOverviewError(null);
     setOverviewProgress(null);
     setOverviewPartialMilestone(null);
@@ -953,6 +1040,8 @@ const BugTriageCopilot = () => {
           cachedAt: new Date().toISOString(),
           ...(meta ? { meta } : {}),
         });
+        setOverviewRunHistory(appendOverviewHistoryRun(fingerprintForCache, md, meta));
+        setOverviewHistoryViewId(null);
       }
     };
 
@@ -1187,6 +1276,8 @@ const BugTriageCopilot = () => {
             cachedAt: new Date().toISOString(),
             ...(meta ? { meta } : {}),
           });
+          setOverviewRunHistory(appendOverviewHistoryRun(fingerprintForCache, md, meta));
+          setOverviewHistoryViewId(null);
         }
       } finally {
         if (overviewLogGroupOpened) {
@@ -1348,6 +1439,20 @@ const BugTriageCopilot = () => {
     stopOverviewCrossTabWait,
     startOverviewCrossTabWait,
   ]);
+
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== OVERVIEW_HISTORY_STORAGE_KEY || e.newValue == null) return;
+      try {
+        const arr = JSON.parse(e.newValue);
+        if (Array.isArray(arr)) setOverviewRunHistory(arr);
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   const backlogOverviewMarkdownComponents = useMemo(
     () => createBacklogOverviewMarkdownComponents(jiraStatus.base_url),
@@ -1794,23 +1899,23 @@ const BugTriageCopilot = () => {
                       </span>
                     </dd>
                   </div>
-                  {overviewMeta && (
+                  {displayedOverviewMeta && (
                     <>
                       <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline pt-1 border-t border-slate-200/60">
                         <dt className="text-slate-500 shrink-0 sm:w-44">Submitted to AI overview</dt>
                         <dd className="font-medium text-slate-900 tabular-nums">
-                          {Number.isFinite(Number(overviewMeta.submitted_count_after_parent_filter))
-                            ? Number(overviewMeta.submitted_count_after_parent_filter)
-                            : overviewMeta.submitted_count ?? '—'}
+                          {Number.isFinite(Number(displayedOverviewMeta.submitted_count_after_parent_filter))
+                            ? Number(displayedOverviewMeta.submitted_count_after_parent_filter)
+                            : displayedOverviewMeta.submitted_count ?? '—'}
                         </dd>
                       </div>
                       <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
                         <dt className="text-slate-500 shrink-0 sm:w-44">Analyzed batch (cap)</dt>
                         <dd className="font-medium text-slate-900 tabular-nums">
-                          {overviewMeta.issue_count ?? '—'}
-                          {overviewMeta.truncated ? (
+                          {displayedOverviewMeta.issue_count ?? '—'}
+                          {displayedOverviewMeta.truncated ? (
                             <span className="font-normal text-amber-800 ml-1">
-                              (truncated from {overviewMeta.submitted_count ?? '—'} submitted)
+                              (truncated from {displayedOverviewMeta.submitted_count ?? '—'} submitted)
                             </span>
                           ) : null}
                         </dd>
@@ -1946,7 +2051,8 @@ const BugTriageCopilot = () => {
                 </section>
               )}
 
-              {overviewMeta?.snapshot_stats && typeof overviewMeta.snapshot_stats === 'object' && (
+              {displayedOverviewMeta?.snapshot_stats &&
+                typeof displayedOverviewMeta.snapshot_stats === 'object' && (
                 <section className="min-w-0">
                   <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
                     AI batch snapshot (deterministic)
@@ -1956,7 +2062,7 @@ const BugTriageCopilot = () => {
                     backlog if the analysis cap applied.
                   </p>
                   <p className="text-xs font-medium text-slate-800 tabular-nums mb-1">
-                    Total in batch: {overviewMeta.snapshot_stats.total ?? '—'}
+                    Total in batch: {displayedOverviewMeta.snapshot_stats.total ?? '—'}
                   </p>
                   <div className="flex flex-wrap gap-2 items-start">
                     <div className="min-w-0 flex-1 basis-[min(100%,14rem)] sm:basis-[calc(50%-0.25rem)] overflow-x-auto border border-slate-200 rounded-md bg-white">
@@ -1968,7 +2074,7 @@ const BugTriageCopilot = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {Object.entries(overviewMeta.snapshot_stats.by_priority || {})
+                          {Object.entries(displayedOverviewMeta.snapshot_stats.by_priority || {})
                             .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
                             .map(([label, n]) => (
                               <tr key={`ss-p-${label}`} className="border-t border-slate-100">
@@ -1988,7 +2094,7 @@ const BugTriageCopilot = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {Object.entries(overviewMeta.snapshot_stats.by_status || {})
+                          {Object.entries(displayedOverviewMeta.snapshot_stats.by_status || {})
                             .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
                             .map(([label, n]) => (
                               <tr key={`ss-s-${label}`} className="border-t border-slate-100">
@@ -2003,7 +2109,7 @@ const BugTriageCopilot = () => {
                 </section>
               )}
 
-              {overviewMeta?.scorecard_enabled && (
+              {displayedOverviewMeta?.scorecard_enabled && (
                 <section className="min-w-0 mt-3 pt-2 border-t border-slate-200/80">
                   <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
                     Scorecard triage
@@ -2013,10 +2119,15 @@ const BugTriageCopilot = () => {
                     priority follow the rules below. Config hash identifies the framework version for comparing
                     runs.
                   </p>
-                  {Array.isArray(overviewMeta.scorecard_threshold_summary) &&
-                    overviewMeta.scorecard_threshold_summary.length > 0 && (
+                  <p className="text-[11px] text-slate-600 mb-2">
+                    {
+                      'FI — Feature importance · R — Reach · TS — Technical severity · WQ — Workaround quality · RR — Regression risk'
+                    }
+                  </p>
+                  {Array.isArray(displayedOverviewMeta.scorecard_threshold_summary) &&
+                    displayedOverviewMeta.scorecard_threshold_summary.length > 0 && (
                       <ul className="list-disc pl-4 mb-2 text-[11px] text-slate-600 space-y-0.5">
-                        {overviewMeta.scorecard_threshold_summary.map((line, idx) => (
+                        {displayedOverviewMeta.scorecard_threshold_summary.map((line, idx) => (
                           <li key={idx}>{line}</li>
                         ))}
                       </ul>
@@ -2025,32 +2136,32 @@ const BugTriageCopilot = () => {
                     <div className="flex flex-wrap gap-x-2">
                       <dt className="text-slate-500">Schema</dt>
                       <dd className="font-mono tabular-nums">
-                        {overviewMeta.scorecard_schema_version ?? '—'}
+                        {displayedOverviewMeta.scorecard_schema_version ?? '—'}
                       </dd>
                     </div>
                     <div className="flex flex-wrap gap-x-2">
                       <dt className="text-slate-500">Config hash</dt>
                       <dd className="font-mono text-[10px] break-all">
-                        {overviewMeta.scorecard_config_hash || '—'}
+                        {displayedOverviewMeta.scorecard_config_hash || '—'}
                       </dd>
                     </div>
                     <div className="flex flex-wrap gap-x-2">
                       <dt className="text-slate-500">Shortlist / scored keys</dt>
                       <dd className="tabular-nums">
-                        {overviewMeta.scorecard_shortlist_size ?? '—'} /{' '}
-                        {overviewMeta.scorecard_scored_keys ?? '—'}
+                        {displayedOverviewMeta.scorecard_shortlist_size ?? '—'} /{' '}
+                        {displayedOverviewMeta.scorecard_scored_keys ?? '—'}
                       </dd>
                     </div>
                   </dl>
-                  {Array.isArray(overviewMeta.scorecard_errors) &&
-                    overviewMeta.scorecard_errors.length > 0 && (
+                  {Array.isArray(displayedOverviewMeta.scorecard_errors) &&
+                    displayedOverviewMeta.scorecard_errors.length > 0 && (
                       <div className="mb-3 text-[11px] text-amber-900 bg-amber-50 border border-amber-200/80 rounded-md px-2 py-1.5">
                         <span className="font-semibold">Parse notes: </span>
-                        {overviewMeta.scorecard_errors.join(' · ')}
+                        {displayedOverviewMeta.scorecard_errors.join(' · ')}
                       </div>
                     )}
                   {(() => {
-                    const sc = overviewMeta.scorecards_by_key;
+                    const sc = displayedOverviewMeta.scorecards_by_key;
                     if (!sc || typeof sc !== 'object') return null;
                     const entries = Object.entries(sc);
                     const withRec = entries.filter(([, v]) => v && v.recommendation);
@@ -2292,7 +2403,7 @@ const BugTriageCopilot = () => {
                       title suggestions: {titleSuggestionsCount}
                     </span>
                   )}
-                  {!overviewLoading && !overviewError && overviewMeta?.title_rewrite_no_candidates && (
+                  {!overviewLoading && !overviewError && displayedOverviewMeta?.title_rewrite_no_candidates && (
                     <span
                       className="inline-flex items-center rounded-full border border-dashed border-amber-400 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900"
                       title="Title scan ran; no issue keys were selected for proposed rewrites."
@@ -2311,16 +2422,17 @@ const BugTriageCopilot = () => {
                     {overviewLoading ? ' (AI batch counts fill in when generation finishes.)' : ''}
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewMeta?.truncated && (
+                {!overviewLoading && !overviewError && displayedOverviewMeta?.truncated && (
                   <p className="text-xs text-amber-800/90">
                     Analysis cap: batch smaller than submitted — see Backlog metrics.
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewMeta?.overview_incomplete && (
+                {!overviewLoading && !overviewError && displayedOverviewMeta?.overview_incomplete && (
                   <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
-                    Partial overview: {overviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
-                    {overviewMeta.omitted_sections?.length
-                      ? `(Omitted: ${overviewMeta.omitted_sections.join(', ')})`
+                    Partial overview:{' '}
+                    {displayedOverviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
+                    {displayedOverviewMeta.omitted_sections?.length
+                      ? `(Omitted: ${displayedOverviewMeta.omitted_sections.join(', ')})`
                       : ''}
                   </p>
                 )}
@@ -2361,13 +2473,13 @@ const BugTriageCopilot = () => {
               </div>
             </div>
             <div className="px-3 pb-3 border-t border-amber-200/60 bg-gradient-to-b from-amber-50/50 to-transparent">
-              {(overviewLoading || overviewMarkdown || overviewMeta) && !overviewError && (
+              {(overviewLoading || displayedOverviewMarkdown || displayedOverviewMeta) && !overviewError && (
                 <OverviewPhaseRail
                   loading={overviewLoading}
                   progress={overviewProgress}
-                  meta={overviewMeta}
+                  meta={displayedOverviewMeta}
                   titlePipelineEnabled={
-                    overviewMeta == null || overviewMeta.title_rewrite_enabled !== false
+                    displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
                   }
                 />
               )}
@@ -2405,16 +2517,17 @@ const BugTriageCopilot = () => {
                     {overviewLoading ? ' Batch snapshot appears after generation completes.' : ''}
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewMeta?.truncated && (
+                {!overviewLoading && !overviewError && displayedOverviewMeta?.truncated && (
                   <p className="text-xs text-amber-800/90">
                     Analysis cap: see Backlog metrics for submitted vs analyzed.
                   </p>
                 )}
-                {!overviewLoading && !overviewError && overviewMeta?.overview_incomplete && (
+                {!overviewLoading && !overviewError && displayedOverviewMeta?.overview_incomplete && (
                   <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
-                    Partial overview: {overviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
-                    {overviewMeta.omitted_sections?.length
-                      ? `(Omitted: ${overviewMeta.omitted_sections.join(', ')})`
+                    Partial overview:{' '}
+                    {displayedOverviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
+                    {displayedOverviewMeta.omitted_sections?.length
+                      ? `(Omitted: ${displayedOverviewMeta.omitted_sections.join(', ')})`
                       : ''}
                   </p>
                 )}
@@ -2465,7 +2578,80 @@ const BugTriageCopilot = () => {
                     </button>
                   </div>
                 )}
-                {overviewMarkdown && (
+                {overviewRunHistory.length > 0 && (
+                  <div className="rounded-md border border-amber-200/80 bg-white/95 px-3 py-2">
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 mb-1.5">
+                      Past runs
+                    </h4>
+                    <p className="text-[10px] text-amber-800/90 mb-2">
+                      Stored in this browser for calibration (last {OVERVIEW_HISTORY_MAX_RUNS} successful generations).
+                    </p>
+                    <ul className="space-y-1.5">
+                      {overviewRunHistory.map((run) => (
+                        <li
+                          key={run.id}
+                          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-amber-950"
+                        >
+                          <span className="text-slate-700">
+                            {new Date(run.completedAt).toLocaleString(undefined, {
+                              dateStyle: 'short',
+                              timeStyle: 'short',
+                            })}
+                          </span>
+                          {run.issueCount != null && (
+                            <span className="tabular-nums text-slate-600">{run.issueCount} issues</span>
+                          )}
+                          {run.truncated && (
+                            <span className="rounded px-1 py-0.5 border border-amber-300 bg-amber-50 text-[10px] text-amber-900">
+                              truncated
+                            </span>
+                          )}
+                          {run.overviewIncomplete && (
+                            <span className="rounded px-1 py-0.5 border border-amber-400 bg-amber-50 text-[10px] text-amber-900">
+                              incomplete
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setOverviewHistoryViewId(run.id)}
+                            className="font-medium text-sky-700 hover:text-sky-900 underline underline-offset-2"
+                          >
+                            {overviewHistoryViewId === run.id ? 'Showing' : 'View'}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {overviewHistoryViewId && (
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-300/90 bg-sky-50 px-3 py-2 text-[11px] text-sky-950"
+                    role="status"
+                  >
+                    <span>
+                      Viewing historical run
+                      {(() => {
+                        const e = overviewRunHistory.find((r) => r.id === overviewHistoryViewId);
+                        return e ? (
+                          <span className="ml-1 text-sky-900/90">
+                            · {new Date(e.completedAt).toLocaleString(undefined, {
+                              dateStyle: 'short',
+                              timeStyle: 'short',
+                            })}
+                          </span>
+                        ) : null;
+                      })()}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOverviewHistoryViewId(null)}
+                      className="shrink-0 font-semibold px-2 py-0.5 rounded border border-sky-400 bg-white text-sky-900 hover:bg-sky-100"
+                    >
+                      Back to current
+                    </button>
+                  </div>
+                )}
+                {displayedOverviewMarkdown && (
                   <div
                     className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-max [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
                   >
@@ -2474,7 +2660,7 @@ const BugTriageCopilot = () => {
                       rehypePlugins={[rehypeWrapBacklogSnapshotBlocks, rehypeAnnotateBacklogOverviewTables]}
                       components={backlogOverviewMarkdownComponents}
                     >
-                      {overviewMarkdown}
+                      {displayedOverviewMarkdown}
                     </ReactMarkdown>
                   </div>
                 )}

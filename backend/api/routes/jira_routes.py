@@ -616,6 +616,8 @@ Write a markdown overview for the team. Use these sections only (omit a section 
 (Themes and risk—**not** the Jira priority name "Critical".)
 ## Needs clarification
 Tickets that look vague, blocked, or missing context based on titles/metadata.
+
+**Format (required when this section is non-empty):** Use a **markdown bullet list**. Put **exactly one issue key per bullet**—never one paragraph or run-on sentence listing multiple keys. Each bullet must look like: `- **HALO-123** — short reason (why it needs clarification).` You may add **one** optional intro sentence *before* the list; the list must follow. Do **not** concatenate several keys into a single line without list markers.
 ## Duplicates or related clusters
 When this section has content: put **at least one sentence of prose** on the line(s) immediately after this `##` heading **before** any `###` subheading (do **not** jump straight from `## Duplicates or related clusters` to `###` with nothing in between—that reads as a broken outline).
 Then use **two subheadings** when applicable (omit empty subheadings):

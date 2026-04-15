@@ -48,6 +48,13 @@ def scorecard_metrics_separator_line() -> str:
     return "|" + "|".join(["---"] * SCORECARD_METRICS_NUM_COLUMNS) + "|"
 
 
+# One-line legend for the narrow metrics table (matches Scorecard triage UI).
+SCORECARD_METRICS_COLUMN_LEGEND = (
+    "FI — Feature importance · R — Reach · TS — Technical severity · "
+    "WQ — Workaround quality · RR — Regression risk"
+)
+
+
 # Jira ladder: index 0 = highest
 _PRIORITY_ORDER: Tuple[str, ...] = (
     "blocker",
@@ -458,6 +465,8 @@ def recommendations_to_reprioritization_markdown(
     lines.append("")
     for ref in scorecard_threshold_reference_lines(min_delta_ranks):
         lines.append(f"- {ref}")
+    lines.append("")
+    lines.append(SCORECARD_METRICS_COLUMN_LEGEND)
     lines.append("")
     lines.append(scorecard_metrics_header_line())
     lines.append(scorecard_metrics_separator_line())
