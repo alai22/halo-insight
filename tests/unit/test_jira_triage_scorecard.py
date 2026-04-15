@@ -147,6 +147,10 @@ def test_recommendations_markdown_and_validator():
     assert dropped["invalid"] == 0
     assert "HALO-9" in cleaned
     assert "Raise" in cleaned
+    assert "| Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in cleaned
+    assert "13/14" in cleaned
+    assert "| 3 | 3 | 3 | 2 | 2 |" in cleaned  # FI..RR
+    assert "| Block GA | Yes |" in cleaned  # GA verdict + Block GA columns
 
 
 def test_parse_shortlist_keys_json():

@@ -130,6 +130,21 @@ def test_regroup_legacy_four_column_table():
     assert 'HALO-1' in out
 
 
+def test_regroup_wide_scorecard_row_reconstructs_header():
+    """No header row: fallback must emit 13-column scorecard header to match wide data rows."""
+    wide = (
+        "| HALO-7 | Wide row title | Major | Lower to Normal | total ≥10 | "
+        "6/14 | 2 | 1 | 2 | 1 | 0 | Fix if capacity | No |"
+    )
+    md = f"### Recommended Jira priority changes\n\n{wide}\n"
+    cleaned, _ = _validate_reprioritization_rows(md, {"HALO-7": "major"})
+    issues = [_issue("HALO-7", components=["iOS"])]
+    out = _regroup_reprioritization_section_by_component(cleaned, issues)
+    assert "| Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in out
+    assert "#### iOS" in out
+    assert "HALO-7" in out
+
+
 def test_extract_keys_after_regroup():
     md = _mk_table(
         '| HALO-1 | a | Major | Lower to Normal | r |',

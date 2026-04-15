@@ -31,6 +31,10 @@ import { rollupBacklogByPriorityAndStatus } from '../utils/backlogRollups';
 
 const STORAGE_KEY = 'bug_triage_decisions';
 const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
+/** Cross-tab: only one client should POST for the same fingerprint at a time (best-effort). */
+const OVERVIEW_LOCK_STORAGE_KEY = 'bug_triage_backlog_overview_lock_v1';
+const OVERVIEW_LOCK_TTL_MS = 120_000;
+const OVERVIEW_LOCK_HEARTBEAT_MS = 12_000;
 
 /** Labels for backlog overview Claude steps (matches API `step` ids). */
 const OVERVIEW_STEP_LABELS = {
@@ -212,9 +216,79 @@ function saveOverviewCache(entry) {
   }
 }
 
+function loadOverviewLockEntry() {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_LOCK_STORAGE_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (
+      !o ||
+      typeof o.ownerId !== 'string' ||
+      typeof o.fingerprint !== 'string' ||
+      typeof o.expiresAt !== 'number'
+    ) {
+      return null;
+    }
+    return o;
+  } catch {
+    return null;
+  }
+}
+
+function saveOverviewLockEntry(entry) {
+  try {
+    localStorage.setItem(OVERVIEW_LOCK_STORAGE_KEY, JSON.stringify(entry));
+  } catch (e) {
+    console.warn('Failed to save backlog overview lock', e);
+  }
+}
+
+/** Returns true if this tab holds the lock for the fingerprint. */
+function tryAcquireOverviewLock(fingerprint, ownerId) {
+  const now = Date.now();
+  const cur = loadOverviewLockEntry();
+  if (cur && cur.fingerprint === fingerprint && cur.ownerId === ownerId) {
+    saveOverviewLockEntry({
+      ...cur,
+      expiresAt: now + OVERVIEW_LOCK_TTL_MS,
+    });
+    return true;
+  }
+  if (!cur || now > cur.expiresAt || cur.fingerprint !== fingerprint) {
+    saveOverviewLockEntry({
+      ownerId,
+      fingerprint,
+      startedAt: new Date().toISOString(),
+      expiresAt: now + OVERVIEW_LOCK_TTL_MS,
+    });
+    return true;
+  }
+  return false;
+}
+
+function renewOverviewLock(ownerId, fingerprint) {
+  const cur = loadOverviewLockEntry();
+  if (!cur || cur.ownerId !== ownerId || cur.fingerprint !== fingerprint) return;
+  saveOverviewLockEntry({
+    ...cur,
+    expiresAt: Date.now() + OVERVIEW_LOCK_TTL_MS,
+  });
+}
+
+function clearOverviewLockIfOwner(ownerId) {
+  const cur = loadOverviewLockEntry();
+  if (cur && cur.ownerId === ownerId) {
+    try {
+      localStorage.removeItem(OVERVIEW_LOCK_STORAGE_KEY);
+    } catch (e) {
+      console.warn('Failed to clear backlog overview lock', e);
+    }
+  }
+}
+
 /**
  * Returns cached markdown if fingerprint matches and entry is within TTL; else null.
- * Multi-tab race: acceptable; both may POST once before either writes.
+ * Cross-tab: another tab may populate cache while this tab waits on the lock.
  */
 function getValidCachedOverview(fingerprint) {
   const entry = loadOverviewCacheEntry();
@@ -229,7 +303,19 @@ function getValidCachedOverview(fingerprint) {
     overview: entry.overview,
     cacheHint: `from cache · ${timeLabel}`,
     meta: entry.meta && typeof entry.meta === 'object' ? entry.meta : null,
+    cachedAtMs: t,
   };
+}
+
+/** Human label for when the last successful overview was produced (this tab or cache). */
+function formatOverviewUpdatedLabel(completedAtMs) {
+  if (completedAtMs == null || Number.isNaN(completedAtMs)) return null;
+  const delta = Date.now() - completedAtMs;
+  if (delta < 90_000) return 'Updated just now';
+  return `Updated ${new Date(completedAtMs).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  })}`;
 }
 
 function getOverviewPreviewText(markdown) {
@@ -572,6 +658,10 @@ const BugTriageCopilot = () => {
   const [overviewMeta, setOverviewMeta] = useState(null);
   /** NDJSON `partial` milestone while stream still in flight (for UX copy only). */
   const [overviewPartialMilestone, setOverviewPartialMilestone] = useState(null);
+  /** Wall-clock ms when overview last finished successfully (fresh run or valid cache load). */
+  const [lastOverviewCompletedAt, setLastOverviewCompletedAt] = useState(null);
+  /** Another tab holds the generation lock; this tab is waiting on cache / lock release. */
+  const [overviewWaitingForOtherTab, setOverviewWaitingForOtherTab] = useState(false);
   const [showPrioritizationPhilosophy, setShowPrioritizationPhilosophy] = useState(false);
   const [showBacklogMetrics, setShowBacklogMetrics] = useState(false);
 
@@ -742,7 +832,32 @@ const BugTriageCopilot = () => {
     [filteredAndSorted],
   );
 
-  const runBacklogOverview = useCallback(async (list, signal, fingerprintForCache = null) => {
+  const filteredAndSortedRef = useRef(filteredAndSorted);
+  filteredAndSortedRef.current = filteredAndSorted;
+  const overviewLockOwnerIdRef = useRef(null);
+  const overviewLockHeartbeatRef = useRef(null);
+  const overviewCrossTabWaitCleanupRef = useRef(null);
+  const overviewFetchInFlightRef = useRef(false);
+
+  function ensureOverviewLockOwnerId() {
+    if (!overviewLockOwnerIdRef.current) {
+      overviewLockOwnerIdRef.current =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `owner_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    }
+    return overviewLockOwnerIdRef.current;
+  }
+
+  const stopOverviewCrossTabWait = useCallback(() => {
+    if (overviewCrossTabWaitCleanupRef.current) {
+      overviewCrossTabWaitCleanupRef.current();
+      overviewCrossTabWaitCleanupRef.current = null;
+    }
+    setOverviewWaitingForOtherTab(false);
+  }, []);
+
+  const runBacklogOverview = useCallback(async (list, signal, fingerprintForCache = null, lockOwnerId = null) => {
     if (!list.length) {
       setOverviewMarkdown(null);
       setOverviewError(null);
@@ -753,11 +868,26 @@ const BugTriageCopilot = () => {
       setOverviewMeta(null);
       return;
     }
+    if (overviewFetchInFlightRef.current) {
+      if (lockOwnerId) clearOverviewLockIfOwner(lockOwnerId);
+      return;
+    }
+    overviewFetchInFlightRef.current = true;
+    setOverviewWaitingForOtherTab(false);
     setOverviewLoading(true);
     setOverviewError(null);
     setOverviewProgress(null);
     setOverviewPartialMilestone(null);
     setOverviewCacheHint(null);
+    if (lockOwnerId && fingerprintForCache != null) {
+      if (overviewLockHeartbeatRef.current) {
+        clearInterval(overviewLockHeartbeatRef.current);
+        overviewLockHeartbeatRef.current = null;
+      }
+      overviewLockHeartbeatRef.current = setInterval(() => {
+        renewOverviewLock(lockOwnerId, fingerprintForCache);
+      }, OVERVIEW_LOCK_HEARTBEAT_MS);
+    }
     const runStartedAt = performance.now();
     const stepStartedAt = Object.create(null);
     let overviewLogGroupOpened = false;
@@ -801,6 +931,7 @@ const BugTriageCopilot = () => {
       });
       setOverviewMarkdown(md);
       setOverviewMeta(meta);
+      setLastOverviewCompletedAt(Date.now());
       if (fingerprintForCache != null) {
         saveOverviewCache({
           fingerprint: fingerprintForCache,
@@ -1034,6 +1165,7 @@ const BugTriageCopilot = () => {
         });
         setOverviewMarkdown(md);
         setOverviewMeta(meta);
+        setLastOverviewCompletedAt(Date.now());
         if (fingerprintForCache != null) {
           saveOverviewCache({
             fingerprint: fingerprintForCache,
@@ -1098,11 +1230,60 @@ const BugTriageCopilot = () => {
       setOverviewMarkdown(null);
       setOverviewMeta(null);
     } finally {
+      overviewFetchInFlightRef.current = false;
+      if (overviewLockHeartbeatRef.current) {
+        clearInterval(overviewLockHeartbeatRef.current);
+        overviewLockHeartbeatRef.current = null;
+      }
+      if (lockOwnerId) {
+        clearOverviewLockIfOwner(lockOwnerId);
+      }
       setOverviewLoading(false);
       setOverviewProgress(null);
       setOverviewPartialMilestone(null);
     }
   }, []);
+
+  /** When another tab holds the lock, poll + listen for cache or stale lock, then run or hydrate. */
+  const startOverviewCrossTabWait = useCallback(
+    (fingerprint, signal) => {
+      stopOverviewCrossTabWait();
+      setOverviewWaitingForOtherTab(true);
+      const tryHydrate = () => {
+        if (signal?.aborted) return;
+        const cached = getValidCachedOverview(fingerprint);
+        if (cached) {
+          setOverviewMarkdown(cached.overview);
+          setOverviewError(null);
+          setOverviewLoading(false);
+          setOverviewPartialMilestone(null);
+          setOverviewCacheHint(cached.cacheHint);
+          setOverviewMeta(cached.meta);
+          setLastOverviewCompletedAt(cached.cachedAtMs ?? Date.now());
+          stopOverviewCrossTabWait();
+          return;
+        }
+        const ownerId = ensureOverviewLockOwnerId();
+        if (tryAcquireOverviewLock(fingerprint, ownerId)) {
+          stopOverviewCrossTabWait();
+          runBacklogOverview(filteredAndSortedRef.current, signal, fingerprint, ownerId);
+        }
+      };
+      const interval = setInterval(tryHydrate, 2000);
+      const onStorage = (e) => {
+        if (signal?.aborted) return;
+        if (e.key !== OVERVIEW_CACHE_STORAGE_KEY && e.key !== OVERVIEW_LOCK_STORAGE_KEY) return;
+        tryHydrate();
+      };
+      window.addEventListener('storage', onStorage);
+      tryHydrate();
+      overviewCrossTabWaitCleanupRef.current = () => {
+        window.removeEventListener('storage', onStorage);
+        clearInterval(interval);
+      };
+    },
+    [runBacklogOverview, stopOverviewCrossTabWait],
+  );
 
   useEffect(() => {
     if (!jiraStatus.configured || jiraLoading) return;
@@ -1114,6 +1295,7 @@ const BugTriageCopilot = () => {
       setOverviewLoading(false);
       setOverviewCacheHint(null);
       setOverviewMeta(null);
+      stopOverviewCrossTabWait();
       return;
     }
     const cached = getValidCachedOverview(backlogOverviewFingerprint);
@@ -1124,17 +1306,34 @@ const BugTriageCopilot = () => {
       setOverviewPartialMilestone(null);
       setOverviewCacheHint(cached.cacheHint);
       setOverviewMeta(cached.meta);
+      setLastOverviewCompletedAt(cached.cachedAtMs ?? Date.now());
+      stopOverviewCrossTabWait();
       return;
     }
+    const ownerId = ensureOverviewLockOwnerId();
     const ac = new AbortController();
     const timer = setTimeout(() => {
-      runBacklogOverview(filteredAndSorted, ac.signal, backlogOverviewFingerprint);
+      if (ac.signal.aborted) return;
+      if (!tryAcquireOverviewLock(backlogOverviewFingerprint, ownerId)) {
+        startOverviewCrossTabWait(backlogOverviewFingerprint, ac.signal);
+        return;
+      }
+      runBacklogOverview(filteredAndSorted, ac.signal, backlogOverviewFingerprint, ownerId);
     }, 500);
     return () => {
       clearTimeout(timer);
       ac.abort();
+      stopOverviewCrossTabWait();
     };
-  }, [jiraStatus.configured, jiraLoading, backlogOverviewFingerprint, filteredAndSorted, runBacklogOverview]);
+  }, [
+    jiraStatus.configured,
+    jiraLoading,
+    backlogOverviewFingerprint,
+    filteredAndSorted,
+    runBacklogOverview,
+    stopOverviewCrossTabWait,
+    startOverviewCrossTabWait,
+  ]);
 
   const backlogOverviewMarkdownComponents = useMemo(
     () => createBacklogOverviewMarkdownComponents(jiraStatus.base_url),
@@ -1147,6 +1346,10 @@ const BugTriageCopilot = () => {
   const overviewFreshnessLabel = useMemo(
     () => (overviewCacheHint ? 'from cache' : 'fresh'),
     [overviewCacheHint],
+  );
+  const overviewUpdatedLabel = useMemo(
+    () => formatOverviewUpdatedLabel(lastOverviewCompletedAt),
+    [lastOverviewCompletedAt],
   );
   const overviewProgressLabel = useMemo(() => {
     if (!overviewProgress?.step) return null;
@@ -1991,31 +2194,57 @@ const BugTriageCopilot = () => {
           <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-lg overflow-hidden">
             <div className="flex flex-wrap items-start justify-between gap-2 p-3">
               <div className="min-w-0 flex-1 space-y-1.5">
-                <button
-                  type="button"
-                  onClick={() => setOverviewExpanded((e) => !e)}
-                  className="flex items-center gap-2 text-left min-w-0 w-full"
-                  aria-expanded={overviewExpanded}
-                >
-                  {overviewExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
+                <div className="flex flex-wrap items-center gap-2 min-w-0 w-full">
+                  <button
+                    type="button"
+                    onClick={() => setOverviewExpanded((e) => !e)}
+                    className="flex items-center gap-2 text-left min-w-0 flex-1"
+                    aria-expanded={overviewExpanded}
+                  >
+                    {overviewExpanded ? (
+                      <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
+                    )}
+                    <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
+                    {!overviewExpanded && overviewLoading && !overviewError && (
+                      <span className="text-xs font-normal text-amber-800 truncate">
+                        — {overviewMarkdown ? 'Partial · ' : ''}
+                        {overviewProgressLabel || 'generating…'}
+                      </span>
+                    )}
+                    {!overviewExpanded && overviewWaitingForOtherTab && !overviewLoading && !overviewError && (
+                      <span className="text-xs font-medium text-amber-900 truncate">
+                        — another tab is generating this overview…
+                      </span>
+                    )}
+                    {!overviewExpanded && overviewError && !overviewLoading && (
+                      <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
+                    )}
+                    {!overviewExpanded &&
+                      overviewMarkdown &&
+                      !overviewLoading &&
+                      !overviewError &&
+                      !overviewWaitingForOtherTab && (
+                        <span className="text-xs font-semibold text-amber-950 truncate">
+                          — Summary ready — expand the panel or tap View summary
+                        </span>
+                      )}
+                  </button>
+                  {!overviewExpanded &&
+                    overviewMarkdown &&
+                    !overviewLoading &&
+                    !overviewError &&
+                    !overviewWaitingForOtherTab && (
+                    <button
+                      type="button"
+                      onClick={() => setOverviewExpanded(true)}
+                      className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md border border-amber-600 bg-amber-200/90 text-amber-950 shadow-sm hover:bg-amber-300/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                    >
+                      View summary
+                    </button>
                   )}
-                  <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
-                  {!overviewExpanded && overviewLoading && !overviewError && (
-                    <span className="text-xs font-normal text-amber-800 truncate">
-                      — {overviewMarkdown ? 'Partial · ' : ''}
-                      {overviewProgressLabel || 'generating…'}
-                    </span>
-                  )}
-                  {!overviewExpanded && overviewError && !overviewLoading && (
-                    <span className="text-xs font-normal text-red-700 truncate">— error (expand to view)</span>
-                  )}
-                  {!overviewExpanded && overviewMarkdown && !overviewLoading && !overviewError && (
-                    <span className="text-xs font-normal text-amber-800/90 truncate">— ready, click to expand</span>
-                  )}
-                </button>
+                </div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                   <span className="text-amber-900">
                     Cards below pull Jira fields directly; AI recommendations are advisory.
@@ -2028,6 +2257,11 @@ const BugTriageCopilot = () => {
                   {!overviewLoading && !overviewError && overviewMarkdown && (
                     <span className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900">
                       {overviewFreshnessLabel}
+                    </span>
+                  )}
+                  {!overviewLoading && !overviewError && overviewMarkdown && overviewUpdatedLabel && (
+                    <span className="inline-flex items-center rounded-full border border-emerald-300/90 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-950">
+                      {overviewUpdatedLabel}
                     </span>
                   )}
                   {!overviewLoading && !overviewError && titleSuggestionsCount > 0 && (
@@ -2083,7 +2317,20 @@ const BugTriageCopilot = () => {
                 <button
                   type="button"
                   disabled={overviewLoading}
-                  onClick={() => runBacklogOverview(filteredAndSorted, undefined, backlogOverviewFingerprint)}
+                  onClick={() => {
+                    if (overviewLoading) return;
+                    const ownerId = ensureOverviewLockOwnerId();
+                    if (!tryAcquireOverviewLock(backlogOverviewFingerprint, ownerId)) {
+                      startOverviewCrossTabWait(backlogOverviewFingerprint);
+                      return;
+                    }
+                    runBacklogOverview(
+                      filteredAndSorted,
+                      undefined,
+                      backlogOverviewFingerprint,
+                      ownerId,
+                    );
+                  }}
                   className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-950 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Regenerate
@@ -2197,7 +2444,7 @@ const BugTriageCopilot = () => {
                 )}
                 {overviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-0 [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-max [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}

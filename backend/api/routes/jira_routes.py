@@ -19,12 +19,15 @@ from backend.core.exceptions import TimeoutError as AppTimeoutError
 from backend.services.jira_client import JiraClient
 from backend.services import jira_oauth
 from backend.services.jira_triage_scorecard import (
+    SCORECARD_REPRIORITIZATION_NUM_COLUMNS,
     SCORECARD_SCHEMA_VERSION,
     build_scorecards_by_key_meta,
     parse_scorecard_json,
     parse_shortlist_keys_json,
     recommendations_to_reprioritization_markdown,
     scorecard_framework_config_hash,
+    scorecard_reprioritization_header_line,
+    scorecard_reprioritization_separator_line,
     scorecard_row_mismatch_warnings,
     union_shortlist_with_ga_blockers,
 )
@@ -398,7 +401,10 @@ def _regroup_reprioritization_section_by_component(
                 break
         sc = _markdown_table_row_cells(sample) if sample else None
         ncol = len(sc) if sc else 5
-        if ncol >= 5:
+        if ncol >= SCORECARD_REPRIORITIZATION_NUM_COLUMNS:
+            header_line = scorecard_reprioritization_header_line()
+            sep_line = scorecard_reprioritization_separator_line()
+        elif ncol >= 5:
             header_line = '| Ticket | Title | Current priority | Jira priority recommendation | Reason |'
             sep_line = '|---|---|---|---|---|'
         else:

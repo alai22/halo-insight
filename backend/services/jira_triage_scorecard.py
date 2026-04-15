@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 SCORECARD_SCHEMA_VERSION = "2"
 
+# Reprioritization table: 5 fixed columns (validator / UI) + scorecard dimensions appended.
+SCORECARD_REPRIORITIZATION_NUM_COLUMNS = 13
+
+
+def scorecard_reprioritization_header_line() -> str:
+    """Pipe table header; must stay in sync with recommendations_to_reprioritization_markdown."""
+    return (
+        "| Ticket | Title | Current priority | Jira priority recommendation | Reason | "
+        "Total | FI | R | TS | WQ | RR | GA verdict | Block GA |"
+    )
+
+
+def scorecard_reprioritization_separator_line() -> str:
+    return "|" + "|".join(["---"] * SCORECARD_REPRIORITIZATION_NUM_COLUMNS) + "|"
+
+
 # Jira ladder: index 0 = highest
 _PRIORITY_ORDER: Tuple[str, ...] = (
     "blocker",
@@ -117,6 +133,16 @@ def ga_verdict_from_total(total: int) -> str:
     if total >= 6:
         return "Fix if capacity"
     return "PostGA"
+
+
+def reprioritization_reason_short(row: ScorecardRowIn, implied: str, total: int) -> str:
+    """One-line hint for the Reason column (dimensions live in dedicated columns)."""
+    safety = row.feature_importance == 4 and (row.technical_severity >= 2 or row.workaround_quality >= 1)
+    if safety and implied == "blocker" and total < 10:
+        return "Safety override (fi=4, ts≥2 or wq≥1)"
+    if total >= 10:
+        return "total ≥10"
+    return f"Scorecard → {implied}"
 
 
 def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:
@@ -292,11 +318,7 @@ def merge_scorecard_to_recommendation(
     else:
         return None
 
-    safety = row.feature_importance == 4 and (row.technical_severity >= 2 or row.workaround_quality >= 1)
-    rule = "safety Blocker (fi=4 ∧ (ts≥2 ∨ wq≥1))" if safety and implied == "blocker" and total < 10 else f"total {total}/14"
-    reason = f"Scorecard v2 {total}/14 → {implied}; {rule}; fi={row.feature_importance} r={row.reach} ts={row.technical_severity} wq={row.workaround_quality} rr={row.regression_risk}"
-    if len(reason) > 200:
-        reason = reason[:197] + "…"
+    reason = reprioritization_reason_short(row, implied, total)
 
     return {
         "action": action,
@@ -358,7 +380,7 @@ def recommendations_to_reprioritization_markdown(
     Build ### Recommended Jira priority changes section (table or prose-only).
     """
     lines: List[str] = ["### Recommended Jira priority changes", ""]
-    table_rows: List[Tuple[str, str, str, str, str]] = []
+    table_rows: List[Tuple[ScorecardRowIn, str, str, str, str, str]] = []
 
     for row in batch.rows:
         key = row.key
@@ -379,9 +401,7 @@ def recommendations_to_reprioritization_markdown(
         target_title = target[:1].upper() + target[1:] if target else target
         verb = "Raise to" if action == "raise" else "Lower to"
         rec_cell = f"{verb} {target_title}"
-        table_rows.append(
-            (key, title, cur_display, rec_cell, rec["reason"]),
-        )
+        table_rows.append((row, key, title, cur_display, rec_cell, rec["reason"]))
 
     if not table_rows:
         lines.append(
@@ -390,14 +410,22 @@ def recommendations_to_reprioritization_markdown(
         )
         return "\n".join(lines)
 
-    lines.append("| Ticket | Title | Current priority | Jira priority recommendation | Reason |")
-    lines.append("|---|---|---|---|---|")
-    for ticket, title, curp, rec_cell, reason in table_rows:
+    lines.append(scorecard_reprioritization_header_line())
+    lines.append(scorecard_reprioritization_separator_line())
+    for srow, ticket, title, curp, rec_cell, reason in table_rows:
+        total = raw_total_from_row(srow)
+        ga = ga_verdict_from_total(total)
+        block_ga = "Yes" if ga == "Block GA" else "No"
         safe_title = title.replace("|", "\\|")
         safe_cur = curp.replace("|", "\\|")
         safe_rec = rec_cell.replace("|", "\\|")
         safe_reason = reason.replace("|", "\\|")
-        lines.append(f"| {ticket} | {safe_title} | {safe_cur} | {safe_rec} | {safe_reason} |")
+        safe_ga = ga.replace("|", "\\|")
+        lines.append(
+            f"| {ticket} | {safe_title} | {safe_cur} | {safe_rec} | {safe_reason} | "
+            f"{total}/14 | {srow.feature_importance} | {srow.reach} | {srow.technical_severity} | "
+            f"{srow.workaround_quality} | {srow.regression_risk} | {safe_ga} | {block_ga} |"
+        )
     return "\n".join(lines)
 
 
