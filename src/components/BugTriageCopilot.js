@@ -445,7 +445,7 @@ function rehypeWrapBacklogSnapshotBlocks() {
 }
 
 /**
- * Arrow + emphasis in the Jira priority recommendation column; ticket column links when base URL is known.
+ * Arrow + emphasis in the Recommended priority column; ticket column links when base URL is known.
  */
 function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
   const base = jiraBaseUrl && String(jiraBaseUrl).replace(/\/+$/, '');
@@ -2010,8 +2010,17 @@ const BugTriageCopilot = () => {
                   </h3>
                   <p className="text-[11px] text-slate-500 mb-2">
                     14-point scorecard (v2): five dimensions summed on the server; GA verdict and implied Jira
-                    priority follow team rules. Config hash identifies the framework version for comparing runs.
+                    priority follow the rules below. Config hash identifies the framework version for comparing
+                    runs.
                   </p>
+                  {Array.isArray(overviewMeta.scorecard_threshold_summary) &&
+                    overviewMeta.scorecard_threshold_summary.length > 0 && (
+                      <ul className="list-disc pl-4 mb-2 text-[11px] text-slate-600 space-y-0.5">
+                        {overviewMeta.scorecard_threshold_summary.map((line, idx) => (
+                          <li key={idx}>{line}</li>
+                        ))}
+                      </ul>
+                    )}
                   <dl className="grid gap-1 text-[11px] sm:text-xs text-slate-700 mb-3">
                     <div className="flex flex-wrap gap-x-2">
                       <dt className="text-slate-500">Schema</dt>

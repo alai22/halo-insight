@@ -26,7 +26,7 @@ def _mk_table(*data_rows: str) -> str:
         [
             '### Recommended Jira priority changes',
             '',
-            '| Ticket | Title | Current priority | Jira priority recommendation | Reason |',
+            '| Ticket | Title | Current priority | Recommended priority | Reason |',
             '|---|---|---|---|---|',
             *data_rows,
             '',
@@ -100,7 +100,7 @@ def test_regroup_preserves_leading_prose():
         '\n'
         'Summary line before table.\n'
         '\n'
-        '| Ticket | Title | Current priority | Jira priority recommendation | Reason |\n'
+        '| Ticket | Title | Current priority | Recommended priority | Reason |\n'
         '|---|---|---|---|---|\n'
         '| HALO-1 | a | Major | Lower to Normal | r |\n'
     )
@@ -116,7 +116,7 @@ def test_regroup_legacy_four_column_table():
         [
             '### Recommended Jira priority changes',
             '',
-            '| Ticket | Current priority | Jira priority recommendation | Reason |',
+            '| Ticket | Current priority | Recommended priority | Reason |',
             '|---|---|---|---|',
             '| HALO-1 | Major | Lower to Normal | r |',
             '',
@@ -133,7 +133,7 @@ def test_regroup_legacy_four_column_table():
 def test_regroup_wide_scorecard_row_reconstructs_header():
     """No header row: fallback must emit 13-column legacy header to match wide primary rows."""
     wide = (
-        "| HALO-7 | Wide row title | Major | Lower to Normal | total ≥10 | "
+        "| HALO-7 | Wide row title | Major | Lower to Normal | total ≥12 | "
         "6/14 | 2 | 1 | 2 | 1 | 0 | Fix if capacity | No |"
     )
     md = f"### Recommended Jira priority changes\n\n{wide}\n"

@@ -10,7 +10,7 @@ def _mk_markdown(rows: str) -> str:
         [
             "### Recommended Jira priority changes",
             "",
-            "| Ticket | Title | Current priority | Jira priority recommendation | Reason |",
+            "| Ticket | Title | Current priority | Recommended priority | Reason |",
             "|---|---|---|---|---|",
             rows.strip(),
             "",

@@ -12,6 +12,7 @@ from backend.services.jira_triage_scorecard import (
     parse_shortlist_keys_json,
     raw_total_from_row,
     recommendations_to_reprioritization_markdown,
+    scorecard_threshold_reference_lines,
     scorecard_framework_config_hash,
 )
 
@@ -41,16 +42,19 @@ def test_raw_total_and_ga_verdict():
 
 
 def test_implied_jira_priority_bands():
-    assert implied_jira_priority_from_row(_row(feature_importance=1, reach=1, technical_severity=1, workaround_quality=0, regression_risk=0)) == "minor"  # 3
+    assert implied_jira_priority_from_row(_row(feature_importance=1, reach=0, technical_severity=1, workaround_quality=0, regression_risk=0)) == "minor"  # 2
+    assert implied_jira_priority_from_row(_row(feature_importance=1, reach=1, technical_severity=1, workaround_quality=0, regression_risk=0)) == "normal"  # 3
     assert implied_jira_priority_from_row(_row(feature_importance=1, reach=1, technical_severity=1, workaround_quality=1, regression_risk=1)) == "normal"  # 5
     assert implied_jira_priority_from_row(_row(feature_importance=2, reach=1, technical_severity=1, workaround_quality=1, regression_risk=1)) == "major"  # 6
     r6 = _row(feature_importance=2, reach=1, technical_severity=2, workaround_quality=1, regression_risk=0)
     assert raw_total_from_row(r6) == 6
     assert implied_jira_priority_from_row(r6) == "major"
     assert implied_jira_priority_from_row(_row(feature_importance=2, reach=2, technical_severity=2, workaround_quality=1, regression_risk=0)) == "major"  # 7
-    assert implied_jira_priority_from_row(_row(feature_importance=2, reach=2, technical_severity=2, workaround_quality=1, regression_risk=1)) == "critical"  # 8
+    assert implied_jira_priority_from_row(_row(feature_importance=2, reach=2, technical_severity=2, workaround_quality=1, regression_risk=1)) == "major"  # 8
     assert implied_jira_priority_from_row(_row(feature_importance=2, reach=2, technical_severity=3, workaround_quality=1, regression_risk=1)) == "critical"  # 9
-    assert implied_jira_priority_from_row(_row(feature_importance=2, reach=3, technical_severity=3, workaround_quality=2, regression_risk=0)) == "blocker"  # 10
+    assert implied_jira_priority_from_row(_row(feature_importance=2, reach=3, technical_severity=3, workaround_quality=2, regression_risk=0)) == "critical"  # 10
+    assert implied_jira_priority_from_row(_row(feature_importance=3, reach=3, technical_severity=3, workaround_quality=1, regression_risk=1)) == "critical"  # 11
+    assert implied_jira_priority_from_row(_row(feature_importance=2, reach=3, technical_severity=3, workaround_quality=2, regression_risk=2)) == "blocker"  # 12
 
 
 def test_implied_blocker_safety_override_low_total():
@@ -147,13 +151,22 @@ def test_recommendations_markdown_and_validator():
     assert dropped["invalid"] == 0
     assert "HALO-9" in cleaned
     assert "Raise" in cleaned
-    assert cleaned.count("| Ticket | Title | Current priority | Jira priority recommendation | Reason |") == 1
-    assert "| Title | Current priority | Jira priority recommendation | Reason | Total |" not in cleaned
+    assert cleaned.count("| Ticket | Title | Current priority | Recommended priority | Reason |") == 1
+    assert "| Title | Current priority | Recommended priority | Reason | Total |" not in cleaned
     assert "#### Scorecard (14-point)" in cleaned
     assert "| Ticket | Total | FI | R | TS | WQ | RR | GA verdict | Block GA |" in cleaned
     assert "13/14" in cleaned
     assert "| 3 | 3 | 3 | 2 | 2 |" in cleaned  # FI..RR
     assert "| Block GA | Yes |" in cleaned  # GA verdict + Block GA columns
+    assert "- GA verdict from the 14-point total:" in cleaned
+    assert "0–2 → minor" in cleaned
+    assert "total ≥12" in cleaned
+    assert "at least 1 rank step on the server ladder" in cleaned
+
+
+def test_scorecard_threshold_reference_lines_uses_min_delta():
+    lines = scorecard_threshold_reference_lines(2)
+    assert any("at least 2 rank step" in ln for ln in lines)
 
 
 def test_parse_shortlist_keys_json():
@@ -187,7 +200,7 @@ def test_build_scorecards_by_key_meta():
     assert "X-1" in meta
     assert meta["X-1"]["raw_total"] == 3
     assert meta["X-1"]["ga_verdict"] == "PostGA"
-    assert meta["X-1"]["implied_priority"] == "minor"
+    assert meta["X-1"]["implied_priority"] == "normal"
     assert "recommendation" in meta["X-1"]
 
 

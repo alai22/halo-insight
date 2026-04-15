@@ -29,6 +29,7 @@ from backend.services.jira_triage_scorecard import (
     scorecard_reprioritization_header_line,
     scorecard_reprioritization_separator_line,
     scorecard_row_mismatch_warnings,
+    scorecard_threshold_reference_lines,
     union_shortlist_with_ga_blockers,
 )
 from backend.utils.config import Config
@@ -412,10 +413,10 @@ def _regroup_reprioritization_section_by_component(
             header_line = scorecard_reprioritization_header_line()
             sep_line = scorecard_reprioritization_separator_line()
         elif ncol >= 5:
-            header_line = '| Ticket | Title | Current priority | Jira priority recommendation | Reason |'
+            header_line = '| Ticket | Title | Current priority | Recommended priority | Reason |'
             sep_line = '|---|---|---|---|---|'
         else:
-            header_line = '| Ticket | Current priority | Jira priority recommendation | Reason |'
+            header_line = '| Ticket | Current priority | Recommended priority | Reason |'
             sep_line = '|---|---|---|---|'
 
     while leading_prose and not leading_prose[-1].strip():
@@ -687,7 +688,7 @@ For tickets in the reprioritization table, use this **exact vocabulary** for the
 
 **Reprioritization (only if any):** Start with subheading `### Recommended Jira priority changes` then a GitHub-flavored pipe table `|---|---|---|---|---|`:
 
-| Ticket | Title | Current priority | Jira priority recommendation | Reason |
+| Ticket | Title | Current priority | Recommended priority | Reason |
 
 - **Title:** Copy the issue **summary/title** from the input data for that key (same wording as the `title` field in the tab-separated issue list; truncate with `…` if needed so the row stays readable, e.g. roughly **120 characters** max in the cell).
 - Recommendation column: only **Raise to …** or **Lower to …** (never “No change” rows—omit tickets that need no change). **Reason:** keep to **one short line** per row when possible so more tickets fit.
@@ -1959,6 +1960,9 @@ def _iter_backlog_overview_events(
         'scorecard_shortlist_size': scorecard_shortlist_size if use_scorecard else None,
         'scorecard_scored_keys': scorecard_scored_keys if use_scorecard else None,
         'scorecard_errors': scorecard_errors[:25] if use_scorecard else [],
+        'scorecard_threshold_summary': (
+            scorecard_threshold_reference_lines(min_scorecard_delta) if use_scorecard else []
+        ),
     }
     yield {
         'type': 'result',

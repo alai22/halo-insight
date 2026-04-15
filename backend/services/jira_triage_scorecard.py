@@ -29,7 +29,7 @@ SCORECARD_METRICS_NUM_COLUMNS = 9
 def scorecard_reprioritization_header_line() -> str:
     """Legacy 13-column header; regroup fallback for old cached markdown."""
     return (
-        "| Ticket | Title | Current priority | Jira priority recommendation | Reason | "
+        "| Ticket | Title | Current priority | Recommended priority | Reason | "
         "Total | FI | R | TS | WQ | RR | GA verdict | Block GA |"
     )
 
@@ -148,33 +148,54 @@ def ga_verdict_from_total(total: int) -> str:
     return "PostGA"
 
 
+def scorecard_threshold_reference_lines(min_delta_ranks: int) -> List[str]:
+    """
+    Plain-text bullets for markdown and API meta; mirrors ga_verdict_from_total,
+    implied_jira_priority_from_row, and merge_scorecard_to_recommendation rank delta.
+    """
+    d = max(0, int(min_delta_ranks))
+    step_noun = "step" if d == 1 else "steps"
+    return [
+        "GA verdict from the 14-point total: 0–5 → PostGA; 6–9 → Fix if capacity; 10–14 → Block GA.",
+        (
+            "Implied Jira priority from the same total: 0–2 → minor; 3–5 → normal; 6–8 → major; "
+            "9–11 → critical; 12–14 → blocker. Safety override: implied blocker when feature importance "
+            "is 4 and (technical severity ≥ 2 or workaround quality ≥ 1), even if total is below 12."
+        ),
+        (
+            f"A Raise or Lower row is emitted only when implied priority differs from the normalized "
+            f"current Jira priority by at least {d} rank {step_noun} on the server ladder."
+        ),
+    ]
+
+
 def reprioritization_reason_short(row: ScorecardRowIn, implied: str, total: int) -> str:
     """One-line hint for the Reason column (dimensions live in dedicated columns)."""
     safety = row.feature_importance == 4 and (row.technical_severity >= 2 or row.workaround_quality >= 1)
-    if safety and implied == "blocker" and total < 10:
+    if safety and implied == "blocker" and total < 12:
         return "Safety override (fi=4, ts≥2 or wq≥1)"
-    if total >= 10:
-        return "total ≥10"
+    if total >= 12:
+        return "total ≥12"
     return f"Scorecard → {implied}"
 
 
 def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:
     """
     Server-side Jira priority from dimensions + raw total (not LLM jira_priority).
-    Order: safety Blocker override, then total bands.
+    Order: safety Blocker override, then total bands (blocker 12–14, critical 9–11, major 6–8, normal 3–5).
     """
     total = raw_total_from_row(row)
     fi = row.feature_importance
     ts = row.technical_severity
     wq = row.workaround_quality
 
-    if total >= 10 or (fi == 4 and (ts >= 2 or wq >= 1)):
+    if total >= 12 or (fi == 4 and (ts >= 2 or wq >= 1)):
         return "blocker"
-    if 8 <= total <= 9:
+    if 9 <= total <= 11:
         return "critical"
-    if 6 <= total <= 7:
+    if 6 <= total <= 8:
         return "major"
-    if 4 <= total <= 5:
+    if 3 <= total <= 5:
         return "normal"
     return "minor"
 
@@ -423,7 +444,7 @@ def recommendations_to_reprioritization_markdown(
         )
         return "\n".join(lines)
 
-    lines.append("| Ticket | Title | Current priority | Jira priority recommendation | Reason |")
+    lines.append("| Ticket | Title | Current priority | Recommended priority | Reason |")
     lines.append("|---|---|---|---|---|")
     for srow, ticket, title, curp, rec_cell, reason in table_rows:
         safe_title = title.replace("|", "\\|")
@@ -434,6 +455,9 @@ def recommendations_to_reprioritization_markdown(
 
     lines.append("")
     lines.append("#### Scorecard (14-point)")
+    lines.append("")
+    for ref in scorecard_threshold_reference_lines(min_delta_ranks):
+        lines.append(f"- {ref}")
     lines.append("")
     lines.append(scorecard_metrics_header_line())
     lines.append(scorecard_metrics_separator_line())
