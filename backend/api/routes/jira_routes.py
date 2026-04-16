@@ -795,12 +795,14 @@ Rules:
 """
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS2_SHORTLIST = (
-    """You are an engineering lead triaging a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive the **full** backlog as **TAB-separated** lines; **priority** is the 4th column (authoritative Jira priority—not inferred from the title text).
+    """You are an engineering lead triaging a Jira bug backlog for **Halo Collar** (pet GPS / smart collar; mobile apps for pet tracking, maps, geofences, device pairing, etc.). You receive the **full** backlog as **TAB-separated** lines (key, title, type, priority, status, components, labels, …). The **priority** column (4th field) is the authoritative **current** Jira priority for that row.
+
+**Shortlist selection (important):** Use the **priority** column together with title, type, status, labels, components, parent/epic, needs-info, etc. to spot likely **mis-prioritization** (e.g. strong core-impact or user/QA signals vs a **lower** current priority such as **Normal** or **Major**). Do **not** use the **GA-blocker** flag to include or exclude keys—the score pass explicitly reassesses GA stance from the rubric.
 
 """
     + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
     + """
-**Task:** Pick issue keys that most deserve **follow-up structured priority scoring** (likely mis-prioritized, high user-visible impact vs current Major/Normal/Minor, **GA-blocker** flag, or core safety/geofence/location flows).
+**Task:** Pick issue keys that most deserve **follow-up structured priority scoring**: mis-prioritization candidates (metadata vs **priority**), plus **core safety / geofence / location / containment**, broad user-visible impact, regressions or broken flows, engineering risk, or unclear tiering that structured scoring should settle. Prefer a **spread** of candidates (not only Critical/Blocker-adjacent wording).
 
 Output **JSON only**:
 {"keys":["PROJ-1","PROJ-2"]}
@@ -808,6 +810,8 @@ Output **JSON only**:
 Rules:
 - Keys must appear in the input; order by **descending** triage urgency (most important first).
 - The user message states a **shortlist cap**—return **at most** that many keys.
+- **Mis-prioritization:** compare other columns to **priority**; do not treat title words like "critical" as replacing the priority field.
+- **GA-blocker flag:** do not use it to shortlist or skip a key.
 - **Do not pad:** include only keys that justify scoring; fewer is fine.
 - No markdown fences, no prose outside JSON.
 """
