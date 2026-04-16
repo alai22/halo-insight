@@ -1546,6 +1546,8 @@ def _iter_backlog_overview_events(
     scorecard_config_hash: Optional[str] = None
     scorecard_shortlist_size = 0
     scorecard_scored_keys = 0
+    scorecard_sl_keys_ordered: List[str] = []
+    scorecard_scored_keys_ordered: List[str] = []
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1620,6 +1622,8 @@ def _iter_backlog_overview_events(
             else:
                 cap = max(0, Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS)
                 scored_keys = sl_keys[:cap] if cap else []
+            scorecard_sl_keys_ordered = list(sl_keys)
+            scorecard_scored_keys_ordered = list(scored_keys)
             scorecard_scored_keys = len(scored_keys)
             tokens_used = (getattr(r1, 'tokens_used', 0) or 0) + (getattr(r_sl, 'tokens_used', 0) or 0)
             models_used = [r1.model, r_sl.model]
@@ -1926,6 +1930,36 @@ def _iter_backlog_overview_events(
         tokens_used,
         overview_incomplete,
     )
+    issues_truncated_out = max(0, total_submitted - len(batch))
+    ga_blockers_in_batch = sum(1 for i in batch if i.get('gaBlocker') is True)
+    sl_cov = {str(k).strip().upper() for k in scorecard_sl_keys_ordered if str(k).strip()}
+    sc_cov = {str(k).strip().upper() for k in scorecard_scored_keys_ordered if str(k).strip()}
+    ga_keys_in_batch = {
+        str(i.get('key', '')).strip().upper()
+        for i in batch
+        if i.get('key') and i.get('gaBlocker') is True
+    }
+    ai_coverage: Dict[str, Any] = {
+        'issues_received_raw': submitted_count_before_parent_filter,
+        'issues_after_parent_filter': submitted_count_after_parent_filter,
+        'issues_in_prompt_batch': len(batch),
+        'issues_truncated_out': issues_truncated_out,
+        'prompt_batch_cap': _OVERVIEW_MAX_ISSUES,
+        'deep_pass_enabled': Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED,
+        'deep_pass_max_keys': Config.JIRA_BACKLOG_OVERVIEW_DEEP_MAX_KEYS,
+        'deep_pass_keys_selected': deep_key_count,
+        'deep_pass_applied': deep_pass_applied,
+        'title_scan_candidates': title_rewrite_candidates,
+        'title_rewrite_rows': title_rewrite_rows,
+        'title_rewrite_pass_applied': title_rewrite_pass_applied,
+        'ga_blockers_in_batch': ga_blockers_in_batch,
+        'shortlist_model_keys': len(scorecard_sl_keys_ordered) if use_scorecard else None,
+        'scorecard_scored_keys': len(scorecard_scored_keys_ordered) if use_scorecard else None,
+        'shortlist_cap': Config.JIRA_TRIAGE_SCORECARD_MAX_KEYS if use_scorecard else None,
+        'ga_blocker_union_enabled': Config.JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS if use_scorecard else None,
+        'ga_blockers_included_in_scored_set': (len(ga_keys_in_batch & sc_cov) if use_scorecard else None),
+        'scored_keys_added_by_ga_union': (max(0, len(sc_cov - sl_cov)) if use_scorecard else None),
+    }
     meta: Dict[str, Any] = {
         'issue_count': len(batch),
         'truncated': truncated,
@@ -1965,6 +1999,7 @@ def _iter_backlog_overview_events(
         'scorecard_threshold_summary': (
             scorecard_threshold_reference_lines(min_scorecard_delta) if use_scorecard else []
         ),
+        'ai_coverage': ai_coverage,
     }
     yield {
         'type': 'result',

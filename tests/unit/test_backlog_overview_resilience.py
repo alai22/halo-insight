@@ -130,3 +130,61 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
     assert meta.get('title_rewrite_no_candidates') is True
     assert 'No tickets were selected for title rewrite' in final_md
     assert 'completed_steps' in meta and 'title_rewrite' in (meta.get('completed_steps') or [])
+
+
+@patch('app.get_service_container')
+def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, client):
+    """Terminal meta includes ai_coverage counts for shortlist → scorecard path."""
+    pass1 = _resp('## Themes\nx\n')
+    shortlist = _resp('{"keys":["HALO-1"]}')
+    scorecard_payload = {
+        'version': '2',
+        'rows': [
+            {
+                'key': 'HALO-1',
+                'feature_importance': 2,
+                'reach': 1,
+                'technical_severity': 1,
+                'workaround_quality': 1,
+                'regression_risk': 0,
+                'raw_total': 5,
+                'ga_verdict': 'PostGA',
+                'jira_priority': 'Normal',
+            }
+        ],
+    }
+    scorecard = _resp(json.dumps(scorecard_payload))
+
+    mock_claude = MagicMock()
+    mock_claude.send_message.side_effect = [pass1, shortlist, scorecard]
+
+    container = MagicMock()
+    container.get_claude_service.return_value = mock_claude
+    mock_get_container.return_value = container
+
+    with patch.multiple(
+        'backend.api.routes.jira_routes.Config',
+        JIRA_TRIAGE_SCORECARD_ENABLED=True,
+        JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS=False,
+        JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED=False,
+        JIRA_BACKLOG_TITLE_REWRITE_ENABLED=False,
+    ):
+        rv = client.post(
+            '/api/jira/backlog-overview',
+            json={'issues': [_issue()]},
+            content_type='application/json',
+        )
+    assert rv.status_code == 200
+    data = rv.get_json()
+    assert data['status'] == 'success'
+    meta = data.get('meta') or {}
+    cov = meta.get('ai_coverage')
+    assert isinstance(cov, dict)
+    assert cov.get('issues_in_prompt_batch') == 1
+    assert cov.get('issues_received_raw') == 1
+    assert cov.get('shortlist_model_keys') == 1
+    assert cov.get('scorecard_scored_keys') == 1
+    assert cov.get('ga_blockers_in_batch') == 0
+    assert cov.get('ga_blockers_included_in_scored_set') == 0
+    assert cov.get('scored_keys_added_by_ga_union') == 0
+    assert meta.get('scorecard_enabled') is True

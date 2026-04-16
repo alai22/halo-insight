@@ -151,6 +151,117 @@ function OverviewPhaseRail({ loading, progress, meta, titlePipelineEnabled = tru
   );
 }
 
+/**
+ * Server-derived counts for what reached the model vs shortlist / scorecard / deep refine / titles.
+ * Uses `meta.ai_coverage` when present; falls back to legacy top-level meta for older cached runs.
+ */
+function OverviewAiCoverageSummary({ meta }) {
+  if (!meta) return null;
+  const c = meta.ai_coverage;
+  const batch = c?.issues_in_prompt_batch ?? meta.issue_count;
+  const cap = c?.prompt_batch_cap;
+  const truncOut =
+    c?.issues_truncated_out ??
+    (meta.truncated &&
+    typeof meta.submitted_count === 'number' &&
+    typeof meta.issue_count === 'number'
+      ? Math.max(0, meta.submitted_count - meta.issue_count)
+      : null);
+
+  const scorecardOn = !!meta.scorecard_enabled;
+  const shortlist = c?.shortlist_model_keys ?? meta.scorecard_shortlist_size;
+  const scored = c?.scorecard_scored_keys ?? meta.scorecard_scored_keys;
+  const gaInBatch = c?.ga_blockers_in_batch;
+  const gaInScored = c?.ga_blockers_included_in_scored_set;
+  const gaUnionAdded = c?.scored_keys_added_by_ga_union;
+
+  const deepEnabled = c?.deep_pass_enabled ?? true;
+  const deepSel = c?.deep_pass_keys_selected ?? meta.priority_deep_pass_keys;
+  const deepOk = c?.deep_pass_applied ?? meta.priority_deep_pass_applied;
+
+  const titlePipeOn = meta.title_rewrite_enabled !== false;
+  const titleCand = c?.title_scan_candidates ?? meta.title_rewrite_candidates;
+  const titleRows = c?.title_rewrite_rows ?? meta.title_rewrite_rows;
+
+  const hasLine1 = batch != null || (truncOut != null && truncOut > 0);
+  const hasScorecardLine = scorecardOn && (shortlist != null || scored != null);
+  const hasDeepLine = deepEnabled && deepSel != null && deepSel > 0;
+  const hasTitleLine = titlePipeOn && (titleCand != null || titleRows != null);
+
+  if (!hasLine1 && !hasScorecardLine && !hasDeepLine && !hasTitleLine) {
+    return null;
+  }
+
+  return (
+    <div
+      className="mt-2 rounded-md border border-amber-200/80 bg-white/90 px-2.5 py-2 text-[11px] leading-snug text-amber-950"
+      aria-label="AI triage coverage"
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80 mb-1">AI coverage</p>
+      <div className="space-y-1">
+        {hasLine1 ? (
+          <p>
+            <span className="text-amber-800/90">In prompt batch: </span>
+            <strong className="tabular-nums">{batch ?? '—'}</strong>
+            {cap != null ? (
+              <span className="text-amber-800/85">
+                {' '}
+                (cap {cap})
+              </span>
+            ) : null}
+            {truncOut != null && truncOut > 0 ? (
+              <span className="text-amber-800/90">
+                {' '}
+                — <strong className="tabular-nums">{truncOut}</strong> not analyzed (over cap)
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+        {hasScorecardLine ? (
+          <p>
+            <span className="text-amber-800/90">Scorecard: </span>
+            shortlist <strong className="tabular-nums">{shortlist ?? '—'}</strong>
+            <span className="text-amber-800/90"> → scored </span>
+            <strong className="tabular-nums">{scored ?? '—'}</strong>
+            {gaInBatch != null ? (
+              <span className="text-amber-800/85">
+                {' '}
+                · GA in batch <strong className="tabular-nums">{gaInBatch}</strong>
+                {gaInScored != null ? (
+                  <>
+                    {' '}
+                    (<strong className="tabular-nums">{gaInScored}</strong> in scored set)
+                  </>
+                ) : null}
+              </span>
+            ) : null}
+            {gaUnionAdded != null && gaUnionAdded > 0 ? (
+              <span className="text-amber-800/85">
+                {' '}
+                · +<strong className="tabular-nums">{gaUnionAdded}</strong> from GA union
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+        {hasDeepLine ? (
+          <p>
+            <span className="text-amber-800/90">Deep refine: </span>
+            <strong className="tabular-nums">{deepSel}</strong> key{deepSel === 1 ? '' : 's'}
+            {!deepOk ? <span className="text-amber-800/85"> (output not applied)</span> : null}
+          </p>
+        ) : null}
+        {hasTitleLine ? (
+          <p>
+            <span className="text-amber-800/90">Titles: </span>
+            <strong className="tabular-nums">{titleCand ?? 0}</strong> scan candidates →{' '}
+            <strong className="tabular-nums">{titleRows ?? 0}</strong> table rows
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const OVERVIEW_CONSOLE_GROUP = '[BugTriage overview] AI run';
 
 function overviewStepLabel(step) {
@@ -1920,6 +2031,56 @@ const BugTriageCopilot = () => {
                           ) : null}
                         </dd>
                       </div>
+                      {displayedOverviewMeta.ai_coverage && typeof displayedOverviewMeta.ai_coverage === 'object' && (
+                        <>
+                          <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline pt-1 border-t border-slate-200/60">
+                            <dt className="text-slate-500 shrink-0 sm:w-44">Received (pre parent filter)</dt>
+                            <dd className="font-medium text-slate-900 tabular-nums">
+                              {displayedOverviewMeta.ai_coverage.issues_received_raw ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                            <dt className="text-slate-500 shrink-0 sm:w-44">Not analyzed (over cap)</dt>
+                            <dd className="font-medium text-slate-900 tabular-nums">
+                              {displayedOverviewMeta.ai_coverage.issues_truncated_out ?? '—'}
+                            </dd>
+                          </div>
+                          {displayedOverviewMeta.scorecard_enabled ? (
+                            <>
+                              <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                                <dt className="text-slate-500 shrink-0 sm:w-44">Scorecard shortlist → scored</dt>
+                                <dd className="font-medium text-slate-900 tabular-nums">
+                                  {displayedOverviewMeta.ai_coverage.shortlist_model_keys ?? '—'} →{' '}
+                                  {displayedOverviewMeta.ai_coverage.scorecard_scored_keys ?? '—'}
+                                  <span className="font-normal text-slate-500 ml-1">
+                                    (cap {displayedOverviewMeta.ai_coverage.shortlist_cap ?? '—'})
+                                  </span>
+                                </dd>
+                              </div>
+                              <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                                <dt className="text-slate-500 shrink-0 sm:w-44">GA union / in scored set</dt>
+                                <dd className="font-medium text-slate-900 tabular-nums">
+                                  {displayedOverviewMeta.ai_coverage.ga_blocker_union_enabled ? 'on' : 'off'} · in
+                                  batch {displayedOverviewMeta.ai_coverage.ga_blockers_in_batch ?? '—'} · scored{' '}
+                                  {displayedOverviewMeta.ai_coverage.ga_blockers_included_in_scored_set ?? '—'} · +{' '}
+                                  {displayedOverviewMeta.ai_coverage.scored_keys_added_by_ga_union ?? '—'} added
+                                </dd>
+                              </div>
+                            </>
+                          ) : null}
+                          <div className="flex flex-col sm:flex-row sm:gap-2 sm:items-baseline">
+                            <dt className="text-slate-500 shrink-0 sm:w-44">Deep refine keys</dt>
+                            <dd className="font-medium text-slate-900 tabular-nums">
+                              {displayedOverviewMeta.ai_coverage.deep_pass_keys_selected ?? '—'}
+                              {displayedOverviewMeta.ai_coverage.deep_pass_applied
+                                ? ' · applied'
+                                : (displayedOverviewMeta.ai_coverage.deep_pass_keys_selected || 0) > 0
+                                  ? ' · not applied'
+                                  : ''}
+                            </dd>
+                          </div>
+                        </>
+                      )}
                     </>
                   )}
                 </dl>
@@ -2474,14 +2635,17 @@ const BugTriageCopilot = () => {
             </div>
             <div className="px-3 pb-3 border-t border-amber-200/60 bg-gradient-to-b from-amber-50/50 to-transparent">
               {(overviewLoading || displayedOverviewMarkdown || displayedOverviewMeta) && !overviewError && (
-                <OverviewPhaseRail
-                  loading={overviewLoading}
-                  progress={overviewProgress}
-                  meta={displayedOverviewMeta}
-                  titlePipelineEnabled={
-                    displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
-                  }
-                />
+                <>
+                  <OverviewPhaseRail
+                    loading={overviewLoading}
+                    progress={overviewProgress}
+                    meta={displayedOverviewMeta}
+                    titlePipelineEnabled={
+                      displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
+                    }
+                  />
+                  <OverviewAiCoverageSummary meta={displayedOverviewMeta} />
+                </>
               )}
             </div>
             <div className="px-3 pb-2">
