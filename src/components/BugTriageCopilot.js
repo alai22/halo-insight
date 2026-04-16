@@ -111,7 +111,7 @@ function OverviewPhaseRail({ loading, progress, meta, titlePipelineEnabled = tru
 
   return (
     <div className="w-full min-w-0" aria-label="Overview generation phases">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80 mb-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 mb-2">
         AI run phases
       </p>
       <div className={`grid ${gridCols} gap-1 w-full max-w-3xl mx-auto`}>
@@ -125,7 +125,7 @@ function OverviewPhaseRail({ loading, progress, meta, titlePipelineEnabled = tru
             circleClass = `${circleBase} border-emerald-500 bg-emerald-500 text-white`;
             inner = <CheckCircle className="h-4 w-4" aria-hidden />;
           } else if (status === 'active') {
-            circleClass = `${circleBase} border-amber-500 bg-amber-100 text-amber-900 ring-2 ring-amber-300/80`;
+            circleClass = `${circleBase} border-indigo-500 bg-indigo-50 text-indigo-900 ring-2 ring-indigo-200/90`;
             inner = <Loader2 className="h-4 w-4 animate-spin" aria-hidden />;
           } else if (status === 'error') {
             circleClass = `${circleBase} border-red-400 bg-red-50 text-red-700`;
@@ -139,10 +139,10 @@ function OverviewPhaseRail({ loading, progress, meta, titlePipelineEnabled = tru
               <div className={circleClass} title={OVERVIEW_STEP_LABELS[step.id] || step.id}>
                 {inner}
               </div>
-              <span className="mt-1 text-center text-[10px] font-medium leading-tight text-amber-950/90">
+              <span className="mt-1 text-center text-[10px] font-medium leading-tight text-slate-800">
                 {step.short}
               </span>
-              <span className="text-center text-[9px] text-amber-800/70 leading-tight">{step.sub}</span>
+              <span className="text-center text-[9px] text-slate-500 leading-tight">{step.sub}</span>
             </div>
           );
         })}
@@ -194,23 +194,23 @@ function OverviewAiCoverageSummary({ meta }) {
 
   return (
     <div
-      className="mt-2 rounded-md border border-amber-200/80 bg-white/90 px-2.5 py-2 text-[11px] leading-snug text-amber-950"
+      className="mt-2 rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-slate-800 shadow-sm"
       aria-label="AI triage coverage"
     >
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80 mb-1">AI coverage</p>
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-900/85 mb-1">AI coverage</p>
       <div className="space-y-1">
         {hasLine1 ? (
           <p>
-            <span className="text-amber-800/90">In prompt batch: </span>
+            <span className="text-slate-600">In prompt batch: </span>
             <strong className="tabular-nums">{batch ?? '—'}</strong>
             {cap != null ? (
-              <span className="text-amber-800/85">
+              <span className="text-slate-500">
                 {' '}
                 (cap {cap})
               </span>
             ) : null}
             {truncOut != null && truncOut > 0 ? (
-              <span className="text-amber-800/90">
+              <span className="text-slate-600">
                 {' '}
                 — <strong className="tabular-nums">{truncOut}</strong> not analyzed (over cap)
               </span>
@@ -219,12 +219,12 @@ function OverviewAiCoverageSummary({ meta }) {
         ) : null}
         {hasScorecardLine ? (
           <p>
-            <span className="text-amber-800/90">Scorecard: </span>
+            <span className="text-slate-600">Scorecard: </span>
             shortlist <strong className="tabular-nums">{shortlist ?? '—'}</strong>
-            <span className="text-amber-800/90"> → scored </span>
+            <span className="text-slate-600"> → scored </span>
             <strong className="tabular-nums">{scored ?? '—'}</strong>
             {gaInBatch != null ? (
-              <span className="text-amber-800/85">
+              <span className="text-slate-500">
                 {' '}
                 · GA in batch <strong className="tabular-nums">{gaInBatch}</strong>
                 {gaInScored != null ? (
@@ -236,7 +236,7 @@ function OverviewAiCoverageSummary({ meta }) {
               </span>
             ) : null}
             {gaUnionAdded != null && gaUnionAdded > 0 ? (
-              <span className="text-amber-800/85">
+              <span className="text-slate-500">
                 {' '}
                 · +<strong className="tabular-nums">{gaUnionAdded}</strong> from GA union
               </span>
@@ -245,14 +245,14 @@ function OverviewAiCoverageSummary({ meta }) {
         ) : null}
         {hasDeepLine ? (
           <p>
-            <span className="text-amber-800/90">Deep refine: </span>
+            <span className="text-slate-600">Deep refine: </span>
             <strong className="tabular-nums">{deepSel}</strong> key{deepSel === 1 ? '' : 's'}
-            {!deepOk ? <span className="text-amber-800/85"> (output not applied)</span> : null}
+            {!deepOk ? <span className="text-slate-500"> (output not applied)</span> : null}
           </p>
         ) : null}
         {hasTitleLine ? (
           <p>
-            <span className="text-amber-800/90">Titles: </span>
+            <span className="text-slate-600">Titles: </span>
             <strong className="tabular-nums">{titleCand ?? 0}</strong> scan candidates →{' '}
             <strong className="tabular-nums">{titleRows ?? 0}</strong> table rows
           </p>
@@ -747,7 +747,7 @@ function getStatusBadgeClasses(status) {
   if (!status) return 'bg-sky-50 text-sky-700';
   const s = status.toLowerCase();
   if (s.includes('open') && !s.includes('ready')) return 'bg-slate-100 text-slate-700';
-  if (s.includes('ready for qa') || s.includes('in qa')) return 'bg-amber-100 text-amber-800';
+  if (s.includes('ready for qa') || s.includes('in qa')) return 'bg-violet-100 text-violet-800';
   if (s.includes('ready for merge') || s.includes('merge')) return 'bg-green-100 text-green-800';
   if (s.includes('in progress') || s.includes('development')) return 'bg-blue-100 text-blue-800';
   if (s.includes('blocked')) return 'bg-red-100 text-red-800';
@@ -759,7 +759,7 @@ function getStatusBadgeClasses(status) {
 function getIssuetypeBadgeClasses(issuetype) {
   if (!issuetype) return 'bg-gray-100 text-gray-700';
   const t = issuetype.toLowerCase();
-  if (t === 'bug') return 'bg-amber-100 text-amber-800';
+  if (t === 'bug') return 'bg-slate-200 text-slate-800';
   if (t === 'story') return 'bg-blue-100 text-blue-800';
   if (t === 'task') return 'bg-slate-100 text-slate-700';
   if (t === 'epic') return 'bg-purple-100 text-purple-800';
@@ -772,9 +772,9 @@ function getPriorityBadgeClasses(priority) {
   const p = priority.toLowerCase();
   if (p === 'blocker' || p === 'highest') return 'bg-red-100 text-red-800';
   if (p === 'critical') return 'bg-orange-100 text-orange-900';
-  if (p === 'major' || p === 'high') return 'bg-amber-100 text-amber-800';
+  if (p === 'major' || p === 'high') return 'bg-orange-50 text-orange-950';
   if (p === 'medium') return 'bg-slate-100 text-slate-700';
-  if (p === 'normal') return 'bg-yellow-100 text-yellow-900';
+  if (p === 'normal') return 'bg-slate-100 text-slate-800';
   if (p === 'minor') return 'bg-emerald-100 text-emerald-800';
   if (p === 'trivial') return 'bg-blue-100 text-blue-800';
   if (p === 'low' || p === 'lowest') return 'bg-gray-100 text-gray-600';
@@ -1718,7 +1718,7 @@ const BugTriageCopilot = () => {
     <div className="space-y-8">
       {backlogPriorityGroups.map((g) => (
         <section key={`pri-${g.rank}-${g.label}`} className="min-w-0" aria-label={`${g.label} issues`}>
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3 pb-2 border-b border-amber-200/90">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3 pb-2 border-b border-slate-200">
             <span
               className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${getPriorityBadgeClasses(g.issues[0]?.priority)}`}
             >
@@ -1748,7 +1748,7 @@ const BugTriageCopilot = () => {
     <div className="max-w-7xl mx-auto px-3 py-4 sm:p-6 min-w-0">
       <div className="mb-4 sm:mb-6">
         <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2 min-w-0">
-          <Bug className="h-6 w-6 sm:h-7 sm:w-7 text-amber-600 shrink-0" />
+          <Bug className="h-6 w-6 sm:h-7 sm:w-7 text-indigo-600 shrink-0" />
           <span className="truncate sm:whitespace-normal">Bug Triage Copilot</span>
         </h1>
       </div>
@@ -2025,7 +2025,7 @@ const BugTriageCopilot = () => {
                         <dd className="font-medium text-slate-900 tabular-nums">
                           {displayedOverviewMeta.issue_count ?? '—'}
                           {displayedOverviewMeta.truncated ? (
-                            <span className="font-normal text-amber-800 ml-1">
+                            <span className="font-normal text-slate-600 ml-1">
                               (truncated from {displayedOverviewMeta.submitted_count ?? '—'} submitted)
                             </span>
                           ) : null}
@@ -2316,7 +2316,7 @@ const BugTriageCopilot = () => {
                   </dl>
                   {Array.isArray(displayedOverviewMeta.scorecard_errors) &&
                     displayedOverviewMeta.scorecard_errors.length > 0 && (
-                      <div className="mb-3 text-[11px] text-amber-900 bg-amber-50 border border-amber-200/80 rounded-md px-2 py-1.5">
+                      <div className="mb-3 text-[11px] text-slate-800 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5">
                         <span className="font-semibold">Parse notes: </span>
                         {displayedOverviewMeta.scorecard_errors.join(' · ')}
                       </div>
@@ -2361,7 +2361,7 @@ const BugTriageCopilot = () => {
                           (v.llm_jira_priority &&
                             String(v.llm_jira_priority).toLowerCase().replace(/\s+/g, '') !==
                               String(v.implied_priority || '').toLowerCase()) ? (
-                            <span className="col-span-2 sm:col-span-3 text-amber-800">
+                            <span className="col-span-2 sm:col-span-3 text-indigo-900/90">
                               LLM fields: raw_total {v.llm_raw_total ?? '—'}, ga {v.llm_ga_verdict ?? '—'}, jira{' '}
                               {v.llm_jira_priority ?? '—'} (server values above win for Raise/Lower)
                             </span>
@@ -2486,7 +2486,7 @@ const BugTriageCopilot = () => {
         )}
 
         {!jiraLoading && filteredAndSorted.length > 0 && (
-          <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-lg overflow-hidden">
+          <div className="mb-4 bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm border-l-4 border-l-indigo-500">
             <div className="flex flex-wrap items-start justify-between gap-2 p-3">
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2 min-w-0 w-full">
@@ -2497,19 +2497,19 @@ const BugTriageCopilot = () => {
                     aria-expanded={overviewExpanded}
                   >
                     {overviewExpanded ? (
-                      <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 rotate-180 transition-transform" aria-hidden />
+                      <ChevronDown className="h-4 w-4 text-slate-700 shrink-0 rotate-180 transition-transform" aria-hidden />
                     ) : (
-                      <ChevronDown className="h-4 w-4 text-amber-900 shrink-0 transition-transform" aria-hidden />
+                      <ChevronDown className="h-4 w-4 text-slate-700 shrink-0 transition-transform" aria-hidden />
                     )}
-                    <span className="text-sm font-semibold text-amber-950">AI backlog overview</span>
+                    <span className="text-sm font-semibold text-slate-900">AI backlog overview</span>
                     {!overviewExpanded && overviewLoading && !overviewError && (
-                      <span className="text-xs font-normal text-amber-800 truncate">
+                      <span className="text-xs font-normal text-slate-600 truncate">
                         — {overviewMarkdown ? 'Partial · ' : ''}
                         {overviewProgressLabel || 'generating…'}
                       </span>
                     )}
                     {!overviewExpanded && overviewWaitingForOtherTab && !overviewLoading && !overviewError && (
-                      <span className="text-xs font-medium text-amber-900 truncate">
+                      <span className="text-xs font-medium text-slate-700 truncate">
                         — another tab is generating this overview…
                       </span>
                     )}
@@ -2521,7 +2521,7 @@ const BugTriageCopilot = () => {
                       !overviewLoading &&
                       !overviewError &&
                       !overviewWaitingForOtherTab && (
-                        <span className="text-xs font-semibold text-amber-950 truncate">
+                        <span className="text-xs font-semibold text-slate-800 truncate">
                           — Summary ready — expand the panel or tap View summary
                         </span>
                       )}
@@ -2534,23 +2534,23 @@ const BugTriageCopilot = () => {
                     <button
                       type="button"
                       onClick={() => setOverviewExpanded(true)}
-                      className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md border border-amber-600 bg-amber-200/90 text-amber-950 shadow-sm hover:bg-amber-300/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                      className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-md border border-indigo-600 bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 hover:border-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                     >
                       View summary
                     </button>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                  <span className="text-amber-900">
+                  <span className="text-slate-600">
                     Cards below pull Jira fields directly; AI recommendations are advisory.
                   </span>
                   {jiraParentFilterStats?.parentFilterApplied && !includeUnparentedTickets && (
-                    <span className="text-amber-900/90">
+                    <span className="text-slate-600">
                       Parent/epic-linked tickets only.
                     </span>
                   )}
                   {!overviewLoading && !overviewError && overviewMarkdown && (
-                    <span className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900">
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700">
                       {overviewFreshnessLabel}
                     </span>
                   )}
@@ -2560,36 +2560,36 @@ const BugTriageCopilot = () => {
                     </span>
                   )}
                   {!overviewLoading && !overviewError && titleSuggestionsCount > 0 && (
-                    <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100/70 px-2 py-0.5 text-[11px] font-medium text-amber-950">
+                    <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-950">
                       title suggestions: {titleSuggestionsCount}
                     </span>
                   )}
                   {!overviewLoading && !overviewError && displayedOverviewMeta?.title_rewrite_no_candidates && (
                     <span
-                      className="inline-flex items-center rounded-full border border-dashed border-amber-400 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-900"
+                      className="inline-flex items-center rounded-full border border-dashed border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600"
                       title="Title scan ran; no issue keys were selected for proposed rewrites."
                     >
                       title rewrite: no candidates
                     </span>
                   )}
                   {overviewCacheHint && !overviewLoading && !overviewError && (
-                    <span className="text-amber-800/85">{overviewCacheHint}</span>
+                    <span className="text-slate-500">{overviewCacheHint}</span>
                   )}
                 </div>
                 {overviewMarkdown && !overviewError && (
-                  <p className="text-xs text-amber-900/90">
+                  <p className="text-xs text-slate-600">
                     Fetch pipeline, visible vs analyzed counts, and deterministic priority/status tables: expand{' '}
                     <strong>Backlog metrics</strong> above.
                     {overviewLoading ? ' (AI batch counts fill in when generation finishes.)' : ''}
                   </p>
                 )}
                 {!overviewLoading && !overviewError && displayedOverviewMeta?.truncated && (
-                  <p className="text-xs text-amber-800/90">
+                  <p className="text-xs text-slate-600">
                     Analysis cap: batch smaller than submitted — see Backlog metrics.
                   </p>
                 )}
                 {!overviewLoading && !overviewError && displayedOverviewMeta?.overview_incomplete && (
-                  <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
+                  <p className="text-xs text-slate-800 font-medium border border-slate-200 bg-slate-50 rounded px-2 py-1.5">
                     Partial overview:{' '}
                     {displayedOverviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
                     {displayedOverviewMeta.omitted_sections?.length
@@ -2598,14 +2598,14 @@ const BugTriageCopilot = () => {
                   </p>
                 )}
                 {!overviewExpanded && overviewPreviewText && !overviewError && (
-                  <p className="text-xs text-amber-900/90 truncate">
+                  <p className="text-xs text-slate-600 truncate">
                     {overviewPreviewText}
                   </p>
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0 pt-0.5">
                 {overviewExpanded && overviewLoading && (
-                  <span className="text-xs text-amber-900 flex items-center gap-1 min-w-0">
+                  <span className="text-xs text-slate-700 flex items-center gap-1 min-w-0">
                     <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
                     <span className="truncate">{overviewProgressLabel || 'Generating…'}</span>
                   </span>
@@ -2627,13 +2627,13 @@ const BugTriageCopilot = () => {
                       ownerId,
                     );
                   }}
-                  className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-950 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-xs px-2 py-1 rounded border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Regenerate
                 </button>
               </div>
             </div>
-            <div className="px-3 pb-3 border-t border-amber-200/60 bg-gradient-to-b from-amber-50/50 to-transparent">
+            <div className="px-3 pb-3 border-t border-slate-200 bg-slate-50/40">
               {(overviewLoading || displayedOverviewMarkdown || displayedOverviewMeta) && !overviewError && (
                 <>
                   <OverviewPhaseRail
@@ -2652,16 +2652,16 @@ const BugTriageCopilot = () => {
               <button
                 type="button"
                 onClick={() => setShowPrioritizationPhilosophy((s) => !s)}
-                className="text-xs text-amber-900 hover:text-amber-950 underline underline-offset-2"
+                className="text-xs text-indigo-700 hover:text-indigo-900 underline underline-offset-2"
                 aria-expanded={showPrioritizationPhilosophy}
               >
                 {showPrioritizationPhilosophy ? 'Hide' : 'How prioritization works'}
               </button>
             </div>
             {showPrioritizationPhilosophy && (
-              <div className="mx-3 mb-3 rounded-md border border-amber-200/80 bg-white/80 px-3 py-2.5">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-900">How prioritization works</h3>
-                <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-amber-950/95">
+              <div className="mx-3 mb-3 rounded-md border border-slate-200 bg-white px-3 py-2.5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-700">How prioritization works</h3>
+                <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-slate-700">
                   <li>Canonical Jira ladder: Blocker, Critical, Major, Normal, Minor, Trivial.</li>
                   <li>Recommendations use Raise / Lower wording for Jira priority only.</li>
                   <li>Blocker is the ceiling; a current Blocker is never raised further.</li>
@@ -2671,23 +2671,23 @@ const BugTriageCopilot = () => {
               </div>
             )}
             {overviewExpanded && (
-              <div className="px-4 pb-4 pt-0 border-t border-amber-200/70 space-y-3">
+              <div className="px-4 pb-4 pt-0 border-t border-slate-200 space-y-3">
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
-                  <p className="text-xs text-amber-800/85">{overviewCacheHint}</p>
+                  <p className="text-xs text-slate-500">{overviewCacheHint}</p>
                 )}
                 {overviewMarkdown && !overviewError && (
-                  <p className="text-xs text-amber-900/95">
+                  <p className="text-xs text-slate-600">
                     Pass depth and counts: see <strong>Backlog metrics</strong> (Data flow + AI batch snapshot).
                     {overviewLoading ? ' Batch snapshot appears after generation completes.' : ''}
                   </p>
                 )}
                 {!overviewLoading && !overviewError && displayedOverviewMeta?.truncated && (
-                  <p className="text-xs text-amber-800/90">
+                  <p className="text-xs text-slate-600">
                     Analysis cap: see Backlog metrics for submitted vs analyzed.
                   </p>
                 )}
                 {!overviewLoading && !overviewError && displayedOverviewMeta?.overview_incomplete && (
-                  <p className="text-xs text-amber-900 font-medium border border-amber-300/80 bg-amber-100/50 rounded px-2 py-1.5">
+                  <p className="text-xs text-slate-800 font-medium border border-slate-200 bg-slate-50 rounded px-2 py-1.5">
                     Partial overview:{' '}
                     {displayedOverviewMeta.incomplete_reason || 'Later steps were skipped after pass 2.'}{' '}
                     {displayedOverviewMeta.omitted_sections?.length
@@ -2697,7 +2697,7 @@ const BugTriageCopilot = () => {
                 )}
                 {overviewLoading && overviewMarkdown && !overviewError && (
                   <div
-                    className="flex items-center gap-2 rounded-md border border-amber-200/90 bg-amber-100/50 px-3 py-2 text-xs text-amber-950"
+                    className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 shadow-sm"
                     role="status"
                     aria-live="polite"
                   >
@@ -2743,18 +2743,18 @@ const BugTriageCopilot = () => {
                   </div>
                 )}
                 {overviewRunHistory.length > 0 && (
-                  <div className="rounded-md border border-amber-200/80 bg-white/95 px-3 py-2">
-                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 mb-1.5">
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-700 mb-1.5">
                       Past runs
                     </h4>
-                    <p className="text-[10px] text-amber-800/90 mb-2">
+                    <p className="text-[10px] text-slate-500 mb-2">
                       Stored in this browser for calibration (last {OVERVIEW_HISTORY_MAX_RUNS} successful generations).
                     </p>
                     <ul className="space-y-1.5">
                       {overviewRunHistory.map((run) => (
                         <li
                           key={run.id}
-                          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-amber-950"
+                          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-800"
                         >
                           <span className="text-slate-700">
                             {new Date(run.completedAt).toLocaleString(undefined, {
@@ -2766,12 +2766,12 @@ const BugTriageCopilot = () => {
                             <span className="tabular-nums text-slate-600">{run.issueCount} issues</span>
                           )}
                           {run.truncated && (
-                            <span className="rounded px-1 py-0.5 border border-amber-300 bg-amber-50 text-[10px] text-amber-900">
+                            <span className="rounded px-1 py-0.5 border border-slate-300 bg-slate-50 text-[10px] text-slate-700">
                               truncated
                             </span>
                           )}
                           {run.overviewIncomplete && (
-                            <span className="rounded px-1 py-0.5 border border-amber-400 bg-amber-50 text-[10px] text-amber-900">
+                            <span className="rounded px-1 py-0.5 border border-slate-300 bg-slate-50 text-[10px] text-slate-700">
                               incomplete
                             </span>
                           )}
@@ -2817,7 +2817,7 @@ const BugTriageCopilot = () => {
                 )}
                 {displayedOverviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-max [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-amber-300/80 [&_th]:bg-amber-100/90 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-amber-950 [&_td]:border [&_td]:border-amber-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-max [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
@@ -2829,7 +2829,7 @@ const BugTriageCopilot = () => {
                   </div>
                 )}
                 {!overviewMarkdown && overviewLoading && (
-                  <p className="text-xs text-amber-900/80">Analyzing filtered backlog with Claude…</p>
+                  <p className="text-xs text-slate-600">Analyzing filtered backlog with Claude…</p>
                 )}
               </div>
             )}
@@ -2986,7 +2986,7 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
           <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded-full">GA blocker</span>
         )}
         {issue.needsMoreInfo && (
-          <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full">Needs more info</span>
+          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-xs rounded-full">Needs more info</span>
         )}
         {issue.issuetype && (
           <span className={`px-2 py-0.5 text-xs rounded font-medium ${getIssuetypeBadgeClasses(issue.issuetype)}`} title="Issue type">
@@ -3179,7 +3179,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
                         <button
                           type="button"
                           onClick={() => setShowOverride((s) => ({ ...s, category: true }))}
-                          className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                          className="px-2 py-1 text-xs bg-slate-100 text-slate-800 rounded hover:bg-slate-200"
                         >
                           Override
                         </button>
@@ -3236,7 +3236,7 @@ function MiniDetailDrawer({ issue, decisions, setDecisions, COMPONENTS, onClose,
                         <button
                           type="button"
                           onClick={() => setShowOverride((s) => ({ ...s, component: true }))}
-                          className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                          className="px-2 py-1 text-xs bg-slate-100 text-slate-800 rounded hover:bg-slate-200"
                         >
                           Override
                         </button>
@@ -3394,7 +3394,7 @@ function BugTriageDetail({ issue, allIssues, decisions, setDecisions, onBack, NE
             <p className="text-gray-700 mb-2">{issue.description}</p>
           )}
           {issue.expectedVsActual && (
-            <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded text-sm">
+            <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded text-sm">
               <strong>Expected vs actual:</strong> {issue.expectedVsActual}
             </div>
           )}
@@ -3589,7 +3589,7 @@ function RecommendationRow({
             <button
               type="button"
               onClick={() => setShowOverride(true)}
-              className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+              className="px-2 py-1 text-xs bg-slate-100 text-slate-800 rounded hover:bg-slate-200"
             >
               Override
             </button>
