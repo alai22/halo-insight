@@ -121,6 +121,49 @@ def test_parse_scorecard_json_v2_with_fence():
     assert raw_total_from_row(batch.rows[0]) == 8
 
 
+def test_parse_scorecard_json_skips_empty_first_fence():
+    """Models sometimes emit an empty ```json fence before the real payload; first match must not win."""
+    raw = """Here is the scorecard.
+
+```json
+```
+
+```json
+{"version":"2","rows":[{"key":"HALO-1","feature_importance":3,"reach":2,"technical_severity":2,"workaround_quality":1,"regression_risk":0,"raw_total":8,"ga_verdict":"Fix if capacity","jira_priority":"Critical"}]}
+```
+"""
+    batch, errs = parse_scorecard_json(raw)
+    assert not errs
+    assert batch is not None
+    assert len(batch.rows) == 1
+    assert batch.rows[0].key == "HALO-1"
+
+
+def test_parse_scorecard_json_prefers_longest_fence():
+    """When multiple fenced JSON objects exist, try longest inner text first (full scorecard over a stub)."""
+    short_inner = '{"version":"2","rows":[]}'
+    long_inner = (
+        '{"version":"2","rows":['
+        '{"key":"HALO-99","feature_importance":2,"reach":1,"technical_severity":1,'
+        '"workaround_quality":1,"regression_risk":0,"raw_total":5,"ga_verdict":"PostGA","jira_priority":"Minor"}'
+        "]}"
+    )
+    raw = f"""```json
+{short_inner}
+```
+More output.
+
+```json
+{long_inner}
+```
+"""
+    batch, errs = parse_scorecard_json(raw)
+    assert not errs
+    assert batch is not None
+    assert len(batch.rows) == 1
+    assert batch.rows[0].key == "HALO-99"
+
+
 def test_parse_rejects_v1_version():
     raw = '{"version":"1","rows":[{"key":"HALO-1","feature_importance":3}]}'
     batch, errs = parse_scorecard_json(raw)

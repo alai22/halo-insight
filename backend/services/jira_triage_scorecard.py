@@ -271,6 +271,51 @@ def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:
     return "minor"
 
 
+# Non-greedy fences: collect every ``` / ```json block so an empty leading fence does not hide a later payload.
+_SCORECARD_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+
+
+def _decode_scorecard_json_object(raw_stripped: str) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """
+    Decode the first JSON object suitable for schema validation.
+    Tries each non-empty fenced inner string longest-first (full scorecard usually largest),
+    then the whole stripped message (unfenced JSON).
+    """
+    last_exc: Optional[json.JSONDecodeError] = None
+
+    inners: List[str] = []
+    for m in _SCORECARD_FENCE_RE.finditer(raw_stripped):
+        inner = m.group(1).strip()
+        if inner:
+            inners.append(inner)
+
+    seen: set[str] = set()
+    ordered_inners: List[str] = []
+    for inner in sorted(inners, key=len, reverse=True):
+        if inner not in seen:
+            seen.add(inner)
+            ordered_inners.append(inner)
+
+    for cand in ordered_inners:
+        try:
+            data = json.loads(cand)
+            if isinstance(data, dict):
+                return data, []
+        except json.JSONDecodeError as e:
+            last_exc = e
+
+    try:
+        data = json.loads(raw_stripped)
+        if isinstance(data, dict):
+            return data, []
+    except json.JSONDecodeError as e:
+        last_exc = e
+
+    if last_exc is not None:
+        return None, [f"invalid json: {last_exc}"]
+    return None, ["invalid json: no JSON object found"]
+
+
 def parse_scorecard_json(raw: str) -> Tuple[Optional[ScorecardBatchIn], List[str]]:
     """
     Parse model output: strip optional ```json fences, validate rows (schema v2 only).
@@ -279,16 +324,10 @@ def parse_scorecard_json(raw: str) -> Tuple[Optional[ScorecardBatchIn], List[str
     if not raw or not raw.strip():
         return None, ["empty response"]
     text = raw.strip()
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-    if fence:
-        text = fence.group(1).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        return None, [f"invalid json: {e}"]
+    data, decode_errs = _decode_scorecard_json_object(text)
+    if data is None:
+        return None, decode_errs
 
-    if not isinstance(data, dict):
-        return None, ["root must be object"]
     ver = str(data.get("version", "")).strip()
     if ver != SCORECARD_SCHEMA_VERSION:
         return None, [f'root "version" must be "{SCORECARD_SCHEMA_VERSION}" (got {ver!r})']
