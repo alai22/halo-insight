@@ -16,6 +16,7 @@ import {
   ArrowDown,
   FileText,
   AlertCircle,
+  AlertTriangle,
   Copy,
   X,
   RefreshCw,
@@ -1106,6 +1107,20 @@ const BugTriageCopilot = () => {
     }
     return overviewMeta;
   }, [overviewHistoryViewId, overviewRunHistory, overviewMeta]);
+
+  /** Scorecard JSON parse failed — surface errors near the narrative, not only under Scorecard triage. */
+  const overviewScorecardParseFailure = useMemo(() => {
+    const meta = displayedOverviewMeta;
+    const md = displayedOverviewMarkdown;
+    if (!meta?.scorecard_enabled) {
+      return { show: false, errors: [] };
+    }
+    const errs = Array.isArray(meta.scorecard_errors) ? meta.scorecard_errors : [];
+    const mdLooksFailed =
+      typeof md === 'string' && md.includes('could not be parsed');
+    const show = meta.scorecard_parse_failed === true || mdLooksFailed;
+    return { show, errors: errs };
+  }, [displayedOverviewMeta, displayedOverviewMarkdown]);
 
   const filteredAndSortedRef = useRef(filteredAndSorted);
   filteredAndSortedRef.current = filteredAndSorted;
@@ -2380,9 +2395,28 @@ const BugTriageCopilot = () => {
                   </dl>
                   {Array.isArray(displayedOverviewMeta.scorecard_errors) &&
                     displayedOverviewMeta.scorecard_errors.length > 0 && (
-                      <div className="mb-3 text-[11px] text-slate-800 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5">
-                        <span className="font-semibold">Parse notes: </span>
-                        {displayedOverviewMeta.scorecard_errors.join(' · ')}
+                      <div
+                        className={`mb-3 rounded-md px-2 py-1.5 text-[11px] ${
+                          overviewScorecardParseFailure.show
+                            ? 'border border-amber-300 bg-amber-50 text-amber-950'
+                            : 'border border-slate-200 bg-slate-50 text-slate-800'
+                        }`}
+                        role={overviewScorecardParseFailure.show ? 'alert' : undefined}
+                      >
+                        <span className="font-semibold">
+                          {overviewScorecardParseFailure.show ? 'Scorecard parse errors: ' : 'Parse notes: '}
+                        </span>
+                        {overviewScorecardParseFailure.show ? (
+                          <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                            {displayedOverviewMeta.scorecard_errors.map((line, idx) => (
+                              <li key={idx} className="break-words">
+                                {line}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          displayedOverviewMeta.scorecard_errors.join(' · ')
+                        )}
                       </div>
                     )}
                   {(() => {
@@ -2904,6 +2938,38 @@ const BugTriageCopilot = () => {
                     >
                       Back to current
                     </button>
+                  </div>
+                )}
+                {overviewScorecardParseFailure.show && (
+                  <div
+                    className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2.5 text-sm text-amber-950 shadow-sm"
+                    role="alert"
+                  >
+                    <div className="flex gap-2">
+                      <AlertTriangle
+                        className="h-5 w-5 shrink-0 text-amber-700 mt-0.5"
+                        aria-hidden
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-amber-950">
+                          Scorecard JSON could not be parsed — priority table skipped
+                        </p>
+                        {overviewScorecardParseFailure.errors.length > 0 ? (
+                          <ul className="mt-2 list-disc pl-4 space-y-1 text-xs text-amber-950/95">
+                            {overviewScorecardParseFailure.errors.map((line, idx) => (
+                              <li key={idx} className="break-words">
+                                {line}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-1.5 text-xs text-amber-900/90">
+                            Expand <strong className="font-semibold">Backlog metrics → Scorecard triage</strong> if
+                            details do not appear here (older cached run).
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
                 {displayedOverviewMarkdown && (

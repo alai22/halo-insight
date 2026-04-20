@@ -1035,6 +1035,30 @@ def _strip_leading_h2_priority_review(markdown: str) -> str:
     return markdown.strip()
 
 
+def _format_scorecard_parse_failure_markdown(parse_errors: List[str]) -> str:
+    """
+    Markdown for Recommended Jira priority changes when scorecard JSON could not be parsed.
+    Lists server-side parse errors so operators see why without opening meta panels.
+    """
+    bullets: List[str] = []
+    for raw in parse_errors:
+        line = ' '.join(str(raw).split())
+        if line:
+            bullets.append(line)
+    if not bullets:
+        bullets.append(
+            'No rows could be parsed from the model response (empty output or invalid schema).'
+        )
+    capped = bullets[:24]
+    body = '\n'.join(f'- {line}' for line in capped)
+    return (
+        '### Recommended Jira priority changes\n\n'
+        '*Scorecard JSON was missing, empty, or could not be parsed.*\n\n'
+        '**Parse details:**\n'
+        f'{body}'
+    )
+
+
 def _assemble_priority_review_with_snapshot(issues: List[Dict[str, Any]], llm_fragment: str) -> str:
     snapshot = _render_backlog_snapshot_markdown(issues)
     body = _strip_leading_h2_priority_review(llm_fragment)
@@ -1586,6 +1610,7 @@ def _iter_backlog_overview_events(
     scorecard_scored_keys_ordered: List[str] = []
     scorecard_ai_created_adjustments: List[str] = []
     scorecard_ai_created_adjusted_keys: List[str] = []
+    scorecard_parse_failed = False
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1718,10 +1743,8 @@ def _iter_backlog_overview_events(
                         min_scorecard_delta,
                     )
                 else:
-                    part2_draft = (
-                        '### Recommended Jira priority changes\n\n'
-                        '*Scorecard JSON was missing, empty, or could not be parsed.*'
-                    )
+                    scorecard_parse_failed = True
+                    part2_draft = _format_scorecard_parse_failure_markdown(perrs)
         else:
             r2 = claude_service.send_message(
                 message=user_message_pass2,
@@ -2047,6 +2070,7 @@ def _iter_backlog_overview_events(
         'incomplete_reason': '; '.join(incomplete_reasons) if incomplete_reasons else None,
         'failed_step': first_failed_optional_step,
         'scorecard_enabled': use_scorecard,
+        'scorecard_parse_failed': scorecard_parse_failed if use_scorecard else False,
         'scorecards_by_key': scorecards_by_key if use_scorecard else {},
         'scorecard_config_hash': scorecard_config_hash,
         'scorecard_schema_version': SCORECARD_SCHEMA_VERSION if use_scorecard else None,
