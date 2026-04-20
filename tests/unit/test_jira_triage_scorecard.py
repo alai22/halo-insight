@@ -164,6 +164,30 @@ More output.
     assert batch.rows[0].key == "HALO-99"
 
 
+def test_parse_scorecard_json_unclosed_fence_raw_decode():
+    """Opening ```json fence without closing backticks still yields valid JSON via raw_decode."""
+    raw = '```json\n{"version":"2","rows":[]}\n'
+    batch, errs = parse_scorecard_json(raw)
+    assert not errs
+    assert batch is not None
+    assert batch.rows == []
+
+
+def test_parse_scorecard_json_preamble_raw_decode():
+    batch, errs = parse_scorecard_json('Here is JSON:\n{"version":"2","rows":[]}')
+    assert not errs
+    assert batch is not None
+    assert batch.rows == []
+
+
+def test_parse_scorecard_json_raw_decode_after_many_braces_bounded():
+    """Brace probing is capped; valid object after long junk `{` run still parses."""
+    raw = ('{' * 100) + '{"version":"2","rows":[]}'
+    batch, errs = parse_scorecard_json(raw)
+    assert not errs
+    assert batch is not None
+
+
 def test_parse_rejects_v1_version():
     raw = '{"version":"1","rows":[{"key":"HALO-1","feature_importance":3}]}'
     batch, errs = parse_scorecard_json(raw)

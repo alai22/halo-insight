@@ -111,9 +111,9 @@ class Config:
     # App base URL for OAuth callback (e.g. https://insight.halocollar.com). Required for Jira OAuth.
     APP_BASE_URL: Optional[str] = os.getenv('APP_BASE_URL')
     # Backlog overview: two Claude calls by default, optional third (description refine for priority table).
-    # Default 4096 per pass; Haiku 4.5 supports higher max output — raise only if needed.
+    # Pass 2 default 8192: scorecard JSON with many rows + reach notes often exceeds 4k output tokens.
     JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS', '4096'))
-    JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '4096'))
+    JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '8192'))
     # Claude sampling for all backlog-overview passes (pass1/2/2b/title). Default 0 reduces run-to-run variance.
     JIRA_BACKLOG_OVERVIEW_TEMPERATURE: float = _env_float_clamped(
         'JIRA_BACKLOG_OVERVIEW_TEMPERATURE', '0', 0.0, 1.0

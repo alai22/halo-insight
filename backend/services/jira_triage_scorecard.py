@@ -225,7 +225,7 @@ def scorecard_threshold_reference_lines(min_delta_ranks: int) -> List[str]:
     ]
 
 
-_REPRIORITIZATION_REASON_MAX_NOTE_CHARS = 120
+_REPRIORITIZATION_REASON_MAX_NOTE_CHARS = 80
 
 
 def reprioritization_reason_short(row: ScorecardRowIn, implied: str, total: int) -> str:
@@ -273,18 +273,23 @@ def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:
 
 # Non-greedy fences: collect every ``` / ```json block so an empty leading fence does not hide a later payload.
 _SCORECARD_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+_SCORECARD_JSON_DECODER = json.JSONDecoder()
+_MAX_SCORECARD_BRACE_JSON_PROBES = 128
 
 
 def _decode_scorecard_json_object(raw_stripped: str) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """
     Decode the first JSON object suitable for schema validation.
     Tries each non-empty fenced inner string longest-first (full scorecard usually largest),
-    then the whole stripped message (unfenced JSON).
+    then the whole stripped message (unfenced JSON),
+    then JSONDecoder.raw_decode from each '{' (handles missing closing fence or preamble).
     """
     last_exc: Optional[json.JSONDecodeError] = None
 
+    fence_match_count = 0
     inners: List[str] = []
     for m in _SCORECARD_FENCE_RE.finditer(raw_stripped):
+        fence_match_count += 1
         inner = m.group(1).strip()
         if inner:
             inners.append(inner)
@@ -310,6 +315,45 @@ def _decode_scorecard_json_object(raw_stripped: str) -> Tuple[Optional[Dict[str,
             return data, []
     except json.JSONDecodeError as e:
         last_exc = e
+
+    brace_positions: List[int] = []
+    scan = 0
+    while len(brace_positions) < _MAX_SCORECARD_BRACE_JSON_PROBES:
+        j = raw_stripped.find('{', scan)
+        if j < 0:
+            break
+        brace_positions.append(j)
+        scan = j + 1
+
+    raw_candidates: List[Tuple[Tuple[int, int], Dict[str, Any]]] = []
+    for pos in brace_positions:
+        try:
+            obj, _end = _SCORECARD_JSON_DECODER.raw_decode(raw_stripped, pos)
+        except json.JSONDecodeError as e:
+            last_exc = e
+            continue
+        if isinstance(obj, dict):
+            has_ver = 'version' in obj
+            rows = obj.get('rows')
+            has_rows = isinstance(rows, list)
+            nrow = len(rows) if has_rows else 0
+            score = (2 if has_ver else 0) + (2 if has_rows else 0)
+            raw_candidates.append(((score, nrow), obj))
+
+    if raw_candidates:
+        raw_candidates.sort(key=lambda x: (-x[0][0], -x[0][1]))
+        return raw_candidates[0][1], []
+
+    logger.warning(
+        'scorecard_json_decode_failed len=%s fence_blocks=%s non_empty_fence_inners=%s brace_probe_cap=%s '
+        'brace_probes=%s preview=%r',
+        len(raw_stripped),
+        fence_match_count,
+        len(inners),
+        _MAX_SCORECARD_BRACE_JSON_PROBES,
+        len(brace_positions),
+        raw_stripped[:120],
+    )
 
     if last_exc is not None:
         return None, [f"invalid json: {last_exc}"]
