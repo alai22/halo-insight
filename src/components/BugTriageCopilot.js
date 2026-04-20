@@ -2972,6 +2972,49 @@ const BugTriageCopilot = () => {
                     </div>
                   </div>
                 )}
+                {(() => {
+                  const rawDbg = displayedOverviewMeta?.scorecard_llm_raw_debug;
+                  const p2 = rawDbg?.pass2;
+                  const p2b = rawDbg?.pass2b;
+                  if (
+                    (!p2 || typeof p2 !== 'object') &&
+                    (!p2b || typeof p2b !== 'object')
+                  ) {
+                    return null;
+                  }
+                  const metaLine = (dbg, label) => {
+                    const text = typeof dbg?.text === 'string' ? dbg.text : '';
+                    const len =
+                      typeof dbg?.length === 'number' && Number.isFinite(dbg.length) ? dbg.length : null;
+                    const truncated = dbg?.truncated === true;
+                    return (
+                      <div key={label}>
+                        <p className="text-[10px] font-semibold text-slate-700 mb-1">{label}</p>
+                        <p className="text-[10px] text-slate-600 mb-1">
+                          {len != null
+                            ? `${truncated ? 'Truncated · ' : ''}original length ${len} chars`
+                            : truncated
+                              ? 'Truncated'
+                              : ''}
+                        </p>
+                        <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-mono text-slate-900">
+                          {text || '(empty)'}
+                        </pre>
+                      </div>
+                    );
+                  };
+                  return (
+                    <details className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 mt-2 text-sm text-slate-900 shadow-sm">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-800 select-none">
+                        Model output (debug)
+                      </summary>
+                      <div className="mt-2 space-y-3">
+                        {p2 && typeof p2 === 'object' ? metaLine(p2, 'Pass 2 (scorecard)') : null}
+                        {p2b && typeof p2b === 'object' ? metaLine(p2b, 'Pass 2b (deep refine)') : null}
+                      </div>
+                    </details>
+                  );
+                })()}
                 {displayedOverviewMarkdown && (
                   <div
                     className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:border-collapse [&_table]:text-sm [&_table:not(.overview-reprioritization-table)]:w-auto [&_table:not(.overview-reprioritization-table)]:max-w-full [&_table:not(.overview-reprioritization-table)]:min-w-max [&_.overview-reprioritization-table]:table-fixed [&_.overview-reprioritization-table]:w-full [&_.overview-reprioritization-table]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(4)]:break-words [&_.overview-reprioritization-table_td:nth-child(4)]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(5)]:break-words [&_.overview-reprioritization-table_td:nth-child(5)]:min-w-0 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-raise>td:first-child]:!bg-rose-50/90 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&_tr.overview-priority-lower>td:first-child]:!bg-emerald-50/80 [&>table:not(.overview-reprioritization-table)]:min-w-[min(100%,36rem)]"

@@ -1059,6 +1059,24 @@ def _format_scorecard_parse_failure_markdown(parse_errors: List[str]) -> str:
     )
 
 
+def _build_scorecard_llm_raw_debug_entry(raw: Optional[str], protector: Any) -> Optional[Dict[str, Any]]:
+    """
+    Bounded excerpt of assistant text for overview meta when scorecard JSON parsing fails.
+    Uses PII redaction when protector is configured (matches inbound prompt handling).
+    """
+    if not Config.JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE:
+        return None
+    raw_s = raw if isinstance(raw, str) else ''
+    original_length = len(raw_s)
+    text = raw_s
+    if protector:
+        text = protector.redact_text(text)
+    cap = Config.JIRA_TRIAGE_SCORECARD_FAILURE_RAW_MAX_CHARS
+    truncated = bool(cap > 0 and len(text) > cap)
+    excerpt = text[:cap] if cap > 0 else ''
+    return {'text': excerpt, 'truncated': truncated, 'length': original_length}
+
+
 def _assemble_priority_review_with_snapshot(issues: List[Dict[str, Any]], llm_fragment: str) -> str:
     snapshot = _render_backlog_snapshot_markdown(issues)
     body = _strip_leading_h2_priority_review(llm_fragment)
@@ -1611,6 +1629,7 @@ def _iter_backlog_overview_events(
     scorecard_ai_created_adjustments: List[str] = []
     scorecard_ai_created_adjusted_keys: List[str] = []
     scorecard_parse_failed = False
+    scorecard_llm_raw_debug: Dict[str, Any] = {}
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1745,6 +1764,12 @@ def _iter_backlog_overview_events(
                 else:
                     scorecard_parse_failed = True
                     part2_draft = _format_scorecard_parse_failure_markdown(perrs)
+                    entry_p2 = _build_scorecard_llm_raw_debug_entry(
+                        getattr(r_sc, 'content', None),
+                        protector,
+                    )
+                    if entry_p2 is not None:
+                        scorecard_llm_raw_debug['pass2'] = entry_p2
         else:
             r2 = claude_service.send_message(
                 message=user_message_pass2,
@@ -1863,6 +1888,12 @@ def _iter_backlog_overview_events(
                         scorecard_config_hash = scorecard_framework_config_hash()
                     else:
                         part2b_out = ''
+                        entry_b = _build_scorecard_llm_raw_debug_entry(
+                            getattr(r2b, 'content', None),
+                            protector,
+                        )
+                        if entry_b is not None:
+                            scorecard_llm_raw_debug['pass2b'] = entry_b
                 else:
                     part2b_out = (r2b.content or '').strip()
                 part2b_out, dropped2b = _validate_reprioritization_rows(
@@ -2077,6 +2108,7 @@ def _iter_backlog_overview_events(
         'scorecard_shortlist_size': scorecard_shortlist_size if use_scorecard else None,
         'scorecard_scored_keys': scorecard_scored_keys if use_scorecard else None,
         'scorecard_errors': scorecard_errors[:25] if use_scorecard else [],
+        'scorecard_llm_raw_debug': scorecard_llm_raw_debug if use_scorecard else {},
         'scorecard_threshold_summary': (
             scorecard_threshold_reference_lines(min_scorecard_delta) if use_scorecard else []
         ),

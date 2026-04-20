@@ -188,3 +188,79 @@ def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, client)
     assert cov.get('ga_blockers_included_in_scored_set') == 0
     assert cov.get('scored_keys_added_by_ga_union') == 0
     assert meta.get('scorecard_enabled') is True
+
+
+@patch('app.get_service_container')
+def test_backlog_overview_scorecard_parse_failure_includes_raw_debug(mock_get_container, client):
+    """Invalid scorecard JSON attaches bounded pass2 excerpt in meta for debugging."""
+    pass1 = _resp('## Themes\nx\n')
+    shortlist = _resp('{"keys":["HALO-1"]}')
+    bogus = 'not json ' + ('x' * 500)
+    scorecard_bad = _resp(bogus)
+
+    mock_claude = MagicMock()
+    mock_claude.send_message.side_effect = [pass1, shortlist, scorecard_bad]
+
+    container = MagicMock()
+    container.get_claude_service.return_value = mock_claude
+    mock_get_container.return_value = container
+
+    with patch.multiple(
+        'backend.api.routes.jira_routes.Config',
+        JIRA_TRIAGE_SCORECARD_ENABLED=True,
+        JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS=False,
+        JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED=False,
+        JIRA_BACKLOG_TITLE_REWRITE_ENABLED=False,
+        JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE=True,
+        JIRA_TRIAGE_SCORECARD_FAILURE_RAW_MAX_CHARS=100,
+    ):
+        rv = client.post(
+            '/api/jira/backlog-overview',
+            json={'issues': [_issue()]},
+            content_type='application/json',
+        )
+    assert rv.status_code == 200
+    data = rv.get_json()
+    assert data['status'] == 'success'
+    meta = data.get('meta') or {}
+    assert meta.get('scorecard_parse_failed') is True
+    dbg = meta.get('scorecard_llm_raw_debug') or {}
+    assert 'pass2' in dbg
+    p2 = dbg['pass2']
+    assert p2['truncated'] is True
+    assert p2['length'] == len(bogus)
+    assert len(p2['text']) == 100
+    assert p2['text'] == bogus[:100]
+
+
+@patch('app.get_service_container')
+def test_backlog_overview_scorecard_parse_failure_omits_raw_when_disabled(mock_get_container, client):
+    """When EXPOSE_RAW_ON_FAILURE is false, meta does not include raw excerpts."""
+    pass1 = _resp('## Themes\nx\n')
+    shortlist = _resp('{"keys":["HALO-1"]}')
+    scorecard_bad = _resp('totally invalid')
+
+    mock_claude = MagicMock()
+    mock_claude.send_message.side_effect = [pass1, shortlist, scorecard_bad]
+
+    container = MagicMock()
+    container.get_claude_service.return_value = mock_claude
+    mock_get_container.return_value = container
+
+    with patch.multiple(
+        'backend.api.routes.jira_routes.Config',
+        JIRA_TRIAGE_SCORECARD_ENABLED=True,
+        JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS=False,
+        JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED=False,
+        JIRA_BACKLOG_TITLE_REWRITE_ENABLED=False,
+        JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE=False,
+    ):
+        rv = client.post(
+            '/api/jira/backlog-overview',
+            json={'issues': [_issue()]},
+            content_type='application/json',
+        )
+    assert rv.status_code == 200
+    meta = rv.get_json().get('meta') or {}
+    assert meta.get('scorecard_parse_failed') is True
+    assert meta.get('scorecard_llm_raw_debug') == {}

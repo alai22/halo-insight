@@ -159,6 +159,15 @@ class Config:
     JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS: int = int(
         os.getenv('JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS', '1536')
     )
+    # When scorecard JSON parse fails, include a bounded excerpt of the assistant text in overview meta (debug).
+    JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE: bool = os.getenv(
+        'JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE', '1'
+    ).lower() in ('1', 'true', 'yes')
+    # Max chars stored in meta / sent to client (after optional PII redaction).
+    JIRA_TRIAGE_SCORECARD_FAILURE_RAW_MAX_CHARS: int = max(
+        0,
+        int(os.getenv('JIRA_TRIAGE_SCORECARD_FAILURE_RAW_MAX_CHARS', '10000')),
+    )
     # When enabled, clamp scorecard `reach` for issues with Jira label `ai-created` (case-insensitive).
     JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED: bool = os.getenv(
         'JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED', '1'
