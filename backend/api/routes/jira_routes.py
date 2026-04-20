@@ -644,14 +644,38 @@ Rules:
 **Forbidden:** Any heading `## Priority review` or discussion of Jira priority raise/lower recommendations (that is handled elsewhere)."""
 
 
-# Pass-2 only: what “important” means for Halo when recommending Jira Raise/Lower. Append bullets here as norms evolve.
-_HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW = """
+# Pass-2 only: what “important” means for Halo when recommending Jira Raise/Lower. Refresh Amplitude figures periodically.
+_HALO_AMPLITUDE_BASELINE_SNAPSHOT = """
+**Amplitude baselines (factual; ~28-day measurement window; weekly figures are approximate — use when inferring `reach` / product area when ticket metadata is thin):**
+- **Maps & fences:** WAFU (Changed Fence Mode) ~23,600/wk overall (iOS ~19,400; Android ~4,800); WAFU (Fence Borders Edited) ~16,800; WAFU (Fence Created) ~6,600; fence created attempts (28d) ~35,900.
+- **Feedback settings (saved feedback type):** WAFU ~10,200; attempts (28d) ~185,800.
+- **Walk (active walk):** WAFU (walk started) ~6,000; attempts (28d) ~69,800; start→ended conversion ~99.2%.
+- **Permissions + collar binding:** WAFU (permissions enabled) ~7,900; WAFU (collar added success) ~4,500; permission attempts (28d) ~40,000; permissions→collar ~38%; collar server-recorded failures ~12.8% of attempts.
+- **Wi‑Fi setup:** WAFU ~7,200; attempts (28d) ~57,000; funnel success ~98.7%.
+- **Onboarding:** WAFU (welcome pack) ~4,700; attempts (28d) ~19,400; welcome→completed ~72.3%.
+- **Registration / signup:** WAFU ~3,900; attempts (28d) ~19,300; signup success ~53% overall (iOS ~54%; Android ~47%); server-recorded signup failures ~9.2% of attempts.
+- **Learn / training:** WAFU (lesson viewed) ~6,000; lesson attempts (28d) ~110,000; lesson completion ~58%.
+- **Subscription / paywall:** Subscription success WAFU ~3,500; subscription success events are largely **web**-attributed in analytics—do not infer low mobile revenue impact solely from missing mobile subscription events (instrumentation).
+- **Dog Park:** WAFU ~600; attempts (28d) ~3,300; mostly web navigation signal in current data.
+
+**Metric caveats (do not misread analytics):**
+- **Wi‑Fi:** `Wifi Setup Error` counts reflect **error events / retries**, not “unique users who never succeed.” Funnel conversion ~98.7% is the primary success proxy; high error-event volume still indicates painful retry loops.
+- **Subscriptions / mobile:** Web-heavy subscription tracking does **not** prove mobile IAP or paywall is unused—treat missing mobile subscription events as a possible **instrumentation gap** before lowering `reach`.
+- **Instrumentation gaps:** Many flows lack failure events (fence, walk, onboarding steps, feedback save). **Absence of failure metrics is not evidence of low severity** for **high‑breadth** areas listed above.
+
+"""
+
+_HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW = (
+    """
 **Halo product context (use when judging Raise / Lower—extend this block over time with PM/engineering):**
 - **Primary mission:** **Protect dogs** via **virtual GPS fences**, **reliable geofence / containment behavior**, and **accurate collar-reported location** when that affects safety. **Critical** and **Blocker** in Jira should align with **core** risk in this space—not every title that sounds severe.
+- **Fence mode:** Virtual fences have an **Active** vs **Inactive** mode. Moving to **Inactive** disables **fence feedback** (user-visible containment signaling around the fence). Bugs involving **mode changes**, stuck mode, loss of feedback, or confusion between Active/Inactive are **containment-adjacent**—treat like other **fence / geofence** risk, not peripheral polish.
 - **Often non-core (do not over-escalate):** **Pet profile** and **profile photo** flows, **optional onboarding** polish, and similar **peripheral** UX. Example: a **Major** bug on **Add Photo** / profile setup (e.g. bottom sheet loop, user must force-kill) **does not** by itself justify **Raise to Critical** if **fence setup**, **live tracking for containment**, and **location correctness for geofences** are **not** impaired—**Major** can remain appropriate.
 - **Stronger Raise signals:** Widespread **production** impact; **wrong or unusable location** affecting **fences**; **geofence** arming/disarming or containment logic broken; collar **offline** in ways that block **safety-relevant** use; inability to complete **collar pairing** or **fence configuration** **without** a reasonable workaround. When recommending **Raise**, tie the **Reason** to **core vs peripheral** impact when it helps the team.
 
 """
+    + _HALO_AMPLITUDE_BASELINE_SNAPSHOT
+)
 
 
 _BACKLOG_OVERVIEW_SYSTEM_PASS2 = (
@@ -745,6 +769,7 @@ _SCORECARD_RUBRIC_INSTRUCTIONS = """
 - **0** — Unreleased / N/A.
 
 **B) reach** (0–3) — unique users/week (Amplitude + sanity; infer from ticket or use 0 if no data):
+- When the ticket clearly maps to a **feature family** in **Amplitude baselines** (product context above), choose `reach` **consistently** with those approximate weekly users versus the bands below.
 - **3** — > 5,000 / week
 - **2** — 1,000–5,000
 - **1** — 100–1,000
