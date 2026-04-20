@@ -4,6 +4,7 @@ from backend.api.routes.jira_routes import _validate_reprioritization_rows
 from backend.services.jira_triage_scorecard import (
     ScorecardBatchIn,
     ScorecardRowIn,
+    adjust_scorecard_batch_for_ai_created_labels,
     build_scorecards_by_key_meta,
     ga_verdict_from_total,
     implied_jira_priority_from_row,
@@ -208,3 +209,38 @@ def test_build_scorecards_by_key_meta():
 def test_framework_config_hash_stable():
     assert scorecard_framework_config_hash() == scorecard_framework_config_hash()
     assert len(scorecard_framework_config_hash()) == 16
+
+
+def test_ai_created_label_clamps_reach():
+    row = _row(key="HALO-1", reach=3, feature_importance=3, technical_severity=2, workaround_quality=1, regression_risk=0)
+    batch = ScorecardBatchIn(rows=[row])
+    issues = {"HALO-1": {"labels": ["ai-created"]}}
+    out, audit, keys = adjust_scorecard_batch_for_ai_created_labels(
+        batch, issues, enabled=True, max_reach=2
+    )
+    assert out.rows[0].reach == 2
+    assert raw_total_from_row(out.rows[0]) == raw_total_from_row(row) - 1
+    assert keys == ["HALO-1"]
+    assert len(audit) == 1
+
+
+def test_ai_created_adjust_disabled_noop():
+    row = _row(key="HALO-1", reach=3)
+    batch = ScorecardBatchIn(rows=[row])
+    issues = {"HALO-1": {"labels": ["ai-created"]}}
+    out, audit, keys = adjust_scorecard_batch_for_ai_created_labels(
+        batch, issues, enabled=False, max_reach=2
+    )
+    assert out.rows[0].reach == 3
+    assert audit == []
+
+
+def test_ai_created_max_reach_three_noop():
+    row = _row(key="HALO-1", reach=3)
+    batch = ScorecardBatchIn(rows=[row])
+    issues = {"HALO-1": {"labels": ["AI-CREATED"]}}
+    out, audit, keys = adjust_scorecard_batch_for_ai_created_labels(
+        batch, issues, enabled=True, max_reach=3
+    )
+    assert out.rows[0].reach == 3
+    assert audit == []

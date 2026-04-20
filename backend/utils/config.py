@@ -160,6 +160,14 @@ class Config:
     JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS: int = int(
         os.getenv('JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS', '1536')
     )
+    # When enabled, clamp scorecard `reach` for issues with Jira label `ai-created` (case-insensitive).
+    JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED: bool = os.getenv(
+        'JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED', '1'
+    ).lower() in ('1', 'true', 'yes')
+    # Max reach (0–3) after clamp; default 2 caps high breadth scores for synthetic QA tickets.
+    JIRA_TRIAGE_SCORECARD_AI_CREATED_MAX_REACH: int = max(
+        0, min(3, int(os.getenv('JIRA_TRIAGE_SCORECARD_AI_CREATED_MAX_REACH', '2')))
+    )
 
     # Storage Configuration
     STORAGE_TYPE: str = os.getenv('STORAGE_TYPE', 's3')

@@ -21,6 +21,7 @@ from backend.services import jira_oauth
 from backend.services.jira_triage_scorecard import (
     SCORECARD_REPRIORITIZATION_NUM_COLUMNS,
     SCORECARD_SCHEMA_VERSION,
+    adjust_scorecard_batch_for_ai_created_labels,
     build_scorecards_by_key_meta,
     parse_scorecard_json,
     parse_shortlist_keys_json,
@@ -672,6 +673,7 @@ _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW = (
 - **Fence mode:** Virtual fences have an **Active** vs **Inactive** mode. Moving to **Inactive** disables **fence feedback** (user-visible containment signaling around the fence). Bugs involving **mode changes**, stuck mode, loss of feedback, or confusion between Active/Inactive are **containment-adjacent**—treat like other **fence / geofence** risk, not peripheral polish.
 - **Often non-core (do not over-escalate):** **Pet profile** and **profile photo** flows, **optional onboarding** polish, and similar **peripheral** UX. Example: a **Major** bug on **Add Photo** / profile setup (e.g. bottom sheet loop, user must force-kill) **does not** by itself justify **Raise to Critical** if **fence setup**, **live tracking for containment**, and **location correctness for geofences** are **not** impaired—**Major** can remain appropriate.
 - **Stronger Raise signals:** Widespread **production** impact; **wrong or unusable location** affecting **fences**; **geofence** arming/disarming or containment logic broken; collar **offline** in ways that block **safety-relevant** use; inability to complete **collar pairing** or **fence configuration** **without** a reasonable workaround. When recommending **Raise**, tie the **Reason** to **core vs peripheral** impact when it helps the team.
+- **`ai-created` label:** If **`ai-created`** appears in **labels**, treat the ticket as **QA/synthetic authoring** (scenario-driven / harness-heavy) unless the description clearly shows **production-realistic** impact (field incident, Crashlytics volume, widespread support pattern). Do **not** treat headline severity alone as proof of broad user reach.
 
 """
     + _HALO_AMPLITUDE_BASELINE_SNAPSHOT
@@ -771,6 +773,7 @@ _SCORECARD_RUBRIC_INSTRUCTIONS = """
 **B) reach** (0–3) — unique users/week (Amplitude + sanity; infer from ticket or use 0 if no data):
 - When the ticket clearly maps to a **feature family** in **Amplitude baselines** (product context above), choose `reach` **consistently** with those approximate weekly users versus the bands below — and set **`notes.reach`** beginning with **`Amplitude:`** plus the family name and approximate weekly scale (one line, ≤120 chars). Example: `Amplitude: Maps & fences (~24k/wk)` or `Amplitude: Walk (~6k/wk)`.
 - When `reach` is inferred only from ticket/components with **no** clear baseline mapping, omit **`notes.reach`** or prefix **`Heuristic:`** (same length limit).
+- If **`ai-created`** is in **labels**: default **`reach` ≤ 2** — scenario tickets are usually **not** representative of full-user breadth unless the description proves production-scale incidence. Use **`reach` 3** only with explicit evidence (field crash rates, many users, production telemetry). Proxy/MITM or rewrite-to-error repro steps → **not** broad reach.
 - **3** — > 5,000 / week
 - **2** — 1,000–5,000
 - **1** — 100–1,000
@@ -781,6 +784,7 @@ _SCORECARD_RUBRIC_INSTRUCTIONS = """
 - **2** — Major: feature broken, no output.
 - **1** — Minor: degraded UX, partial failure.
 - **0** — Trivial: cosmetic only.
+- For **`ai-created`** in **labels**: score **technical_severity** on the **real defect** (crash, stuck state, data loss) but treat **trigger realism** as **reach**, not higher **technical_severity** — a crash after a synthetic network rewrite is still a crash, but do not inflate **reach** from Amplitude baselines as if every user hits that path.
 
 **D) workaround_quality** (0–2) — QA/manual:
 - **2** — No workaround; user is stuck.
@@ -840,6 +844,7 @@ Rules:
 - **Mis-prioritization:** compare other columns to **priority**; do not treat title words like "critical" as replacing the priority field.
 - **GA-blocker flag:** do not use it to shortlist or skip a key.
 - **Quality, not arbitrary brevity:** Every key must justify structured scoring—**do not invent keys** or add fluff. Listing **many** justified keys to use the budget (breadth across mis-tier + core flows) is **preferred** when the backlog supports it.
+- **`ai-created` label:** Do **not** rank tickets **ahead** of comparable non–`ai-created` issues **only** because the title sounds severe. Shortlist **`ai-created`** keys when **mis-prioritization vs priority**, **documented prod-like impact**, or **strong core-flow** defects remain compelling—not headline drama alone.
 - No markdown fences, no prose outside JSON.
 """
 )
@@ -1579,6 +1584,8 @@ def _iter_backlog_overview_events(
     scorecard_scored_keys = 0
     scorecard_sl_keys_ordered: List[str] = []
     scorecard_scored_keys_ordered: List[str] = []
+    scorecard_ai_created_adjustments: List[str] = []
+    scorecard_ai_created_adjusted_keys: List[str] = []
 
     yield _overview_progress_event('pass1', 'start', completed)
     try:
@@ -1614,6 +1621,9 @@ def _iter_backlog_overview_events(
         }
         for i in batch
         if i.get('key')
+    }
+    issues_by_key = {
+        str(i.get('key', '')).strip().upper(): i for i in batch if i.get('key')
     }
 
     yield _overview_progress_event('pass2', 'start', completed)
@@ -1687,6 +1697,14 @@ def _iter_backlog_overview_events(
                 batch_parsed, perrs = parse_scorecard_json(r_sc.content or '')
                 scorecard_errors.extend(perrs)
                 if batch_parsed and batch_parsed.rows:
+                    batch_parsed, ai_adj, ai_keys = adjust_scorecard_batch_for_ai_created_labels(
+                        batch_parsed,
+                        issues_by_key,
+                        enabled=Config.JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED,
+                        max_reach=Config.JIRA_TRIAGE_SCORECARD_AI_CREATED_MAX_REACH,
+                    )
+                    scorecard_ai_created_adjustments = ai_adj
+                    scorecard_ai_created_adjusted_keys = ai_keys
                     for rrow in batch_parsed.rows:
                         scorecard_errors.extend(scorecard_row_mismatch_warnings(rrow))
                     part2_draft = recommendations_to_reprioritization_markdown(
@@ -1799,6 +1817,14 @@ def _iter_backlog_overview_events(
                     batch_b, perrs_b = parse_scorecard_json(r2b.content or '')
                     scorecard_errors.extend(perrs_b)
                     if batch_b and batch_b.rows:
+                        batch_b, ai_adj_b, ai_keys_b = adjust_scorecard_batch_for_ai_created_labels(
+                            batch_b,
+                            issues_by_key,
+                            enabled=Config.JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED,
+                            max_reach=Config.JIRA_TRIAGE_SCORECARD_AI_CREATED_MAX_REACH,
+                        )
+                        scorecard_ai_created_adjustments = ai_adj_b
+                        scorecard_ai_created_adjusted_keys = ai_keys_b
                         for rrow in batch_b.rows:
                             scorecard_errors.extend(scorecard_row_mismatch_warnings(rrow))
                         part2b_out = recommendations_to_reprioritization_markdown(
@@ -2029,6 +2055,12 @@ def _iter_backlog_overview_events(
         'scorecard_errors': scorecard_errors[:25] if use_scorecard else [],
         'scorecard_threshold_summary': (
             scorecard_threshold_reference_lines(min_scorecard_delta) if use_scorecard else []
+        ),
+        'scorecard_ai_created_reach_adjustments': (
+            scorecard_ai_created_adjustments if use_scorecard else []
+        ),
+        'scorecard_ai_created_adjusted_keys': (
+            scorecard_ai_created_adjusted_keys if use_scorecard else []
         ),
         'ai_coverage': ai_coverage,
     }

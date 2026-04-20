@@ -42,8 +42,14 @@ Implementation:
 | `JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS` | `1` | Minimum ladder steps between current Jira priority and **server** implied priority to emit Raise/Lower. |
 | `JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION` | `2` | Label in API meta (must match parser; model must emit `"version":"2"`). |
 | `JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS` | `1536` | Max tokens for the shortlist Claude call. |
+| `JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED` | `1` (on) | When enabled, clamp scorecard **`reach`** for issues whose Jira **labels** include **`ai-created`** (case-insensitive). Prompts also steer shortlist/scoring for synthetic QA tickets. |
+| `JIRA_TRIAGE_SCORECARD_AI_CREATED_MAX_REACH` | `2` | Maximum **`reach`** (0–3) after server clamp for **`ai-created`** issues. Set to **`3`** to disable the clamp (same as turning reach adjustment off). |
 | `JIRA_BACKLOG_OVERVIEW_TEMPERATURE` | `0` | Applies to all backlog-overview Claude calls. |
 | `JIRA_BACKLOG_OVERVIEW_DEEP_PASS` | `1` | Enables pass2b description-enriched scorecard when recommendations exist. |
+
+### `ai-created` label
+
+Issues labeled **`ai-created`** are treated as **QA/synthetic scenario** work in the backlog-overview prompts (lower default breadth expectations). With **`JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED`**, the server may **reduce `reach`** so implied priority and Raise/Lower rows do not over-weight extremely narrow repro paths. Terminal **`meta`** includes **`scorecard_ai_created_adjusted_keys`** and **`scorecard_ai_created_reach_adjustments`** when any row was clamped.
 
 ### Legacy (v1 only — ignored for scorecard v2)
 
@@ -59,6 +65,7 @@ When scorecard mode is enabled, terminal `meta` includes:
 
 - `scorecard_enabled`, `scorecards_by_key`, `scorecard_config_hash` (stable hash for framework v2), `scorecard_schema_version`
 - `scorecard_shortlist_size`, `scorecard_scored_keys`, `scorecard_errors` (parse issues + optional LLM vs server mismatch hints)
+- `scorecard_ai_created_adjusted_keys`, `scorecard_ai_created_reach_adjustments` (when **`ai-created`** reach clamp applies)
 
 Each `scorecards_by_key[key]` entry includes the five scores, `raw_total`, `ga_verdict`, `implied_priority`, optional `llm_*` echoes, and `recommendation` when Raise/Lower passes the rank-delta gate.
 

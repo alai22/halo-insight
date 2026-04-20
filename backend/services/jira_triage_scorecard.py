@@ -137,6 +137,55 @@ class ScorecardBatchIn(BaseModel):
     rows: List[ScorecardRowIn] = Field(default_factory=list)
 
 
+AI_CREATED_LABEL_SLUG = "ai-created"
+
+
+def _issue_labels_list(issue: Optional[Dict[str, Any]]) -> List[str]:
+    if not issue or not isinstance(issue, dict):
+        return []
+    lab = issue.get("labels")
+    if not isinstance(lab, list):
+        return []
+    return [str(x).strip() for x in lab if isinstance(x, str) and str(x).strip()]
+
+
+def issue_has_ai_created_label(issue: Optional[Dict[str, Any]]) -> bool:
+    return any(L.lower() == AI_CREATED_LABEL_SLUG for L in _issue_labels_list(issue))
+
+
+def adjust_scorecard_batch_for_ai_created_labels(
+    batch_in: ScorecardBatchIn,
+    issues_by_key: Dict[str, Dict[str, Any]],
+    *,
+    enabled: bool,
+    max_reach: int,
+) -> Tuple[ScorecardBatchIn, List[str], List[str]]:
+    """
+    Deterministically cap reach for rows whose Jira issue has the ai-created label.
+    Returns (adjusted_batch, audit_lines, adjusted_keys).
+    """
+    if not enabled or max_reach >= 3:
+        return batch_in, [], []
+    cap = _clamp_int(max_reach, 0, 3)
+    audit: List[str] = []
+    keys_out: List[str] = []
+    new_rows: List[ScorecardRowIn] = []
+    for row in batch_in.rows:
+        issue = issues_by_key.get(row.key.upper())
+        if issue_has_ai_created_label(issue):
+            old_r = row.reach
+            new_r = min(row.reach, cap)
+            if new_r != old_r:
+                audit.append(f"{row.key}: reach {old_r}→{new_r} (ai-created cap)")
+                keys_out.append(row.key)
+                new_rows.append(row.model_copy(update={"reach": new_r}))
+            else:
+                new_rows.append(row)
+        else:
+            new_rows.append(row)
+    return ScorecardBatchIn(version=batch_in.version, rows=new_rows), audit, keys_out
+
+
 def raw_total_from_row(row: ScorecardRowIn) -> int:
     return (
         row.feature_importance
