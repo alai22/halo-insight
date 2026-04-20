@@ -529,23 +529,51 @@ function _hastClassNameList(value) {
   return Array.isArray(value) ? [...value] : String(value).split(/\s+/).filter(Boolean);
 }
 
+function _findParentTableFromTr(trNode, parent) {
+  let cur = parent;
+  while (cur) {
+    if (cur.type === 'element' && cur.tagName === 'table') return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+function _markReprioritizationTable(tableNode) {
+  if (!tableNode || tableNode.tagName !== 'table') return;
+  tableNode.properties = tableNode.properties || {};
+  const cls = _hastClassNameList(tableNode.properties.className);
+  if (!cls.includes('overview-reprioritization-table')) cls.push('overview-reprioritization-table');
+  tableNode.properties.className = cls;
+}
+
 /**
  * Mark reprioritization table rows (4 cols legacy or 5 cols with Title). Sets row tint and
- * dataOverviewRecKind on the recommendation cell for React styling.
+ * dataOverviewRecKind on the recommendation cell for React styling. Annotates header `th` and
+ * marks the parent table for fixed-column layout in CSS.
  */
 function rehypeAnnotateBacklogOverviewTables() {
   return (tree) => {
-    visit(tree, 'element', (node) => {
+    visit(tree, 'element', (node, _index, parent) => {
       if (node.tagName !== 'tr') return;
-      const tds = (node.children || []).filter(
-        (c) => c.type === 'element' && c.tagName === 'td'
+      const cells = (node.children || []).filter(
+        (c) => c.type === 'element' && (c.tagName === 'td' || c.tagName === 'th')
       );
-      if (tds.length < 4) return;
-      const recIdx = tds.length >= 5 ? 3 : 2;
-      tds.forEach((td, i) => {
-        td.properties = td.properties || {};
-        td.properties.dataOverviewCol = String(i);
+      if (cells.length < 4) return;
+      const isHeader = cells.every((c) => c.tagName === 'th');
+      const isBody = cells.every((c) => c.tagName === 'td');
+      if (!isHeader && !isBody) return;
+
+      cells.forEach((cell, i) => {
+        cell.properties = cell.properties || {};
+        cell.properties.dataOverviewCol = String(i);
       });
+      const tableNode = _findParentTableFromTr(node, parent);
+      if (tableNode) _markReprioritizationTable(tableNode);
+
+      if (isHeader) return;
+
+      const tds = cells;
+      const recIdx = tds.length >= 5 ? 3 : 2;
       const recCell = tds[recIdx];
       if (!recCell) return;
       const rec = hastPlainText(recCell).trim().toLowerCase();
@@ -557,6 +585,15 @@ function rehypeAnnotateBacklogOverviewTables() {
       const cls = _hastClassNameList(node.properties.className);
       cls.push(kind === 'raise' ? 'overview-priority-raise' : 'overview-priority-lower');
       node.properties.className = cls;
+    });
+    visit(tree, 'element', (node) => {
+      if (node.tagName !== 'table') return;
+      let hasOverviewCols = false;
+      visit(node, 'element', (inner) => {
+        if (inner.tagName !== 'td' && inner.tagName !== 'th') return;
+        if (inner.properties?.dataOverviewCol != null) hasOverviewCols = true;
+      });
+      if (hasOverviewCols) _markReprioritizationTable(node);
     });
   };
 }
@@ -624,15 +661,42 @@ function rehypeWrapBacklogSnapshotBlocks() {
 /**
  * Arrow + emphasis in the Recommended priority column; ticket column links when base URL is known.
  */
+/** Title column: wrap aggressively; min-w-0 lets table-fixed shrink this column */
+const _OVERVIEW_TITLE_CELL_CLASS =
+  'min-w-0 max-w-[min(100%,13rem)] sm:max-w-[min(100%,17rem)] lg:max-w-[min(100%,20rem)] break-words whitespace-normal align-top text-[11px] sm:text-[12px] leading-snug';
+
+const _OVERVIEW_TICKET_TD_STICKY =
+  'sticky left-0 z-[2] border-r border-slate-200 bg-white align-top shadow-[4px_0_8px_-4px_rgba(15,23,42,0.12)]';
+
 function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
   const base = jiraBaseUrl && String(jiraBaseUrl).replace(/\/+$/, '');
   return {
+    table({ node, children, ...props }) {
+      return (
+        <table {...props}>
+          {children}
+        </table>
+      );
+    },
+    th({ node, children, ...props }) {
+      const col = node?.properties?.dataOverviewCol;
+      const titleColClass = col === '1' ? _OVERVIEW_TITLE_CELL_CLASS : '';
+      let stickyHead = '';
+      if (col === '0') {
+        stickyHead =
+          'sticky left-0 z-[3] border-r border-slate-200 bg-slate-100 align-top shadow-[4px_0_8px_-4px_rgba(15,23,42,0.08)]';
+      }
+      const cn = [props.className, stickyHead, titleColClass].filter(Boolean).join(' ');
+      return (
+        <th {...props} className={cn || undefined} scope={props.scope ?? 'col'}>
+          {children}
+        </th>
+      );
+    },
     td({ node, children, ...props }) {
       const col = node?.properties?.dataOverviewCol;
-      const titleColClass =
-        col === '1'
-          ? 'max-w-[min(100%,28rem)] break-words whitespace-normal align-top text-[12px]'
-          : '';
+      const titleColClass = col === '1' ? _OVERVIEW_TITLE_CELL_CLASS : '';
+      const ticketSticky = col === '0' ? _OVERVIEW_TICKET_TD_STICKY : '';
 
       if (col === '0' && base) {
         const raw = hastPlainText(node).trim();
@@ -641,7 +705,7 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
           const key = m[1].toUpperCase();
           const href = `${base}/browse/${encodeURIComponent(key)}`;
           return (
-            <td {...props}>
+            <td {...props} className={[_OVERVIEW_TICKET_TD_STICKY, props.className].filter(Boolean).join(' ')}>
               <a
                 href={href}
                 target="_blank"
@@ -657,7 +721,7 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
 
       const recKind = node?.properties?.dataOverviewRecKind;
       if (recKind !== 'raise' && recKind !== 'lower') {
-        const cn = [props.className, titleColClass].filter(Boolean).join(' ');
+        const cn = [props.className, ticketSticky, titleColClass].filter(Boolean).join(' ');
         return (
           <td {...props} className={cn || undefined}>
             {children}
@@ -688,14 +752,14 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
         }
       }
       if (!extraClass) {
-        const cn = [props.className, titleColClass].filter(Boolean).join(' ');
+        const cn = [props.className, ticketSticky, titleColClass].filter(Boolean).join(' ');
         return (
           <td {...props} className={cn || undefined}>
             {children}
           </td>
         );
       }
-      const className = [props.className, titleColClass, extraClass].filter(Boolean).join(' ');
+      const className = [props.className, ticketSticky, titleColClass, extraClass].filter(Boolean).join(' ');
       return (
         <td {...props} className={className}>
           {prefix}
@@ -2844,7 +2908,7 @@ const BugTriageCopilot = () => {
                 )}
                 {displayedOverviewMarkdown && (
                   <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:w-auto [&_table]:max-w-full [&_table]:min-w-max [&_table]:border-collapse [&_table]:text-sm [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&>table]:min-w-[min(100%,36rem)]"
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:border-collapse [&_table]:text-sm [&_table:not(.overview-reprioritization-table)]:w-auto [&_table:not(.overview-reprioritization-table)]:max-w-full [&_table:not(.overview-reprioritization-table)]:min-w-max [&_.overview-reprioritization-table]:table-fixed [&_.overview-reprioritization-table]:w-full [&_.overview-reprioritization-table]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(4)]:break-words [&_.overview-reprioritization-table_td:nth-child(4)]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(5)]:break-words [&_.overview-reprioritization-table_td:nth-child(5)]:min-w-0 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-raise>td:first-child]:!bg-rose-50/90 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&_tr.overview-priority-lower>td:first-child]:!bg-emerald-50/80 [&>table:not(.overview-reprioritization-table)]:min-w-[min(100%,36rem)]"
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}

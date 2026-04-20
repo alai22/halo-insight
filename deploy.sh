@@ -132,7 +132,7 @@ case $ENVIRONMENT in
                 -p 127.0.0.1:5000:5000 \
                 --restart unless-stopped \
                 --env-file .env \
-                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
+                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-haiku-4-5}" \
                 -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
                 -e AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
                 -e SURVICATE_API_KEY="${SURVICATE_API_KEY}" \
@@ -149,7 +149,7 @@ case $ENVIRONMENT in
                 -p 127.0.0.1:5000:5000 \
                 --restart unless-stopped \
                 -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-3-opus-20240229}" \
+                -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-haiku-4-5}" \
                 -e GLADLY_API_KEY="${GLADLY_API_KEY}" \
                 -e GLADLY_AGENT_EMAIL="${GLADLY_AGENT_EMAIL}" \
                 -e S3_BUCKET_NAME="${S3_BUCKET_NAME}" \

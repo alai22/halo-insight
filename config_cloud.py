@@ -25,7 +25,7 @@ AWS_SECRET_ACCESS_KEY = "your-secret-key"
 # Use environment variable ANTHROPIC_API_KEY instead
 import os
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+CLAUDE_MODEL = "claude-haiku-4-5"
 CONVERSATION_FILE = "conversation_items.jsonl"
 
 

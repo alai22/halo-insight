@@ -21,7 +21,7 @@ except ImportError:
     except ImportError:
         # Fallback to environment variables
         ANTHROPIC_API_KEY = None
-        CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+        CLAUDE_MODEL = "claude-haiku-4-5"
         CONVERSATION_FILE = "conversation_items.jsonl"
 
 class ClaudeAPIClient:

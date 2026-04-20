@@ -76,7 +76,7 @@ def mock_claude_service() -> IClaudeService:
     # Mock send_message
     mock_response = ClaudeResponse(
         content="Test response from Claude",
-        model="claude-3-haiku-20240307",
+        model="claude-haiku-4-5",
         tokens_used=100,
         streamed=False
     )

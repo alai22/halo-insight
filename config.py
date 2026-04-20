@@ -5,7 +5,7 @@
 ANTHROPIC_API_KEY = "your-api-key-here"
 
 # Optional: Override default model
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+CLAUDE_MODEL = "claude-haiku-4-5"
 
 # Optional: Override conversation data file
 CONVERSATION_FILE = "conversation_items.jsonl"

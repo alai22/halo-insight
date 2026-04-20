@@ -41,7 +41,7 @@ class TestClaudeRoutes:
             
             response = client.post('/api/claude/chat', json={
                 'message': 'Hello',
-                'model': 'claude-3-haiku-20240307'
+                'model': 'claude-haiku-4-5'
             })
             
             assert response.status_code == 200

@@ -24,9 +24,8 @@ class Config:
     
     # API Configuration
     ANTHROPIC_API_KEY: Optional[str] = os.getenv('ANTHROPIC_API_KEY')
-    # Default to claude-3-haiku-20240307 (verified working model)
-    # Claude 4 models (claude-sonnet-4, claude-opus-4) may not be available with all API keys
-    CLAUDE_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-3-haiku-20240307')
+    # Default: Haiku 4.5 non-dated alias (replaces retired claude-3-haiku-20240307, Apr 2026)
+    CLAUDE_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-haiku-4-5')
     CLAUDE_API_TIMEOUT: int = int(os.getenv('CLAUDE_API_TIMEOUT', '120'))  # Default 120 seconds for complex queries
     # Bounded retries on HTTP 429 from Anthropic (respect Retry-When possible via Retry-After header).
     CLAUDE_RETRY_MAX_ATTEMPTS: int = int(os.getenv('CLAUDE_RETRY_MAX_ATTEMPTS', '3'))
@@ -49,28 +48,28 @@ class Config:
     # Maps deprecated/unavailable models to working alternatives
     # Note: We don't alias Claude 4 models here - let them be tried first, fallback system handles failures
     MODEL_ALIASES = {
-        # Legacy Claude 3.5 models (not available) -> map to working Claude 3
-        'claude-3-5-sonnet': 'claude-3-haiku-20240307',
-        'claude-3-5-sonnet-20241022': 'claude-3-haiku-20240307',
-        'claude-3-5-sonnet-20240620': 'claude-3-haiku-20240307',
-        'claude-3-5-haiku-20241022': 'claude-3-haiku-20240307',
-        # Legacy Claude 3 models (deprecated/unavailable) -> map to working model
-        'claude-3-opus-20240229': 'claude-3-haiku-20240307',
-        'claude-3-sonnet-20240229': 'claude-3-haiku-20240307',  # Deprecated, use haiku
+        # Retired Haiku 3 / 3.5 Haiku -> Haiku 4.5
+        'claude-3-haiku-20240307': 'claude-haiku-4-5',
+        'claude-3-5-haiku-20241022': 'claude-haiku-4-5',
+        # Legacy Claude 3.5 Sonnet snapshots -> Sonnet 4 alias
+        'claude-3-5-sonnet': 'claude-sonnet-4',
+        'claude-3-5-sonnet-20241022': 'claude-sonnet-4',
+        'claude-3-5-sonnet-20240620': 'claude-sonnet-4',
+        # Legacy Claude 3 Sonnet/Opus -> current aliases
+        'claude-3-opus-20240229': 'claude-opus-4',
+        'claude-3-sonnet-20240229': 'claude-sonnet-4',
     }
     
     # List of verified working models (tested with current API key)
     # Ordered by preference for fallback - put verified working models first
     VERIFIED_MODELS = [
-        'claude-3-haiku-20240307',  # Primary - verified working model
-        'claude-3-sonnet-20240229',  # May work with some API keys
-        'claude-sonnet-4',  # Try Claude 4 models last (may not be available)
-        'claude-opus-4',   # Try Claude 4 models last (may not be available)
+        'claude-haiku-4-5',
+        'claude-haiku-4-5-20251001',
+        'claude-sonnet-4',
+        'claude-opus-4',
     ]
     
-    # Fallback model if configured model doesn't work
-    # Using Haiku as fallback (verified working, cost-effective)
-    FALLBACK_MODEL = 'claude-3-haiku-20240307'
+    FALLBACK_MODEL = 'claude-haiku-4-5'
     
     @classmethod
     def resolve_model(cls, requested_model: Optional[str] = None) -> str:
@@ -112,7 +111,7 @@ class Config:
     # App base URL for OAuth callback (e.g. https://insight.halocollar.com). Required for Jira OAuth.
     APP_BASE_URL: Optional[str] = os.getenv('APP_BASE_URL')
     # Backlog overview: two Claude calls by default, optional third (description refine for priority table).
-    # Default 4096 per pass — values above 4096 often return 400 from Anthropic for claude-3-haiku; set to 8192 only if your CLAUDE_MODEL supports it.
+    # Default 4096 per pass; Haiku 4.5 supports higher max output — raise only if needed.
     JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS1_MAX_TOKENS', '4096'))
     JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS: int = int(os.getenv('JIRA_BACKLOG_OVERVIEW_PASS2_MAX_TOKENS', '4096'))
     # Claude sampling for all backlog-overview passes (pass1/2/2b/title). Default 0 reduces run-to-run variance.

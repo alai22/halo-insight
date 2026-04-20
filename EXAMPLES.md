@@ -114,9 +114,7 @@ The script looks for your API key in this order:
 3. `ANTHROPIC_API_KEY` environment variable
 
 ### Model Options
-- `claude-3-5-sonnet-20241022` (default, most capable)
-- `claude-3-5-haiku-20241022` (fastest, cheapest)
-- `claude-3-opus-20240229` (legacy, most capable)
+See `docs/MODEL_COMPATIBILITY.md`. Examples: `claude-haiku-4-5`, `claude-sonnet-4`, `claude-opus-4`.
 
 ### File Structure
 ```

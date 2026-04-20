@@ -11,17 +11,18 @@ const SettingsPanel = ({ settings, setSettings, adminMode, setAdminMode, setCurr
   };
 
   const models = [
-    // Claude 4 models (non-dated aliases - recommended for robustness)
+    // Haiku 4.5 + Claude 4 aliases (non-dated — recommended)
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
     'claude-sonnet-4',
     'claude-opus-4',
-    // Claude 3 models (dated snapshots)
+    // Older snapshots (may be aliased or retired — see docs/MODEL_COMPATIBILITY.md)
     'claude-3-sonnet-20240229',
-    'claude-3-opus-20240229',
-    'claude-3-haiku-20240307',
-    // Legacy Claude 3.5 models (will be aliased by backend)
+    // Legacy Claude 3.5 names (backend maps to Sonnet 4 / Haiku 4.5)
     'claude-3-5-sonnet',
     'claude-3-5-sonnet-20241022',
-    'claude-3-5-haiku-20241022'
+    'claude-3-5-haiku-20241022',
+    'claude-3-haiku-20240307',
   ];
 
 

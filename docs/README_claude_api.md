@@ -138,9 +138,11 @@ print(f"Overall sentiment score: {sentiment['sentiment_score']}")
 
 ## Available Models
 
-- `claude-3-5-sonnet-20241022` (most capable, default)
-- `claude-3-5-haiku-20241022` (fastest, cheapest)
-- `claude-3-opus-20240229` (legacy, most capable)
+See `docs/MODEL_COMPATIBILITY.md`. Common choices:
+
+- `claude-haiku-4-5` (fast, cost-effective; default in app config)
+- `claude-sonnet-4` (balanced, strong for analysis)
+- `claude-opus-4` (most capable, higher cost)
 
 ## Conversation Data Features
 
