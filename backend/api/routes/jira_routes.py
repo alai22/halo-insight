@@ -769,7 +769,8 @@ _SCORECARD_RUBRIC_INSTRUCTIONS = """
 - **0** — Unreleased / N/A.
 
 **B) reach** (0–3) — unique users/week (Amplitude + sanity; infer from ticket or use 0 if no data):
-- When the ticket clearly maps to a **feature family** in **Amplitude baselines** (product context above), choose `reach` **consistently** with those approximate weekly users versus the bands below.
+- When the ticket clearly maps to a **feature family** in **Amplitude baselines** (product context above), choose `reach` **consistently** with those approximate weekly users versus the bands below — and set **`notes.reach`** beginning with **`Amplitude:`** plus the family name and approximate weekly scale (one line, ≤120 chars). Example: `Amplitude: Maps & fences (~24k/wk)` or `Amplitude: Walk (~6k/wk)`.
+- When `reach` is inferred only from ticket/components with **no** clear baseline mapping, omit **`notes.reach`** or prefix **`Heuristic:`** (same length limit).
 - **3** — > 5,000 / week
 - **2** — 1,000–5,000
 - **1** — 100–1,000
@@ -810,12 +811,12 @@ _SCORECARD_RUBRIC_INSTRUCTIONS = """
 - **Minor** if raw_total **≤ 3**
 
 Output **JSON only** (no markdown fences):
-{"version":"2","rows":[{"key":"PROJ-123","feature_importance":3,"reach":2,"technical_severity":2,"workaround_quality":1,"regression_risk":0,"raw_total":8,"ga_verdict":"Fix if capacity","jira_priority":"Critical","notes":{"reach":"inferred from crash rate"}}]}
+{"version":"2","rows":[{"key":"PROJ-123","feature_importance":3,"reach":2,"technical_severity":2,"workaround_quality":1,"regression_risk":0,"raw_total":8,"ga_verdict":"Fix if capacity","jira_priority":"Critical","notes":{"reach":"Amplitude: Maps & fences (~24k/wk)"}}]}
 
 Rules:
 - Root **version** must be **"2"**.
 - Exactly **one** row per issue key in the user message (same keys; preserve order if possible).
-- **notes** optional object; short strings per field (≤120 chars each).
+- **notes** optional object; short strings per field (≤120 chars each). Include **`notes.reach`** whenever **reach** is anchored to **Amplitude baselines** or explicitly **Heuristic:** when not — so downstream Reason text can cite the basis.
 - Use only keys from the input; do not invent keys.
 """
 

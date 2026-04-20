@@ -176,14 +176,29 @@ def scorecard_threshold_reference_lines(min_delta_ranks: int) -> List[str]:
     ]
 
 
+_REPRIORITIZATION_REASON_MAX_NOTE_CHARS = 120
+
+
 def reprioritization_reason_short(row: ScorecardRowIn, implied: str, total: int) -> str:
     """One-line hint for the Reason column (dimensions live in dedicated columns)."""
     safety = row.feature_importance == 4 and (row.technical_severity >= 2 or row.workaround_quality >= 1)
     if safety and implied == "blocker" and total < 12:
-        return "Safety override (fi=4, ts≥2 or wq≥1)"
-    if total >= 12:
-        return "total ≥12"
-    return f"Scorecard → {implied}"
+        base = "Safety override (fi=4, ts≥2 or wq≥1)"
+    elif total >= 12:
+        base = "total ≥12"
+    else:
+        base = f"Scorecard → {implied}"
+
+    reach_note = ""
+    n = row.notes
+    if isinstance(n, dict):
+        raw = n.get("reach")
+        if isinstance(raw, str):
+            reach_note = raw.strip()
+    if reach_note:
+        clipped = reach_note[:_REPRIORITIZATION_REASON_MAX_NOTE_CHARS]
+        return f"{base} · {clipped}"
+    return base
 
 
 def implied_jira_priority_from_row(row: ScorecardRowIn) -> str:

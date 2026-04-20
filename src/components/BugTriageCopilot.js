@@ -2349,7 +2349,34 @@ const BugTriageCopilot = () => {
                         </summary>
                         <div className="mt-1.5 text-[10px] text-slate-600 grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-0.5">
                           <span>feature_importance {v.feature_importance}/4</span>
-                          <span>reach {v.reach}/3</span>
+                          <span className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                            reach {v.reach}/3
+                            {(() => {
+                              const reachNote =
+                                typeof v.notes?.reach === 'string' ? String(v.notes.reach).trim() : '';
+                              if (!reachNote) return null;
+                              const amp = /^amplitude:\s*/i;
+                              const isAmp = amp.test(reachNote);
+                              const reachBody = isAmp
+                                ? reachNote.replace(amp, '').trim() || reachNote
+                                : reachNote;
+                              return (
+                                <>
+                                  <span className="text-slate-400">·</span>
+                                  <span className="inline-flex flex-wrap items-baseline gap-x-1 min-w-0">
+                                    {isAmp ? (
+                                      <span className="shrink-0 rounded px-1 py-px bg-indigo-50 text-indigo-900/85 font-medium">
+                                        Amplitude
+                                      </span>
+                                    ) : null}
+                                    <span className="text-slate-600 break-words">
+                                      Reach basis: {reachBody}
+                                    </span>
+                                  </span>
+                                </>
+                              );
+                            })()}
+                          </span>
                           <span>technical_severity {v.technical_severity}/3</span>
                           <span>workaround_quality {v.workaround_quality}/2</span>
                           <span>regression_risk {v.regression_risk}/2</span>
