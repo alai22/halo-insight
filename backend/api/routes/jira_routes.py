@@ -828,17 +828,18 @@ _BACKLOG_OVERVIEW_SYSTEM_PASS2_SHORTLIST = (
 """
     + _HALO_PRODUCT_PRIORITY_CONTEXT_FOR_REVIEW
     + """
-**Task:** Pick issue keys that most deserve **follow-up structured priority scoring**: mis-prioritization candidates (metadata vs **priority**), plus **core safety / geofence / location / containment**, broad user-visible impact, regressions or broken flows, engineering risk, or unclear tiering that structured scoring should settle. Prefer a **spread** of candidates (not only Critical/Blocker-adjacent wording).
+**Task:** Pick issue keys that most deserve **follow-up structured priority scoring**: mis-prioritization candidates (metadata vs **priority**), plus **core safety / geofence / location / containment**, broad user-visible impact, regressions or broken flows, engineering risk, or unclear tiering that structured scoring should settle. Prefer a **spread** across **Major**, **Normal**, and **Minor** mis-tiers—not only Critical/Blocker-adjacent wording.
+
+**Shortlist fullness:** The user message states shortlist cap **N**—return **at most N** keys, but treat **N** as a **budget**. When there are **many** issues in the table and clearly **more than a handful** of distinct, defensible picks, aim to use **most of N** (target roughly **80–90% of N**, or **N** itself when that many strong candidates exist). If the backlog is tiny or few tickets truly merit scoring, return fewer.
 
 Output **JSON only**:
 {"keys":["PROJ-1","PROJ-2"]}
 
 Rules:
 - Keys must appear in the input; order by **descending** triage urgency (most important first).
-- The user message states a **shortlist cap**—return **at most** that many keys.
 - **Mis-prioritization:** compare other columns to **priority**; do not treat title words like "critical" as replacing the priority field.
 - **GA-blocker flag:** do not use it to shortlist or skip a key.
-- **Do not pad:** include only keys that justify scoring; fewer is fine.
+- **Quality, not arbitrary brevity:** Every key must justify structured scoring—**do not invent keys** or add fluff. Listing **many** justified keys to use the budget (breadth across mis-tier + core flows) is **preferred** when the backlog supports it.
 - No markdown fences, no prose outside JSON.
 """
 )
