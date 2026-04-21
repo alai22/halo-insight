@@ -29,6 +29,13 @@ import {
   NEXT_ACTIONS,
 } from '../data/bugTriageMockData';
 import { rollupBacklogByPriorityAndStatus } from '../utils/backlogRollups';
+import { hashOverviewFingerprint } from '../utils/bugTriageOverviewFingerprint';
+import {
+  loadOverviewActionsStore,
+  upsertOverviewAction,
+  getOverviewActionsForHash,
+} from '../utils/bugTriageOverviewActionsStorage';
+import { SCORECARD_DIMENSION_LABELS, SCORECARD_DIMENSION_LONG } from '../utils/bugTriageLabels';
 
 const STORAGE_KEY = 'bug_triage_decisions';
 const OVERVIEW_CACHE_STORAGE_KEY = 'bug_triage_backlog_overview_cache_v1';
@@ -552,7 +559,7 @@ function _markReprioritizationTable(tableNode) {
  * dataOverviewRecKind on the recommendation cell for React styling. Annotates header `th` and
  * marks the parent table for fixed-column layout in CSS.
  */
-function rehypeAnnotateBacklogOverviewTables() {
+function rehypeAnnotateBacklogOverviewTablesInner() {
   return (tree) => {
     visit(tree, 'element', (node, _index, parent) => {
       if (node.tagName !== 'tr') return;
@@ -597,6 +604,120 @@ function rehypeAnnotateBacklogOverviewTables() {
       if (hasOverviewCols) _markReprioritizationTable(node);
     });
   };
+}
+
+function _overviewTableCells(tr) {
+  return (tr.children || []).filter(
+    (c) => c.type === 'element' && (c.tagName === 'td' || c.tagName === 'th'),
+  );
+}
+
+function _overviewTableKindFromHeaderRow(tr) {
+  const cells = _overviewTableCells(tr);
+  if (!cells.length || !cells.every((c) => c.tagName === 'th')) return '';
+  const h = cells.map(hastPlainText).join(' ').toLowerCase();
+  if (h.includes('proposed title')) return 'title';
+  if (h.includes('ticket') && (h.includes('recommended') || h.includes('recommendation'))) {
+    return 'reprior';
+  }
+  return '';
+}
+
+function _overviewRiskRowClassesFromScorecard(verdict, rowMeta) {
+  const v = (verdict || '').toLowerCase();
+  const parts = ['overview-risk-row'];
+  if (v.includes('block')) {
+    parts.push('overview-risk-blockga');
+  } else if (v.includes('postga') || v.includes('post ga')) {
+    parts.push('overview-risk-postga');
+  } else if (v.includes('capacity') || v.includes('fix if')) {
+    parts.push('overview-risk-capacity');
+  }
+  if (rowMeta && rowMeta.recommendation) {
+    parts.push('overview-risk-has-rec');
+  }
+  return parts.join(' ');
+}
+
+/** Appends Actions column + scorecard-derived row strips for overview markdown tables. */
+function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
+  const sc =
+    scorecardsByKey && typeof scorecardsByKey === 'object' ? scorecardsByKey : {};
+  return (tree) => {
+    visit(tree, 'element', (table) => {
+      if (table.tagName !== 'table') return;
+      const rows = [];
+      visit(table, 'element', (n) => {
+        if (n.tagName === 'tr') rows.push(n);
+      });
+      if (rows.length < 2) return;
+      const headerRow = rows.find((r) => {
+        const cs = _overviewTableCells(r);
+        return cs.length && cs.every((c) => c.tagName === 'th');
+      });
+      if (!headerRow) return;
+      const kind = _overviewTableKindFromHeaderRow(headerRow);
+      if (kind !== 'reprior' && kind !== 'title') return;
+
+      const headerCells = _overviewTableCells(headerRow);
+      headerRow.children.push({
+        type: 'element',
+        tagName: 'th',
+        properties: {
+          dataOverviewCol: String(headerCells.length),
+          className:
+            'overview-actions-th border border-slate-200 bg-slate-100 px-1 py-1.5 text-[10px] font-semibold text-slate-800 align-top whitespace-nowrap',
+        },
+        children: [{ type: 'text', value: 'Actions' }],
+      });
+
+      rows.forEach((tr) => {
+        if (tr === headerRow) return;
+        const cells = _overviewTableCells(tr);
+        if (!cells.every((c) => c.tagName === 'td')) return;
+        if (cells.length < 4) return;
+        const keyRaw = hastPlainText(cells[0]).trim();
+        const m = keyRaw.match(/^([A-Za-z][A-Za-z0-9]{1,19}-\d+)/);
+        if (!m) return;
+        const key = m[1].toUpperCase();
+        const meta = sc[key];
+        const rc = _overviewRiskRowClassesFromScorecard(meta && meta.ga_verdict, meta);
+        if (rc) {
+          tr.properties = tr.properties || {};
+          const list = _hastClassNameList(tr.properties.className);
+          rc.split(/\s+/).forEach((x) => {
+            if (x) list.push(x);
+          });
+          tr.properties.className = list.join(' ');
+        }
+        tr.properties = tr.properties || {};
+        tr.properties.dataOverviewIssueKey = key;
+        tr.properties.dataOverviewRowKind = kind;
+
+        tr.children.push({
+          type: 'element',
+          tagName: 'td',
+          properties: {
+            dataOverviewCol: String(cells.length),
+            dataOverviewActions: '1',
+            dataOverviewIssueKey: key,
+            dataOverviewRowKind: kind,
+            className:
+              'overview-actions-td border border-slate-200 px-1 py-1 align-top whitespace-nowrap min-w-[7.5rem]',
+          },
+          children: [{ type: 'text', value: '' }],
+        });
+      });
+    });
+  };
+}
+
+function createOverviewMarkdownRehypePlugins(scorecardsByKey) {
+  return [
+    rehypeWrapBacklogSnapshotBlocks,
+    rehypeAnnotateBacklogOverviewTablesInner,
+    createRehypeAppendOverviewActionsAndRisk(scorecardsByKey),
+  ];
 }
 
 /**
@@ -669,8 +790,103 @@ const _OVERVIEW_TITLE_CELL_CLASS =
 const _OVERVIEW_TICKET_TD_STICKY =
   'sticky left-0 z-[2] border-r border-slate-200 bg-white align-top shadow-[4px_0_8px_-4px_rgba(15,23,42,0.12)]';
 
-function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
+function OverviewMarkdownRowActions({
+  issueKey,
+  rowKind,
+  fingerprintHash,
+  actionsByIssue,
+  onSetSlotStatus,
+  jiraBrowseBase,
+}) {
+  if (!issueKey || !fingerprintHash) {
+    return <span className="text-[10px] text-slate-400">—</span>;
+  }
+  const slot =
+    rowKind === 'title' ? 'title' : rowKind === 'scorecard' ? 'scorecard' : 'reprior';
+  const row = actionsByIssue[issueKey] || {};
+  const cur = row[slot];
+
+  const href = jiraBrowseBase
+    ? `${String(jiraBrowseBase).replace(/\/+$/, '')}/browse/${encodeURIComponent(issueKey)}`
+    : null;
+
+  const copyNote = () => {
+    const lines = [
+      `[Bug Triage Copilot] ${issueKey}`,
+      `Local decision (${slot === 'title' ? 'title' : slot === 'scorecard' ? 'scorecard' : 'priority'}): ${cur || 'not set'}`,
+      slot === 'title'
+        ? 'Context: Title clarity suggestions in AI backlog overview.'
+        : slot === 'scorecard'
+          ? 'Context: 14-point scorecard in Backlog metrics (Scorecard triage).'
+          : 'Context: Recommended Jira priority changes in AI backlog overview.',
+      href ? `Jira: ${href}` : '',
+    ].filter(Boolean);
+    navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
+  };
+
+  const pill =
+    cur === 'accepted'
+      ? 'bg-emerald-100 text-emerald-900'
+      : cur === 'dismissed'
+        ? 'bg-slate-200 text-slate-800'
+        : cur === 'deferred'
+          ? 'bg-amber-100 text-amber-950'
+          : 'bg-white text-slate-500 border border-dashed border-slate-300';
+
+  return (
+    <div className="flex flex-col gap-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-wrap gap-0.5 justify-end">
+        <button
+          type="button"
+          className="px-1 py-0.5 text-[9px] font-medium rounded border border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50"
+          onClick={() => onSetSlotStatus(issueKey, slot, 'accepted')}
+        >
+          Accept
+        </button>
+        <button
+          type="button"
+          className="px-1 py-0.5 text-[9px] font-medium rounded border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+          onClick={() => onSetSlotStatus(issueKey, slot, 'dismissed')}
+        >
+          Dismiss
+        </button>
+        <button
+          type="button"
+          className="px-1 py-0.5 text-[9px] font-medium rounded border border-amber-200 bg-white text-amber-950 hover:bg-amber-50"
+          onClick={() => onSetSlotStatus(issueKey, slot, 'deferred')}
+        >
+          Defer
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1 justify-end">
+        <button
+          type="button"
+          className="text-[9px] text-indigo-700 hover:underline"
+          onClick={copyNote}
+        >
+          Copy note
+        </button>
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[9px] text-blue-700 hover:underline inline-flex items-center gap-0.5"
+          >
+            Jira <ExternalLink className="h-2.5 w-2.5 shrink-0" aria-hidden />
+          </a>
+        ) : null}
+      </div>
+      <span className={`text-[9px] rounded px-1 py-0.5 self-end ${pill}`}>
+        {cur ? String(cur) : 'Pending'}
+      </span>
+    </div>
+  );
+}
+
+function createBacklogOverviewMarkdownComponents(jiraBaseUrl, actionCtx) {
   const base = jiraBaseUrl && String(jiraBaseUrl).replace(/\/+$/, '');
+  const ac = actionCtx && typeof actionCtx === 'object' ? actionCtx : null;
   return {
     table({ node, children, ...props }) {
       return (
@@ -678,6 +894,9 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
           {children}
         </table>
       );
+    },
+    tr({ children, ...props }) {
+      return <tr {...props}>{children}</tr>;
     },
     th({ node, children, ...props }) {
       const col = node?.properties?.dataOverviewCol;
@@ -698,6 +917,23 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl) {
       const col = node?.properties?.dataOverviewCol;
       const titleColClass = col === '1' ? _OVERVIEW_TITLE_CELL_CLASS : '';
       const ticketSticky = col === '0' ? _OVERVIEW_TICKET_TD_STICKY : '';
+
+      if (node?.properties?.dataOverviewActions === '1' && ac) {
+        const issueKey = String(node?.properties?.dataOverviewIssueKey || '').trim().toUpperCase();
+        const rowKind = node?.properties?.dataOverviewRowKind || 'reprior';
+        return (
+          <td {...props} className={[props.className].filter(Boolean).join(' ')}>
+            <OverviewMarkdownRowActions
+              issueKey={issueKey}
+              rowKind={rowKind}
+              fingerprintHash={ac.fingerprintHash}
+              actionsByIssue={ac.actionsByIssue}
+              onSetSlotStatus={ac.onSetSlotStatus}
+              jiraBrowseBase={ac.jiraBrowseBase}
+            />
+          </td>
+        );
+      }
 
       if (col === '0' && base) {
         const raw = hastPlainText(node).trim();
@@ -1107,6 +1343,24 @@ const BugTriageCopilot = () => {
     }
     return overviewMeta;
   }, [overviewHistoryViewId, overviewRunHistory, overviewMeta]);
+
+  const overviewFingerprintHash = useMemo(
+    () => hashOverviewFingerprint(backlogOverviewFingerprint),
+    [backlogOverviewFingerprint],
+  );
+
+  const [overviewActionsStore, setOverviewActionsStore] = useState(() => loadOverviewActionsStore());
+
+  const overviewActionsByIssue = useMemo(
+    () => getOverviewActionsForHash(overviewActionsStore, overviewFingerprintHash),
+    [overviewActionsStore, overviewFingerprintHash],
+  );
+
+  const handleOverviewSlotAction = useCallback((issueKey, slot, status) => {
+    setOverviewActionsStore((prev) =>
+      upsertOverviewAction(prev, overviewFingerprintHash, issueKey, slot, status),
+    );
+  }, [overviewFingerprintHash]);
 
   /** Scorecard JSON parse failed — surface errors near the narrative, not only under Scorecard triage. */
   const overviewScorecardParseFailure = useMemo(() => {
@@ -1645,9 +1899,32 @@ const BugTriageCopilot = () => {
   }, []);
 
   const backlogOverviewMarkdownComponents = useMemo(
-    () => createBacklogOverviewMarkdownComponents(jiraStatus.base_url),
-    [jiraStatus.base_url],
+    () =>
+      createBacklogOverviewMarkdownComponents(jiraStatus.base_url || null, {
+        fingerprintHash: overviewFingerprintHash,
+        actionsByIssue: overviewActionsByIssue,
+        onSetSlotStatus: handleOverviewSlotAction,
+        jiraBrowseBase: jiraStatus.base_url || null,
+      }),
+    [
+      jiraStatus.base_url,
+      overviewFingerprintHash,
+      overviewActionsByIssue,
+      handleOverviewSlotAction,
+    ],
   );
+
+  const overviewRehypePlugins = useMemo(
+    () =>
+      createOverviewMarkdownRehypePlugins(displayedOverviewMeta?.scorecards_by_key || {}),
+    [displayedOverviewMeta?.scorecards_by_key],
+  );
+
+  const titleRewriteByKey = useMemo(() => {
+    const m = displayedOverviewMeta?.title_rewrite_by_key;
+    return m && typeof m === 'object' ? m : {};
+  }, [displayedOverviewMeta?.title_rewrite_by_key]);
+
   const overviewPreviewText = useMemo(
     () => getOverviewPreviewText(overviewMarkdown),
     [overviewMarkdown],
@@ -1775,6 +2052,7 @@ const BugTriageCopilot = () => {
     onClick: () => setMiniDetailIssue(issue),
     jiraBaseUrl: jiraStatus.base_url || null,
     jiraTicketHref: jiraStatus.base_url ? `${jiraStatus.base_url}/browse/${issue.key}` : null,
+    titleRewriteEntry: titleRewriteByKey[String(issue.key || '').toUpperCase()],
   });
 
   const listContent = groupByCluster && groupedByCluster ? (
@@ -2425,10 +2703,21 @@ const BugTriageCopilot = () => {
                     const entries = Object.entries(sc);
                     const withRec = entries.filter(([, v]) => v && v.recommendation);
                     const rest = entries.filter(([, v]) => !v || !v.recommendation);
+                    const verdictLower = (verdict) =>
+                      typeof verdict === 'string' ? verdict.toLowerCase() : '';
+                    const scorecardRiskBox = (verdict) => {
+                      const g = verdictLower(verdict);
+                      if (g.includes('block')) return 'border-l-4 border-l-red-500 bg-red-50/35';
+                      if (g.includes('post')) return 'border-l-4 border-l-slate-300 bg-slate-50/90';
+                      if (g.includes('capacity') || g.includes('fix if'))
+                        return 'border-l-4 border-l-amber-400 bg-amber-50/60';
+                      return '';
+                    };
+
                     const rowBlock = (key, v) => (
                       <details
                         key={key}
-                        className="border border-slate-200 rounded-md bg-white mb-1.5 px-2 py-1"
+                        className={`border border-slate-200 rounded-md bg-white mb-1.5 px-2 py-1 ${scorecardRiskBox(v.ga_verdict)}`}
                         open={Boolean(v.recommendation)}
                       >
                         <summary className="cursor-pointer text-[11px] font-medium text-slate-800">
@@ -2446,9 +2735,23 @@ const BugTriageCopilot = () => {
                           )}
                         </summary>
                         <div className="mt-1.5 text-[10px] text-slate-600 grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-0.5">
-                          <span>feature_importance {v.feature_importance}/4</span>
+                          <span>
+                            <abbr
+                              title={SCORECARD_DIMENSION_LONG.feature_importance}
+                              className="cursor-help font-semibold text-slate-800 border-b border-dotted border-slate-400"
+                            >
+                              FI
+                            </abbr>{' '}
+                            {v.feature_importance}/4
+                          </span>
                           <span className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
-                            reach {v.reach}/3
+                            <abbr
+                              title={SCORECARD_DIMENSION_LABELS.R}
+                              className="cursor-help font-semibold text-slate-800 border-b border-dotted border-slate-400 shrink-0"
+                            >
+                              R
+                            </abbr>{' '}
+                            {v.reach}/3
                             {(() => {
                               const reachNote =
                                 typeof v.notes?.reach === 'string' ? String(v.notes.reach).trim() : '';
@@ -2475,9 +2778,33 @@ const BugTriageCopilot = () => {
                               );
                             })()}
                           </span>
-                          <span>technical_severity {v.technical_severity}/3</span>
-                          <span>workaround_quality {v.workaround_quality}/2</span>
-                          <span>regression_risk {v.regression_risk}/2</span>
+                          <span>
+                            <abbr
+                              title={SCORECARD_DIMENSION_LONG.technical_severity}
+                              className="cursor-help font-semibold text-slate-800 border-b border-dotted border-slate-400"
+                            >
+                              TS
+                            </abbr>{' '}
+                            {v.technical_severity}/3
+                          </span>
+                          <span>
+                            <abbr
+                              title={SCORECARD_DIMENSION_LONG.workaround_quality}
+                              className="cursor-help font-semibold text-slate-800 border-b border-dotted border-slate-400"
+                            >
+                              WQ
+                            </abbr>{' '}
+                            {v.workaround_quality}/2
+                          </span>
+                          <span>
+                            <abbr
+                              title={SCORECARD_DIMENSION_LONG.regression_risk}
+                              className="cursor-help font-semibold text-slate-800 border-b border-dotted border-slate-400"
+                            >
+                              RR
+                            </abbr>{' '}
+                            {v.regression_risk}/2
+                          </span>
                           <span className="col-span-2 sm:col-span-3 font-medium text-slate-700">
                             raw_total {v.raw_total}/14 · GA {v.ga_verdict} · implied Jira {v.implied_priority}
                           </span>
@@ -2495,6 +2822,16 @@ const BugTriageCopilot = () => {
                         {v.recommendation?.reason ? (
                           <p className="mt-1 text-[10px] text-slate-600 break-words">{v.recommendation.reason}</p>
                         ) : null}
+                        <div className="mt-2 flex justify-end border-t border-slate-100 pt-2">
+                          <OverviewMarkdownRowActions
+                            issueKey={key}
+                            rowKind="scorecard"
+                            fingerprintHash={overviewFingerprintHash}
+                            actionsByIssue={overviewActionsByIssue}
+                            onSetSlotStatus={handleOverviewSlotAction}
+                            jiraBrowseBase={jiraStatus.base_url || null}
+                          />
+                        </div>
                       </details>
                     );
                     return (
@@ -2759,19 +3096,21 @@ const BugTriageCopilot = () => {
               </div>
             </div>
             <div className="px-3 pb-3 border-t border-slate-200 bg-slate-50/40">
-              {(overviewLoading || displayedOverviewMarkdown || displayedOverviewMeta) && !overviewError && (
-                <>
-                  <OverviewPhaseRail
-                    loading={overviewLoading}
-                    progress={overviewProgress}
-                    meta={displayedOverviewMeta}
-                    titlePipelineEnabled={
-                      displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
-                    }
-                  />
-                  <OverviewAiCoverageSummary meta={displayedOverviewMeta} />
-                </>
-              )}
+              {!overviewExpanded &&
+                (overviewLoading || displayedOverviewMarkdown || displayedOverviewMeta) &&
+                !overviewError && (
+                  <>
+                    <OverviewPhaseRail
+                      loading={overviewLoading}
+                      progress={overviewProgress}
+                      meta={displayedOverviewMeta}
+                      titlePipelineEnabled={
+                        displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
+                      }
+                    />
+                    <OverviewAiCoverageSummary meta={displayedOverviewMeta} />
+                  </>
+                )}
             </div>
             <div className="px-3 pb-2">
               <button
@@ -2800,6 +3139,35 @@ const BugTriageCopilot = () => {
                 {overviewCacheHint && overviewMarkdown && !overviewLoading && !overviewError && (
                   <p className="text-xs text-slate-500">{overviewCacheHint}</p>
                 )}
+                {displayedOverviewMarkdown && (
+                  <div
+                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:border-collapse [&_table]:text-sm [&_table:not(.overview-reprioritization-table)]:w-auto [&_table:not(.overview-reprioritization-table)]:max-w-full [&_table:not(.overview-reprioritization-table)]:min-w-max [&_.overview-reprioritization-table]:table-fixed [&_.overview-reprioritization-table]:w-full [&_.overview-reprioritization-table]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(4)]:break-words [&_.overview-reprioritization-table_td:nth-child(4)]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(5)]:break-words [&_.overview-reprioritization-table_td:nth-child(5)]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(6)]:min-w-0 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-raise>td:first-child]:!bg-rose-50/90 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&_tr.overview-priority-lower>td:first-child]:!bg-emerald-50/80 [&_tr.overview-risk-blockga>td]:!bg-red-50/45 [&_tr.overview-risk-blockga>td:first-child]:!border-l-4 [&_tr.overview-risk-blockga>td:first-child]:!border-red-500 [&_tr.overview-risk-postga>td]:!bg-slate-50/90 [&_tr.overview-risk-capacity>td]:!bg-amber-50/60 [&>table:not(.overview-reprioritization-table)]:min-w-[min(100%,36rem)]"
+                  >
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={overviewRehypePlugins}
+                      components={backlogOverviewMarkdownComponents}
+                    >
+                      {displayedOverviewMarkdown}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                <details className="rounded-md border border-slate-200 bg-slate-50/90 px-3 py-2 mt-1">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-800 select-none">
+                    Generation pipeline & batch stats
+                  </summary>
+                  <div className="mt-3 space-y-3 pt-2 border-t border-slate-200">
+                    <OverviewPhaseRail
+                      loading={overviewLoading}
+                      progress={overviewProgress}
+                      meta={displayedOverviewMeta}
+                      titlePipelineEnabled={
+                        displayedOverviewMeta == null || displayedOverviewMeta.title_rewrite_enabled !== false
+                      }
+                    />
+                    <OverviewAiCoverageSummary meta={displayedOverviewMeta} />
+                  </div>
+                </details>
                 {overviewMarkdown && !overviewError && (
                   <p className="text-xs text-slate-600">
                     Pass depth and counts: see <strong>Backlog metrics</strong> (Data flow + AI batch snapshot).
@@ -3015,19 +3383,6 @@ const BugTriageCopilot = () => {
                     </details>
                   );
                 })()}
-                {displayedOverviewMarkdown && (
-                  <div
-                    className="markdown-content text-gray-800 text-sm overflow-x-auto max-w-full [&_h2]:mt-8 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:text-gray-900 [&_h2:first-of-type]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-800 [&_h3]:mt-4 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_a]:text-blue-600 [&_a]:underline [&_a]:break-words [&_table]:mb-4 [&_table]:border-collapse [&_table]:text-sm [&_table:not(.overview-reprioritization-table)]:w-auto [&_table:not(.overview-reprioritization-table)]:max-w-full [&_table:not(.overview-reprioritization-table)]:min-w-max [&_.overview-reprioritization-table]:table-fixed [&_.overview-reprioritization-table]:w-full [&_.overview-reprioritization-table]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(4)]:break-words [&_.overview-reprioritization-table_td:nth-child(4)]:min-w-0 [&_.overview-reprioritization-table_td:nth-child(5)]:break-words [&_.overview-reprioritization-table_td:nth-child(5)]:min-w-0 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-900 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_td]:text-gray-800 [&_.backlog-overview-snapshot-col_td]:whitespace-nowrap [&_.backlog-overview-snapshot-col_th]:whitespace-nowrap [&_tr.overview-priority-raise>td]:!bg-rose-50/90 [&_tr.overview-priority-raise>td]:!border-rose-100/85 [&_tr.overview-priority-raise>td:first-child]:!bg-rose-50/90 [&_tr.overview-priority-lower>td]:!bg-emerald-50/80 [&_tr.overview-priority-lower>td]:!border-emerald-100/80 [&_tr.overview-priority-lower>td:first-child]:!bg-emerald-50/80 [&>table:not(.overview-reprioritization-table)]:min-w-[min(100%,36rem)]"
-                  >
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[rehypeWrapBacklogSnapshotBlocks, rehypeAnnotateBacklogOverviewTables]}
-                      components={backlogOverviewMarkdownComponents}
-                    >
-                      {displayedOverviewMarkdown}
-                    </ReactMarkdown>
-                  </div>
-                )}
                 {!overviewMarkdown && overviewLoading && (
                   <p className="text-xs text-slate-600">Analyzing filtered backlog with Claude…</p>
                 )}
@@ -3142,10 +3497,25 @@ function IssueParentEpicMeta({ issue, jiraBaseUrl, compact = false }) {
   );
 }
 
-function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
+function BacklogCard({
+  issue,
+  triaged,
+  onClick,
+  jiraTicketHref,
+  jiraBaseUrl,
+  titleRewriteEntry,
+}) {
   const rec = issue.aiRecommendation || {};
-  const primaryText = rec.shortSummary ?? issue.title;
-  const showTitleSecondary = rec.shortSummary != null && rec.shortSummary !== issue.title;
+  const rewrittenProposed =
+    titleRewriteEntry && typeof titleRewriteEntry.proposed_title === 'string'
+      ? titleRewriteEntry.proposed_title
+      : null;
+  const primaryText =
+    rewrittenProposed != null ? rewrittenProposed : (rec.shortSummary ?? issue.title);
+  const showTitleSecondary =
+    rewrittenProposed != null
+      ? rewrittenProposed !== issue.title
+      : rec.shortSummary != null && rec.shortSummary !== issue.title;
   const jiraComponents =
     issue.components?.length > 0
       ? issue.components
@@ -3153,13 +3523,23 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
         ? [issue.component]
         : [];
 
+  const rank = getPriorityRank(issue.priority);
+  const cardStress =
+    issue.gaBlocker === true
+      ? 'border-l-4 border-l-red-600 bg-red-50/25 ring-1 ring-red-100/90'
+      : rank >= 100
+        ? 'border-l-4 border-l-orange-500 bg-orange-50/15'
+        : rank >= 90
+          ? 'border-l-4 border-l-rose-400 bg-rose-50/15'
+          : '';
+
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => e.key === 'Enter' && onClick()}
-      className="p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all cursor-pointer flex flex-col h-full text-left"
+      className={`p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all cursor-pointer flex flex-col h-full text-left ${cardStress}`}
     >
       <div className="flex items-center gap-2 flex-wrap mb-1">
         {jiraTicketHref ? (
@@ -3180,6 +3560,11 @@ function BacklogCard({ issue, triaged, onClick, jiraTicketHref, jiraBaseUrl }) {
         {triaged && (
           <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full flex items-center gap-1">
             <CheckCircle className="h-3 w-3" /> Triaged
+          </span>
+        )}
+        {rewrittenProposed != null && (
+          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-900 border border-indigo-100 text-xs rounded-full">
+            Overview title suggestion
           </span>
         )}
         {issue.gaBlocker && (

@@ -537,19 +537,20 @@ def _validate_title_rewrite_rows(
     markdown: str,
     source_by_key: Dict[str, Dict[str, str]],
     max_rows: int,
-) -> Tuple[str, Dict[str, int]]:
+) -> Tuple[str, Dict[str, int], Dict[str, Dict[str, str]]]:
     """
     Keep only valid rows under ### Title clarity suggestions.
-    Returns (section_markdown_or_empty, counters).
+    Returns (section_markdown_or_empty, counters, title_rewrite_by_key).
     """
     if not markdown or 'Title clarity suggestions' not in markdown:
-        return '', {'kept': 0, 'dropped': 0}
+        return '', {'kept': 0, 'dropped': 0}, {}
     lines = markdown.split('\n')
     out: List[str] = []
     in_section = False
     dropped = 0
     kept = 0
     wrote_header = False
+    by_key: Dict[str, Dict[str, str]] = {}
     for line in lines:
         stripped = line.strip()
         if stripped.startswith('### Title clarity suggestions'):
@@ -598,10 +599,15 @@ def _validate_title_rewrite_rows(
         out.append(
             f"| {_md_pipe_cell(ticket)} | {_md_pipe_cell(src.get('priority') or '')} | {_md_pipe_cell(src.get('title') or '', 180)} | {_md_pipe_cell(proposed_title, 180)} |"
         )
+        by_key[ticket] = {
+            'current_priority': src.get('priority') or '',
+            'current_title': src.get('title') or '',
+            'proposed_title': proposed_title,
+        }
         kept += 1
     if kept == 0:
-        return '', {'kept': 0, 'dropped': dropped}
-    return '\n'.join(out).strip(), {'kept': kept, 'dropped': dropped}
+        return '', {'kept': 0, 'dropped': dropped}, {}
+    return '\n'.join(out).strip(), {'kept': kept, 'dropped': dropped}, by_key
 
 
 # Pass 1: themes, clarification, duplicates—no Priority review (that is pass 2 for output budget).
@@ -1811,6 +1817,7 @@ def _iter_backlog_overview_events(
     title_rewrite_pass_applied = False
     title_rewrite_no_candidates = False
     title_rewrite_section = ''
+    title_rewrite_by_key: Dict[str, Dict[str, str]] = {}
 
     if (
         Config.JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED
@@ -2004,7 +2011,7 @@ def _iter_backlog_overview_events(
                         tokens_used += getattr(r_title_rewrite, 'tokens_used', 0) or 0
                         models_used.append(r_title_rewrite.model)
                         llm_rounds += 1
-                        title_rewrite_section, title_counts = _validate_title_rewrite_rows(
+                        title_rewrite_section, title_counts, title_rewrite_by_key = _validate_title_rewrite_rows(
                             (r_title_rewrite.content or '').strip(),
                             source_by_key=source_by_key,
                             max_rows=max_rows,
@@ -2091,6 +2098,7 @@ def _iter_backlog_overview_events(
         'title_rewrite_rows_dropped': title_rewrite_rows_dropped,
         'title_rewrite_pass_applied': title_rewrite_pass_applied,
         'title_rewrite_no_candidates': title_rewrite_no_candidates,
+        'title_rewrite_by_key': title_rewrite_by_key,
         'completed_steps': list(completed),
         'parent_context_filter_applied': True,
         'submitted_count_before_parent_filter': submitted_count_before_parent_filter,

@@ -35,10 +35,11 @@ def test_validate_title_rewrite_rows_keeps_valid_row():
             "title": "App crashes when opening map after walk",
         }
     }
-    cleaned, counts = _validate_title_rewrite_rows(md, source, max_rows=5)
+    cleaned, counts, by_key = _validate_title_rewrite_rows(md, source, max_rows=5)
     assert "HALO-10" in cleaned
     assert counts["kept"] == 1
     assert counts["dropped"] == 0
+    assert by_key.get("HALO-10", {}).get("proposed_title")
 
 
 def test_validate_title_rewrite_rows_drops_priority_mismatch():
@@ -46,7 +47,7 @@ def test_validate_title_rewrite_rows_drops_priority_mismatch():
         "| HALO-11 | Critical | Existing title text | Better title text with specifics |"
     )
     source = {"HALO-11": {"priority": "Major", "title": "Existing title text"}}
-    cleaned, counts = _validate_title_rewrite_rows(md, source, max_rows=5)
+    cleaned, counts, _bk = _validate_title_rewrite_rows(md, source, max_rows=5)
     assert cleaned == ""
     assert counts["kept"] == 0
     assert counts["dropped"] == 1
@@ -57,7 +58,7 @@ def test_validate_title_rewrite_rows_drops_proposed_same_as_current():
         "| HALO-12 | Minor | Sync spinner never ends | Sync spinner never ends |"
     )
     source = {"HALO-12": {"priority": "Minor", "title": "Sync spinner never ends"}}
-    cleaned, counts = _validate_title_rewrite_rows(md, source, max_rows=5)
+    cleaned, counts, _bk = _validate_title_rewrite_rows(md, source, max_rows=5)
     assert cleaned == ""
     assert counts["kept"] == 0
     assert counts["dropped"] == 1
