@@ -528,6 +528,35 @@ function hastPlainText(node) {
   return '';
 }
 
+/**
+ * Removes undefined/null holes from hast children arrays — unist-util-visit crashes with
+ * TypeError: Cannot use 'in' operator to search for 'children' in undefined when a child slot is falsy.
+ */
+function compactHastChildrenDeep(node) {
+  if (!node || typeof node !== 'object') return;
+  if (!Array.isArray(node.children)) {
+    return;
+  }
+  node.children = node.children.filter(Boolean);
+  node.children.forEach(compactHastChildrenDeep);
+}
+
+/** Collect every tr element under a table (manual walk avoids fragile nested visit). */
+function collectTrElementsUnderTable(table) {
+  const rows = [];
+  function walk(el) {
+    if (!el || typeof el !== 'object') return;
+    if (el.type === 'element' && el.tagName === 'tr') {
+      rows.push(el);
+      return;
+    }
+    const ch = Array.isArray(el.children) ? el.children.filter(Boolean) : [];
+    ch.forEach(walk);
+  }
+  walk(table);
+  return rows;
+}
+
 const _RE_LEADING_REC_ARROW = /^[\u2191\u2193\u25b2\u25bc↑↓]/;
 /** Cell is only a Jira issue key (e.g. HALO-26845), optional surrounding whitespace. */
 const _RE_BARE_JIRA_ISSUE_KEY = /^\s*([A-Za-z][A-Za-z0-9]{1,19}-\d+)\s*$/;
@@ -644,22 +673,26 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
   const sc =
     scorecardsByKey && typeof scorecardsByKey === 'object' ? scorecardsByKey : {};
   return (tree) => {
+    if (!tree || tree.type !== 'root') {
+      return;
+    }
+
     visit(tree, 'element', (table) => {
-      if (table.tagName !== 'table') return;
-      const rows = [];
-      visit(table, 'element', (n) => {
-        if (n.tagName === 'tr') rows.push(n);
-      });
+      if (!table || table.type !== 'element' || table.tagName !== 'table') return;
+      const rows = collectTrElementsUnderTable(table).filter(Boolean);
       if (rows.length < 2) return;
       const headerRow = rows.find((r) => {
         const cs = _overviewTableCells(r);
-        return cs.length && cs.every((c) => c.tagName === 'th');
+        return cs.length && cs.every((c) => c && c.tagName === 'th');
       });
       if (!headerRow) return;
       const kind = _overviewTableKindFromHeaderRow(headerRow);
       if (kind !== 'reprior' && kind !== 'title') return;
 
       const headerCells = _overviewTableCells(headerRow);
+      headerRow.children = Array.isArray(headerRow.children)
+        ? headerRow.children.filter(Boolean)
+        : [];
       headerRow.children.push({
         type: 'element',
         tagName: 'th',
@@ -672,9 +705,9 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
       });
 
       rows.forEach((tr) => {
-        if (tr === headerRow) return;
+        if (!tr || tr === headerRow) return;
         const cells = _overviewTableCells(tr);
-        if (!cells.every((c) => c.tagName === 'td')) return;
+        if (!cells.every((c) => c && c.tagName === 'td')) return;
         if (cells.length < 4) return;
         const keyRaw = hastPlainText(cells[0]).trim();
         const m = keyRaw.match(/^([A-Za-z][A-Za-z0-9]{1,19}-\d+)/);
@@ -694,6 +727,7 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
         tr.properties.dataOverviewIssueKey = key;
         tr.properties.dataOverviewRowKind = kind;
 
+        tr.children = Array.isArray(tr.children) ? tr.children.filter(Boolean) : [];
         tr.children.push({
           type: 'element',
           tagName: 'td',
@@ -712,8 +746,17 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
   };
 }
 
+/** Run first — normalize hast so unist-util-visit never sees undefined child slots (production crash guard). */
+function rehypeCompactHastChildrenPlugin() {
+  return (tree) => {
+    if (!tree || tree.type !== 'root') return;
+    compactHastChildrenDeep(tree);
+  };
+}
+
 function createOverviewMarkdownRehypePlugins(scorecardsByKey) {
   return [
+    rehypeCompactHastChildrenPlugin(),
     rehypeWrapBacklogSnapshotBlocks,
     rehypeAnnotateBacklogOverviewTablesInner,
     createRehypeAppendOverviewActionsAndRisk(scorecardsByKey),
