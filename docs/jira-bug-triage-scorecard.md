@@ -3,7 +3,7 @@
 The Bug Triage Copilot backlog overview (`POST /api/jira/backlog-overview`) can run in two ways for **priority recommendations**:
 
 1. **Legacy (default)** — Pass 2 asks the model for a markdown `### Recommended Jira priority changes` table directly.
-2. **Scorecard (opt-in)** — A JSON **shortlist** of keys, then a JSON **rubric** (schema **v2**) with five additive dimensions (max **14** points). The server **recomputes** `raw_total`, **GA verdict**, and **implied Jira priority** from fixed rules, then emits Raise/Lower rows when `JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS` is satisfied. Optional **pass2b** re-scores with **description excerpts** for keys that appeared in the recommendation table.
+2. **Scorecard (opt-in)** — A JSON **shortlist** of keys, then a JSON **rubric** (schema **v2**) with five additive dimensions (max **14** points). The server **recomputes** `raw_total`, **GA verdict**, and **implied Jira priority** from fixed rules, then emits Raise/Lower rows when the rank-delta gate (`Config.JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS` in [`backend/utils/config.py`](../backend/utils/config.py), default **1**) is satisfied. Optional **pass2b** re-scores with **description excerpts** for keys that appeared in the recommendation table.
 
 **GA verdict** (Block GA / Fix if capacity / PostGA) follows **raw total only**. **Jira priority** can still be **Blocker** under a **safety override** (feature importance 4 plus engineering signals) even when the total is low—so PostGA and Blocker can both appear for the same ticket. That matches the product rubric.
 
@@ -39,7 +39,7 @@ Implementation:
 | `JIRA_TRIAGE_SCORECARD_ENABLED` | `0` (off) | Set to `1`, `true`, or `yes` for shortlist + JSON scorecard v2 + deterministic merge. |
 | `JIRA_TRIAGE_SCORECARD_MAX_KEYS` | `40` | Max keys scored per run (shortlist cap; GA blockers may be prepended when enabled below). |
 | `JIRA_TRIAGE_SCORECARD_INCLUDE_GA_BLOCKERS` | `1` (on) | Union issues with `gaBlocker: true` into the scored set (still capped by `MAX_KEYS`). |
-| `JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS` | `1` | Minimum ladder steps between current Jira priority and **server** implied priority to emit Raise/Lower. |
+| *(not env)* **`JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS`** | **`1`** (code) | Minimum ladder steps between current Jira priority and **server** implied priority to emit Raise/Lower. Set only in **`config.py`** in git (not deployment env). |
 | `JIRA_TRIAGE_SCORECARD_SCHEMA_VERSION` | `2` | Label in API meta (must match parser; model must emit `"version":"2"`). |
 | `JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS` | `1536` | Max tokens for the shortlist Claude call. |
 | `JIRA_TRIAGE_SCORECARD_AI_CREATED_ENABLED` | `1` (on) | When enabled, clamp scorecard **`reach`** for issues whose Jira **labels** include **`ai-created`** (case-insensitive). Prompts also steer shortlist/scoring for synthetic QA tickets. |
@@ -77,7 +77,6 @@ The UI (`BugTriageCopilot`) shows a **Scorecard triage** panel when `scorecard_e
 # Scorecard triage (optional) — v2 14-point rubric
 JIRA_TRIAGE_SCORECARD_ENABLED=1
 JIRA_TRIAGE_SCORECARD_MAX_KEYS=40
-JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS=1
 # JIRA_TRIAGE_SCORECARD_SHORTLIST_MAX_TOKENS=1536
 ```
 

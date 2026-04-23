@@ -2310,7 +2310,7 @@ def backlog_overview():
     When JIRA_TRIAGE_SCORECARD_ENABLED=1: pass2 becomes JSON shortlist → JSON scorecard (schema v2,
     14-point additive rubric) → deterministic Raise/Lower from server-side Jira mapping; optional pass2b
     re-scores with description excerpts.
-    See env: JIRA_TRIAGE_SCORECARD_MAX_KEYS, JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS.
+    See env: JIRA_TRIAGE_SCORECARD_MAX_KEYS. Rank-delta gate is Config.JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS (repo-only).
     Legacy v1 tuning vars (WEIGHTS_JSON, THRESHOLDS_JSON, MIN_CONFIDENCE) are ignored for scorecard v2.
 
     Query: stream=1 streams NDJSON lines (progress + terminal result). Default is a single JSON response.

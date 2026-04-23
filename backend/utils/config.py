@@ -149,9 +149,9 @@ class Config:
     JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE: int = max(
         1, min(5, int(os.getenv('JIRA_TRIAGE_SCORECARD_MIN_CONFIDENCE', '2')))
     )
-    JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS: int = max(
-        1, min(5, int(os.getenv('JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS', '1')))
-    )
+    # Raise/Lower only when implied vs current priority differs by at least this many ladder steps.
+    # Defined in repo only — not overridden by deployment env (change here and redeploy).
+    JIRA_TRIAGE_SCORECARD_MIN_DELTA_RANKS: int = 1
     # Legacy v1 scorecard only (ignored for schema v2).
     JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON: Optional[str] = os.getenv('JIRA_TRIAGE_SCORECARD_WEIGHTS_JSON')
     JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON: Optional[str] = os.getenv('JIRA_TRIAGE_SCORECARD_THRESHOLDS_JSON')
