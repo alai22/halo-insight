@@ -22,8 +22,9 @@ logger = get_logger('jira_oauth')
 # Atlassian OAuth endpoints
 AUTH_URL = 'https://auth.atlassian.com/authorize'
 TOKEN_URL = 'https://auth.atlassian.com/oauth/token'
-# Scopes: read Jira issues; offline_access for refresh token
-DEFAULT_SCOPES = 'read:jira-work read:jira-user offline_access'
+# read + write Jira issues; offline_access for refresh token.
+# The Atlassian OAuth app (developer.atlassian.com) must list the same scopes; users must reconnect after adding write:jira-work.
+DEFAULT_SCOPES = 'read:jira-work write:jira-work read:jira-user offline_access'
 
 
 def _tokens_path() -> Path:

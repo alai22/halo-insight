@@ -1528,6 +1528,166 @@ def get_issues():
         }), 500
 
 
+_RE_ISSUE_KEY_PARAM = re.compile(r'^[A-Za-z][A-Za-z0-9]{1,19}-\d+$')
+
+
+def _issue_live_summary_and_priority_key(raw: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    fields = raw.get('fields') or {}
+    summary = (fields.get('summary') or '').strip()
+    po = fields.get('priority')
+    pname = po.get('name') if isinstance(po, dict) and po else None
+    pk = _normalize_priority_label(pname) if pname else None
+    return summary, pk
+
+
+@jira_bp.route('/issues/<issue_key>/apply-recommendation', methods=['POST'])
+def apply_jira_recommendation(issue_key: str):
+    """
+    Apply a backlog overview recommendation: update issue summary and/or priority, then add a Jira comment.
+    Expects JSON: kind (title|reprior|scorecard), optional new_summary, optional target_priority_key (normalized),
+    optional expected_summary / expected_priority_key for optimistic locking.
+    """
+    if not _jira_configured():
+        return jsonify({
+            'status': 'error',
+            'message': 'Jira is not connected. Use email + API token in .env, or connect via OAuth (Tools → Jira connection).',
+        }), 503
+
+    key = (issue_key or '').strip().upper()
+    if not _RE_ISSUE_KEY_PARAM.match(key):
+        return jsonify({'status': 'error', 'message': 'Invalid issue key'}), 400
+
+    payload = request.get_json(silent=True) or {}
+    kind = str(payload.get('kind') or '').strip().lower()
+    if kind not in ('title', 'reprior', 'scorecard'):
+        return jsonify({'status': 'error', 'message': 'kind must be title, reprior, or scorecard'}), 400
+
+    new_summary_raw = payload.get('new_summary')
+    new_summary = (str(new_summary_raw).strip() if new_summary_raw is not None else None) or None
+
+    target_pk = _normalize_priority_label(payload.get('target_priority_key'))
+    if payload.get('target_priority_key') is not None and str(payload.get('target_priority_key')).strip() and target_pk is None:
+        return jsonify({'status': 'error', 'message': 'Invalid target_priority_key'}), 400
+
+    expected_summary = payload.get('expected_summary')
+    exp_sum = (str(expected_summary).strip() if expected_summary is not None else None) or None
+
+    expected_pk = _normalize_priority_label(payload.get('expected_priority_key'))
+    if payload.get('expected_priority_key') is not None and str(payload.get('expected_priority_key')).strip() and expected_pk is None:
+        return jsonify({'status': 'error', 'message': 'Invalid expected_priority_key'}), 400
+
+    if not new_summary and not target_pk:
+        return jsonify({'status': 'error', 'message': 'Provide new_summary and/or target_priority_key'}), 400
+
+    try:
+        client = JiraClient()
+        raw = client.get_issue(key, fields=['summary', 'priority'])
+        live_summary, live_pk = _issue_live_summary_and_priority_key(raw)
+
+        if exp_sum is not None:
+            if not _titles_equivalent(exp_sum, live_summary):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Issue summary changed in Jira since this overview was generated (expected lock mismatch).',
+                    'error_code': 'STALE_LOCK',
+                }), 409
+        if expected_pk is not None:
+            if live_pk != expected_pk:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Issue priority changed in Jira since this overview was generated (expected lock mismatch).',
+                    'error_code': 'STALE_LOCK',
+                }), 409
+
+        fields_update: Dict[str, Any] = {}
+        summary_changed = False
+        priority_changed = False
+
+        if new_summary:
+            if not _titles_equivalent(new_summary, live_summary):
+                fields_update['summary'] = new_summary[:255]
+                summary_changed = True
+
+        if target_pk:
+            if live_pk != target_pk:
+                disp = client.resolve_priority_display_name(target_pk)
+                fields_update['priority'] = {'name': disp}
+                priority_changed = True
+
+        if not fields_update:
+            return jsonify({
+                'status': 'error',
+                'message': 'Nothing to apply — Jira already matches the requested summary and priority.',
+                'error_code': 'NO_CHANGES',
+            }), 422
+
+        client.update_issue_fields(key, fields_update)
+
+        kind_label = {
+            'title': 'title rewrite',
+            'reprior': 'recommended Jira priority change',
+            'scorecard': 'scorecard implied priority',
+        }.get(kind, kind)
+        lines = [
+            f'[Bug Triage Copilot] Applied {kind_label} from Halo Insight backlog overview.',
+            '',
+        ]
+        if summary_changed:
+            lines.append(f'Summary: {live_summary!r} → {fields_update.get("summary", new_summary)!r}')
+        if priority_changed:
+            old_name = None
+            po = (raw.get('fields') or {}).get('priority')
+            if isinstance(po, dict) and po:
+                old_name = po.get('name')
+            lines.append(
+                f'Priority: {old_name or live_pk or "?"} → '
+                f'{fields_update.get("priority", {}).get("name") or target_pk}'
+            )
+        comment_text = '\n'.join(lines).strip()
+        client.add_issue_comment_plain(key, comment_text)
+
+        return jsonify({
+            'status': 'success',
+            'issue_key': key,
+            'updated': {
+                'summary': summary_changed,
+                'priority': priority_changed,
+            },
+        }), 200
+
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        if status_code == 403:
+            return jsonify({
+                'status': 'error',
+                'message': (
+                    'Jira denied this operation (403). If you use OAuth, disconnect and reconnect so the token '
+                    'includes write:jira-work, and ensure the Atlassian app has that scope. API token users need '
+                    'issue edit permission.'
+                ),
+                'error_code': 'JIRA_FORBIDDEN',
+            }), 403
+        logger.warning(
+            'Jira apply-recommendation HTTP error: %s %s',
+            status_code,
+            getattr(e.response, 'text', '')[:JIRA_ERROR_SNIPPET_MAX],
+        )
+        message, error_details, out_status = _jira_http_error_response(e, 'Failed to update Jira issue')
+        return jsonify({
+            'status': 'error',
+            'message': message,
+            'error_details': error_details,
+        }), out_status if 400 <= out_status < 600 else 500
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        logger.exception('Jira apply-recommendation failed')
+        return jsonify({
+            'status': 'error',
+            'message': str(e) or 'Failed to apply recommendation in Jira',
+        }), 500
+
+
 def _overview_progress_event(step: str, phase: str, completed: List[str]) -> Dict[str, Any]:
     return {'type': 'progress', 'step': step, 'phase': phase, 'completed': list(completed)}
 

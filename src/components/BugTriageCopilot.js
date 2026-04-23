@@ -561,6 +561,58 @@ const _RE_LEADING_REC_ARROW = /^[\u2191\u2193\u25b2\u25bc↑↓]/;
 /** Cell is only a Jira issue key (e.g. HALO-26845), optional surrounding whitespace. */
 const _RE_BARE_JIRA_ISSUE_KEY = /^\s*([A-Za-z][A-Za-z0-9]{1,19}-\d+)\s*$/;
 
+const _OVERVIEW_PRIORITY_RANK_KEYS = new Set([
+  'blocker',
+  'critical',
+  'major',
+  'normal',
+  'minor',
+  'trivial',
+]);
+const _OVERVIEW_PRIORITY_ALIASES = {
+  highest: 'blocker',
+  high: 'major',
+  medium: 'normal',
+  low: 'minor',
+  lowest: 'trivial',
+};
+
+function normalizeOverviewPriorityKey(value) {
+  let raw = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  if (!raw) return null;
+  if (_OVERVIEW_PRIORITY_ALIASES[raw]) raw = _OVERVIEW_PRIORITY_ALIASES[raw];
+  return _OVERVIEW_PRIORITY_RANK_KEYS.has(raw) ? raw : null;
+}
+
+function parseOverviewRepriorTarget(recRaw) {
+  const m = /\b(raise|lower)\s+to\s+([A-Za-z]+)\b/i.exec(String(recRaw || '').trim());
+  if (!m) return null;
+  return normalizeOverviewPriorityKey(m[2]);
+}
+
+function encodeOverviewApplyPayload(obj) {
+  try {
+    const s = JSON.stringify(obj);
+    return btoa(unescape(encodeURIComponent(s)));
+  } catch {
+    return '';
+  }
+}
+
+function decodeOverviewApplyPayload(b64) {
+  if (!b64 || typeof b64 !== 'string') return null;
+  try {
+    const s = decodeURIComponent(escape(atob(b64)));
+    const o = JSON.parse(s);
+    return o && typeof o === 'object' ? o : null;
+  } catch {
+    return null;
+  }
+}
+
 function _hastClassNameList(value) {
   if (value == null) return [];
   return Array.isArray(value) ? [...value] : String(value).split(/\s+/).filter(Boolean);
@@ -727,6 +779,42 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
         tr.properties.dataOverviewIssueKey = key;
         tr.properties.dataOverviewRowKind = kind;
 
+        let applyB64 = '';
+        if (kind === 'title' && cells.length >= 4) {
+          const proposed = hastPlainText(cells[3]).trim();
+          const curTitle = hastPlainText(cells[2]).trim();
+          const curPri = hastPlainText(cells[1]).trim();
+          const expPk = normalizeOverviewPriorityKey(curPri);
+          if (proposed && expPk) {
+            applyB64 = encodeOverviewApplyPayload({
+              kind: 'title',
+              new_summary: proposed,
+              expected_summary: curTitle,
+              expected_priority_key: expPk,
+            });
+          }
+        } else if (kind === 'reprior') {
+          const n = cells.length;
+          let curCell = '';
+          let recCell = '';
+          if (n >= 5) {
+            curCell = hastPlainText(cells[2]);
+            recCell = hastPlainText(cells[3]);
+          } else if (n === 4) {
+            curCell = hastPlainText(cells[1]);
+            recCell = hastPlainText(cells[2]);
+          }
+          const targetPk = parseOverviewRepriorTarget(recCell);
+          const expPk = normalizeOverviewPriorityKey(curCell);
+          if (targetPk && expPk) {
+            applyB64 = encodeOverviewApplyPayload({
+              kind: 'reprior',
+              target_priority_key: targetPk,
+              expected_priority_key: expPk,
+            });
+          }
+        }
+
         tr.children = Array.isArray(tr.children) ? tr.children.filter(Boolean) : [];
         tr.children.push({
           type: 'element',
@@ -736,6 +824,7 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
             dataOverviewActions: '1',
             dataOverviewIssueKey: key,
             dataOverviewRowKind: kind,
+            ...(applyB64 ? { dataOverviewApplyB64: applyB64 } : {}),
             className:
               'overview-actions-td border border-slate-200 px-1 py-1 align-top whitespace-nowrap min-w-[7.5rem]',
           },
@@ -840,7 +929,12 @@ function OverviewMarkdownRowActions({
   actionsByIssue,
   onSetSlotStatus,
   jiraBrowseBase,
+  applyPayload,
+  jiraConfigured,
 }) {
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [applyErr, setApplyErr] = useState(null);
+
   if (!issueKey || !fingerprintHash) {
     return <span className="text-[10px] text-slate-400">—</span>;
   }
@@ -865,6 +959,52 @@ function OverviewMarkdownRowActions({
       href ? `Jira: ${href}` : '',
     ].filter(Boolean);
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
+  };
+
+  const canApplyInJira =
+    Boolean(jiraConfigured) &&
+    applyPayload &&
+    typeof applyPayload === 'object' &&
+    Boolean(applyPayload.kind);
+
+  const applyToJira = async () => {
+    if (!canApplyInJira || applyBusy) return;
+    setApplyBusy(true);
+    setApplyErr(null);
+    try {
+      const body = { kind: applyPayload.kind };
+      if (applyPayload.new_summary != null && String(applyPayload.new_summary).trim() !== '') {
+        body.new_summary = String(applyPayload.new_summary).trim();
+      }
+      if (applyPayload.target_priority_key) {
+        body.target_priority_key = applyPayload.target_priority_key;
+      }
+      if (applyPayload.expected_summary != null && String(applyPayload.expected_summary).trim() !== '') {
+        body.expected_summary = String(applyPayload.expected_summary).trim();
+      }
+      if (applyPayload.expected_priority_key) {
+        body.expected_priority_key = applyPayload.expected_priority_key;
+      }
+
+      const res = await fetch(
+        `/api/jira/issues/${encodeURIComponent(issueKey)}/apply-recommendation`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setApplyErr(data.message || `Request failed (${res.status})`);
+        return;
+      }
+      onSetSlotStatus(issueKey, slot, 'accepted');
+    } catch (e) {
+      setApplyErr(e?.message || 'Network error');
+    } finally {
+      setApplyBusy(false);
+    }
   };
 
   const pill =
@@ -901,6 +1041,25 @@ function OverviewMarkdownRowActions({
           Defer
         </button>
       </div>
+      {canApplyInJira ? (
+        <div className="flex flex-wrap gap-0.5 justify-end">
+          <button
+            type="button"
+            disabled={applyBusy}
+            title={jiraConfigured ? 'Update this issue in Jira and add a comment' : undefined}
+            className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-semibold rounded border border-indigo-300 bg-indigo-50 text-indigo-950 hover:bg-indigo-100 disabled:opacity-60"
+            onClick={applyToJira}
+          >
+            {applyBusy ? <Loader2 className="h-3 w-3 animate-spin shrink-0" aria-hidden /> : null}
+            Apply in Jira
+          </button>
+        </div>
+      ) : null}
+      {applyErr ? (
+        <p className="text-[9px] text-rose-700 text-right break-words max-w-[14rem] ml-auto leading-snug">
+          {applyErr}
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-1 justify-end">
         <button
           type="button"
@@ -964,6 +1123,8 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl, actionCtx) {
       if (node?.properties?.dataOverviewActions === '1' && ac) {
         const issueKey = String(node?.properties?.dataOverviewIssueKey || '').trim().toUpperCase();
         const rowKind = node?.properties?.dataOverviewRowKind || 'reprior';
+        const rawB64 = node?.properties?.dataOverviewApplyB64;
+        const decodedPayload = rawB64 ? decodeOverviewApplyPayload(String(rawB64)) : null;
         return (
           <td {...props} className={[props.className].filter(Boolean).join(' ')}>
             <OverviewMarkdownRowActions
@@ -973,6 +1134,8 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl, actionCtx) {
               actionsByIssue={ac.actionsByIssue}
               onSetSlotStatus={ac.onSetSlotStatus}
               jiraBrowseBase={ac.jiraBrowseBase}
+              applyPayload={decodedPayload}
+              jiraConfigured={Boolean(ac.jiraConfigured)}
             />
           </td>
         );
@@ -1948,9 +2111,11 @@ const BugTriageCopilot = () => {
         actionsByIssue: overviewActionsByIssue,
         onSetSlotStatus: handleOverviewSlotAction,
         jiraBrowseBase: jiraStatus.base_url || null,
+        jiraConfigured: Boolean(jiraStatus.configured),
       }),
     [
       jiraStatus.base_url,
+      jiraStatus.configured,
       overviewFingerprintHash,
       overviewActionsByIssue,
       handleOverviewSlotAction,
@@ -2757,7 +2922,24 @@ const BugTriageCopilot = () => {
                       return '';
                     };
 
-                    const rowBlock = (key, v) => (
+                    const rowBlock = (key, v) => {
+                      const issueRow = filteredAndSorted.find(
+                        (i) => String(i.key || '').toUpperCase() === String(key || '').toUpperCase(),
+                      );
+                      const curPk = normalizeOverviewPriorityKey(issueRow?.priority);
+                      const rec = v.recommendation;
+                      let scorecardApplyPayload = null;
+                      if (rec && curPk) {
+                        const targetPk = normalizeOverviewPriorityKey(rec.target);
+                        if (targetPk && targetPk !== curPk) {
+                          scorecardApplyPayload = {
+                            kind: 'scorecard',
+                            target_priority_key: targetPk,
+                            expected_priority_key: curPk,
+                          };
+                        }
+                      }
+                      return (
                       <details
                         key={key}
                         className={`border border-slate-200 rounded-md bg-white mb-1.5 px-2 py-1 ${scorecardRiskBox(v.ga_verdict)}`}
@@ -2873,10 +3055,13 @@ const BugTriageCopilot = () => {
                             actionsByIssue={overviewActionsByIssue}
                             onSetSlotStatus={handleOverviewSlotAction}
                             jiraBrowseBase={jiraStatus.base_url || null}
+                            applyPayload={scorecardApplyPayload}
+                            jiraConfigured={Boolean(jiraStatus.configured)}
                           />
                         </div>
                       </details>
-                    );
+                      );
+                    };
                     return (
                       <div className="max-h-64 overflow-y-auto pr-0.5">
                         {withRec.length ? (

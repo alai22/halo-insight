@@ -19,6 +19,24 @@ from backend.utils.logging import get_logger
 logger = get_logger('jira_client')
 
 
+def _normalize_priority_for_match(name: str) -> str:
+    """Lowercase, no spaces — aligns with jira_routes _PRIORITY_RANKS keys after alias expansion."""
+    return re.sub(r'\s+', '', (name or '').strip().lower())
+
+
+def _plain_text_to_adf_doc(text: str) -> Dict[str, Any]:
+    """Minimal Atlassian Document Format for a comment body (paragraphs from newlines)."""
+    s = (text or '').replace('\r\n', '\n').replace('\r', '\n')
+    lines = s.split('\n') if s else ['']
+    content: List[Dict[str, Any]] = []
+    for line in lines:
+        content.append({
+            'type': 'paragraph',
+            'content': [{'type': 'text', 'text': line}] if line else [],
+        })
+    return {'type': 'doc', 'version': 1, 'content': content}
+
+
 def _adf_to_plain_text(adf: Any) -> str:
     """Extract plain text from Jira's Atlassian Document Format (ADF) description."""
     if not adf:
@@ -352,6 +370,97 @@ class JiraClient:
             'count_after_parent_filter': len(mapped),
             'parent_filter_applied': bool(require_parent_context),
         }
+
+    def get_issue(self, issue_key: str, fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """GET /rest/api/3/issue/{issueIdOrKey} with explicit fields list."""
+        key = (issue_key or '').strip()
+        if not key:
+            raise ValueError('issue_key is required')
+        field_list = fields or ['summary', 'priority']
+        params = ','.join(field_list)
+        response = self._request('GET', f'/rest/api/3/issue/{key}', params={'fields': params})
+        response.raise_for_status()
+        return response.json()
+
+    def update_issue_fields(self, issue_key: str, fields_update: Dict[str, Any]) -> None:
+        """PUT /rest/api/3/issue/{issueIdOrKey} — fields_update is Jira API shape (summary, priority, …)."""
+        key = (issue_key or '').strip()
+        if not key:
+            raise ValueError('issue_key is required')
+        if not fields_update:
+            raise ValueError('fields_update is empty')
+        payload = {'fields': fields_update}
+        response = self._request('PUT', f'/rest/api/3/issue/{key}', json=payload)
+        response.raise_for_status()
+
+    def add_issue_comment_plain(self, issue_key: str, text: str) -> Dict[str, Any]:
+        """POST /rest/api/3/issue/{issueIdOrKey}/comment with ADF body built from plain text."""
+        key = (issue_key or '').strip()
+        if not key:
+            raise ValueError('issue_key is required')
+        body = _plain_text_to_adf_doc(text)
+        response = self._request(
+            'POST',
+            f'/rest/api/3/issue/{key}/comment',
+            json={'body': body},
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def list_priorities(self) -> List[Dict[str, Any]]:
+        """GET /rest/api/3/priority — global priority list for the Jira instance."""
+        response = self._request('GET', '/rest/api/3/priority')
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+
+    def resolve_priority_display_name(self, normalized_key: str) -> str:
+        """
+        Map a normalized ladder key (e.g. critical, major) to this site's exact Jira priority.name.
+        Falls back to title-cased key if the API list does not match.
+        """
+        nk = _normalize_priority_for_match(normalized_key)
+        if not nk:
+            raise ValueError('normalized_key is empty')
+
+        alias_to_canonical = {
+            'highest': 'blocker',
+            'high': 'major',
+            'medium': 'normal',
+            'low': 'minor',
+            'lowest': 'trivial',
+        }
+        canonical = alias_to_canonical.get(nk, nk)
+
+        fallback_title = {
+            'blocker': 'Blocker',
+            'critical': 'Critical',
+            'major': 'Major',
+            'normal': 'Normal',
+            'minor': 'Minor',
+            'trivial': 'Trivial',
+        }.get(canonical, canonical[:1].upper() + canonical[1:] if canonical else '')
+
+        try:
+            plist = self.list_priorities()
+        except Exception as e:
+            logger.warning('list_priorities failed; using fallback name for %s: %s', nk, e)
+            return fallback_title
+
+        for p in plist:
+            if not isinstance(p, dict):
+                continue
+            name = (p.get('name') or '').strip()
+            if not name:
+                continue
+            nm = _normalize_priority_for_match(name)
+            if nm == canonical or nm == nk:
+                return name
+            if alias_to_canonical.get(nm) == canonical:
+                return name
+
+        return fallback_title
 
 
 def _filter_issues_under_ancestor(issues: List[Dict[str, Any]], ancestor_key: str) -> List[Dict[str, Any]]:
