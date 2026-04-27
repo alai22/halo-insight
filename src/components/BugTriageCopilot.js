@@ -578,13 +578,17 @@ const _OVERVIEW_PRIORITY_ALIASES = {
 };
 
 function normalizeOverviewPriorityKey(value) {
-  let raw = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '');
-  if (!raw) return null;
-  if (_OVERVIEW_PRIORITY_ALIASES[raw]) raw = _OVERVIEW_PRIORITY_ALIASES[raw];
-  return _OVERVIEW_PRIORITY_RANK_KEYS.has(raw) ? raw : null;
+  const s = String(value || '').trim().toLowerCase();
+  if (!s) return null;
+  const tryKey = (keyRaw) => {
+    let key = keyRaw.replace(/ /g, '');
+    if (_OVERVIEW_PRIORITY_ALIASES[key]) key = _OVERVIEW_PRIORITY_ALIASES[key];
+    return _OVERVIEW_PRIORITY_RANK_KEYS.has(key) ? key : null;
+  };
+  let got = tryKey(s);
+  if (got) return got;
+  got = tryKey(s.replace(/\s+/g, ''));
+  return got;
 }
 
 function parseOverviewRepriorTarget(recRaw) {
@@ -611,6 +615,12 @@ function decodeOverviewApplyPayload(b64) {
   } catch {
     return null;
   }
+}
+
+function _hastElementProperties(el) {
+  if (!el || typeof el !== 'object') return {};
+  const p = el.properties;
+  return p && typeof p === 'object' ? p : {};
 }
 
 function _hastClassNameList(value) {
@@ -697,8 +707,21 @@ function _overviewTableKindFromHeaderRow(tr) {
   const cells = _overviewTableCells(tr);
   if (!cells.length || !cells.every((c) => c.tagName === 'th')) return '';
   const h = cells.map(hastPlainText).join(' ').toLowerCase();
-  if (h.includes('proposed title')) return 'title';
-  if (h.includes('ticket') && (h.includes('recommended') || h.includes('recommendation'))) {
+  if (
+    h.includes('proposed title') ||
+    (h.includes('proposed') && h.includes('title')) ||
+    (h.includes('current title') && h.includes('proposed'))
+  ) {
+    return 'title';
+  }
+  if (
+    h.includes('ticket') &&
+    (h.includes('recommended') ||
+      h.includes('recommendation') ||
+      h.includes('recommended priority') ||
+      (h.includes('priority') &&
+        (h.includes('raise') || h.includes('lower') || h.includes('change') || h.includes('suggested'))))
+  ) {
     return 'reprior';
   }
   return '';
@@ -784,14 +807,15 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
           const proposed = hastPlainText(cells[3]).trim();
           const curTitle = hastPlainText(cells[2]).trim();
           const curPri = hastPlainText(cells[1]).trim();
-          const expPk = normalizeOverviewPriorityKey(curPri);
-          if (proposed && expPk) {
-            applyB64 = encodeOverviewApplyPayload({
+          if (proposed && curTitle) {
+            const expPk = normalizeOverviewPriorityKey(curPri);
+            const pl = {
               kind: 'title',
               new_summary: proposed,
               expected_summary: curTitle,
-              expected_priority_key: expPk,
-            });
+            };
+            if (expPk) pl.expected_priority_key = expPk;
+            applyB64 = encodeOverviewApplyPayload(pl);
           }
         } else if (kind === 'reprior') {
           const n = cells.length;
@@ -806,12 +830,10 @@ function createRehypeAppendOverviewActionsAndRisk(scorecardsByKey) {
           }
           const targetPk = parseOverviewRepriorTarget(recCell);
           const expPk = normalizeOverviewPriorityKey(curCell);
-          if (targetPk && expPk) {
-            applyB64 = encodeOverviewApplyPayload({
-              kind: 'reprior',
-              target_priority_key: targetPk,
-              expected_priority_key: expPk,
-            });
+          if (targetPk) {
+            const pl = { kind: 'reprior', target_priority_key: targetPk };
+            if (expPk) pl.expected_priority_key = expPk;
+            applyB64 = encodeOverviewApplyPayload(pl);
           }
         }
 
@@ -961,14 +983,17 @@ function OverviewMarkdownRowActions({
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
   };
 
-  const canApplyInJira =
-    Boolean(jiraConfigured) &&
+  const hasApplyPayload =
     applyPayload &&
     typeof applyPayload === 'object' &&
-    Boolean(applyPayload.kind);
+    Boolean(applyPayload.kind) &&
+    (Boolean(
+      applyPayload.new_summary != null && String(applyPayload.new_summary).trim() !== '',
+    ) ||
+      Boolean(applyPayload.target_priority_key));
 
   const applyToJira = async () => {
-    if (!canApplyInJira || applyBusy) return;
+    if (!hasApplyPayload || !jiraConfigured || applyBusy) return;
     setApplyBusy(true);
     setApplyErr(null);
     try {
@@ -1041,12 +1066,16 @@ function OverviewMarkdownRowActions({
           Defer
         </button>
       </div>
-      {canApplyInJira ? (
+      {hasApplyPayload ? (
         <div className="flex flex-wrap gap-0.5 justify-end">
           <button
             type="button"
-            disabled={applyBusy}
-            title={jiraConfigured ? 'Update this issue in Jira and add a comment' : undefined}
+            disabled={applyBusy || !jiraConfigured}
+            title={
+              jiraConfigured
+                ? 'Update this issue in Jira and add a comment'
+                : 'Connect Jira first (Tools → Jira connection), then disconnect/reconnect OAuth if you need write access.'
+            }
             className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] font-semibold rounded border border-indigo-300 bg-indigo-50 text-indigo-950 hover:bg-indigo-100 disabled:opacity-60"
             onClick={applyToJira}
           >
@@ -1115,15 +1144,22 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl, actionCtx) {
         </th>
       );
     },
-    td({ node, children, ...props }) {
-      const col = node?.properties?.dataOverviewCol;
+    td({ node: tdNodeIn, children, ...props }) {
+      const node = tdNodeIn ?? props.node;
+      const hp = _hastElementProperties(node);
+      const col = hp.dataOverviewCol;
       const titleColClass = col === '1' ? _OVERVIEW_TITLE_CELL_CLASS : '';
       const ticketSticky = col === '0' ? _OVERVIEW_TICKET_TD_STICKY : '';
 
-      if (node?.properties?.dataOverviewActions === '1' && ac) {
-        const issueKey = String(node?.properties?.dataOverviewIssueKey || '').trim().toUpperCase();
-        const rowKind = node?.properties?.dataOverviewRowKind || 'reprior';
-        const rawB64 = node?.properties?.dataOverviewApplyB64;
+      const isOverviewActions =
+        hp.dataOverviewActions === '1' ||
+        hp.dataOverviewActions === 1 ||
+        String(hp.dataOverviewActions || '').toLowerCase() === 'true';
+
+      if (isOverviewActions && ac) {
+        const issueKey = String(hp.dataOverviewIssueKey || '').trim().toUpperCase();
+        const rowKind = hp.dataOverviewRowKind || 'reprior';
+        const rawB64 = hp.dataOverviewApplyB64;
         const decodedPayload = rawB64 ? decodeOverviewApplyPayload(String(rawB64)) : null;
         return (
           <td {...props} className={[props.className].filter(Boolean).join(' ')}>
@@ -1162,7 +1198,7 @@ function createBacklogOverviewMarkdownComponents(jiraBaseUrl, actionCtx) {
         }
       }
 
-      const recKind = node?.properties?.dataOverviewRecKind;
+      const recKind = hp.dataOverviewRecKind;
       if (recKind !== 'raise' && recKind !== 'lower') {
         const cn = [props.className, ticketSticky, titleColClass].filter(Boolean).join(' ');
         return (
