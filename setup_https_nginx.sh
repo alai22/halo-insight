@@ -113,6 +113,14 @@ server {
     # Security headers
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    # Wiki — serve Docusaurus static build
+    location /wiki/ {
+        alias /var/www/halo-insight/wiki/build/;
+        try_files \$uri \$uri/ /wiki/index.html;
+        expires 1h;
+        add_header Cache-Control "public, must-revalidate";
+    }
+
     # Proxy to Docker container
     location / {
         proxy_pass http://localhost:5000;
@@ -175,6 +183,14 @@ NGINXEOF
 
     # Security headers
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Wiki — serve Docusaurus static build
+    location /wiki/ {
+        alias /var/www/halo-insight/wiki/build/;
+        try_files $uri $uri/ /wiki/index.html;
+        expires 1h;
+        add_header Cache-Control "public, must-revalidate";
+    }
 
     # Proxy to Docker container
     location / {
