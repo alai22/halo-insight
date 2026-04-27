@@ -1,0 +1,29 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* Halo brand colors */
+:root {
+  --ifm-color-primary: #1a73e8;
+  --ifm-color-primary-dark: #1666d1;
+  --ifm-color-primary-darker: #1560c5;
+  --ifm-color-primary-darkest: #1150a2;
+  --ifm-color-primary-light: #2c80eb;
+  --ifm-color-primary-lighter: #3888ed;
+  --ifm-color-primary-lightest: #5b9ef0;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #4da6ff;
+  --ifm-color-primary-dark: #2d96ff;
+  --ifm-color-primary-darker: #1d8eff;
+  --ifm-color-primary-darkest: #006fe6;
+  --ifm-color-primary-light: #6db6ff;
+  --ifm-color-primary-lighter: #7dbeff;
+  --ifm-color-primary-lightest: #adcfff;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}

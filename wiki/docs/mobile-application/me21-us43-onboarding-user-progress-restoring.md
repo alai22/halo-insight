@@ -1,0 +1,86 @@
+---
+title: "ME21-US43. Onboarding: user progress restoring"
+sidebar_label: "ME21-US43. Onboarding: user progress restoring"
+sidebar_position: 281
+author: "Maria Shikareva [X]"
+---
+
+| Document status | Document owner | Link to JIRA Issue | Changes history |
+|---|---|---|---|
+| APPROVED |
+| Galina Lonskaya Timofey Burak [X] Maria Shikareva [X] Zakhar Makarevich Nikita Krisko |
+| HALO-13185 - MOB+BE: ME21-US43. Onboarding: user progress restoring Closed HALO-14346 - MOB+BE [NT]: Prepare solution for restoring user's progress for Onboarding Closed |
+| Click here to expand...04 Nov 2022 Maria Shikareva [X] Added ME21-US43-AC08 as discussed during 2022-10-31 Meeting notes: BA call (Monday) and further team review.17 Nov 2022 Maria Shikareva [X] Updated ME21-US43-AC05, added ME21-US43-AC09 as discussed with Dmitry Kravchuk during implementation phase.14 Dec 2022 Maria Shikareva [X] Crossed out the first point in ME21-US43-AC07 as discussed with mob developers (the app behaves the same way within the main flow also). |# Contents
+
+General description Assumptions User story Acceptance criteria General requirements Onboarding on several devices Error handling Solution for existing users Implementation notes
+
+# General description
+
+See the Miro board.
+
+# Assumptions
+
+1. Changing of Onboarding isn't described in this story, because it should be done within a task of adding/ deleting any Onboarding screen together with changing navigation. On the current stage it's hard to predict which screens can be deleted/ added and how this can affect the whole Onboarding.
+
+# User story
+
+\> As a Halo app user I want to have Onboarding progress saved if I left the app previously so that I don't need to start it from the very beginning.
+
+# Acceptance criteria
+
+| AC | Description | iOS UI design | Android UI design | Screen name | Notes, comments (if applicable) | Screen name | Comment | Solution for existing users |
+|---|---|---|---|---|---|---|---|---|
+| General requirements |
+| ME21-US43-AC01 | If a user was logged out of the app by any reason on any step of the Onboarding flow (e.g. session was expired, a user killed the app) and Onboarding is interrupted, the user should be able to continue Onboarding from the last interrupted step the next time the app is started:from the screen itself if stopped on the following screens:Screen nameNotes, comments (if applicable)Tell Us Your NameImplementation note: we don't need a special flag here, the app will check it based on their own information (if the name is empty or not). But anyway the mobile app marks all completed steps in the onboarding model on backend side (even if it's calculated on mobile side).Welcome to the Halo Pack!The video watching progress should not be tracked (i.e. if a user watched the video till the and and then killed the app, on launching the app will display this screen with 0 progress and a 'Skip' button).If the video was changed, the app should not consider this.These requirements should be applicable for all screens with video.'Halo Help' explanationEnable PermissionsDo You Have a Halo Collar?Implementation note: a mobile app tries to restore selected value based on values of completed steps from BE onboarding data. If it can't be done, then the app will show selector one more time → it's OK from business perspective (i.e. if a user selected any option → tapped 'Next' and left the app, next time the app might show this screen again).Let's Get StartedLet's Get a Head StartWhy Halo Collar?If a browser was opened when a user left the app, after restoring the app should display the last passed step (no need to save and show a state with browser opened).The Halo Collar AppAlmost ReadyIf a user tapped 'Add Another Collar' button and left the app on any step later, then after restoring the app should open 'Almost Ready' screen (as we want to force users to start training or at least read necessary information about them).Start Halo TrainingNeed Help?Depends on the screen from which it was initiated → therefore the last passed step should be opened after restoring (no need to save and show 'need Help?' screen).from the parent screens if stopped on one of the steps:Screen nameCommentWhat's In Your Halo Collar Kit?Power Up & ConnectImplementation note: we don't need a special flag here, the app will check it based on their own information (if the collar is added or not).Assign Your Halo Collar to Your PetImplementation note: we don't need a special flag here, the app will check it based on their own information (if the pet is added or not).Connect Your Halo CollarHalo Collar UpdatesHalo Collar GPSBeaconsImplementation note: we don't need a special flag here, the app will check it based on their own information (if the beacon is added or not).See ME21-US43-IN01 below. | Tell Us Your Name | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the name is empty or not). But anyway the mobile app marks all completed steps in the onboarding model on backend side (even if it's calculated on mobile side). | Welcome to the Halo Pack! | The video watching progress should not be tracked (i.e. if a user watched the video till the and and then killed the app, on launching the app will display this screen with 0 progress and a 'Skip' button).If the video was changed, the app should not consider this.These requirements should be applicable for all screens with video. | 'Halo Help' explanation |  | Enable Permissions |  | Do You Have a Halo Collar? | Implementation note: a mobile app tries to restore selected value based on values of completed steps from BE onboarding data. If it can't be done, then the app will show selector one more time → it's OK from business perspective (i.e. if a user selected any option → tapped 'Next' and left the app, next time the app might show this screen again). | Let's Get Started |  | Let's Get a Head Start |  | Why Halo Collar? | If a browser was opened when a user left the app, after restoring the app should display the last passed step (no need to save and show a state with browser opened). | The Halo Collar App |  | Almost Ready | If a user tapped 'Add Another Collar' button and left the app on any step later, then after restoring the app should open 'Almost Ready' screen (as we want to force users to start training or at least read necessary information about them). | Start Halo Training |  | Need Help? | Depends on the screen from which it was initiated → therefore the last passed step should be opened after restoring (no need to save and show 'need Help?' screen). | What's In Your Halo Collar Kit? |  | Power Up & Connect | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the collar is added or not). | Assign Your Halo Collar to Your Pet | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the pet is added or not). | Connect Your Halo Collar |  | Halo Collar Updates |  | Halo Collar GPS |  | Beacons | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the beacon is added or not). | - | - |
+| Tell Us Your Name | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the name is empty or not). But anyway the mobile app marks all completed steps in the onboarding model on backend side (even if it's calculated on mobile side). |
+| Welcome to the Halo Pack! | The video watching progress should not be tracked (i.e. if a user watched the video till the and and then killed the app, on launching the app will display this screen with 0 progress and a 'Skip' button).If the video was changed, the app should not consider this.These requirements should be applicable for all screens with video. |
+| 'Halo Help' explanation |  |
+| Enable Permissions |  |
+| Do You Have a Halo Collar? | Implementation note: a mobile app tries to restore selected value based on values of completed steps from BE onboarding data. If it can't be done, then the app will show selector one more time → it's OK from business perspective (i.e. if a user selected any option → tapped 'Next' and left the app, next time the app might show this screen again). |
+| Let's Get Started |  |
+| Let's Get a Head Start |  |
+| Why Halo Collar? | If a browser was opened when a user left the app, after restoring the app should display the last passed step (no need to save and show a state with browser opened). |
+| The Halo Collar App |  |
+| Almost Ready | If a user tapped 'Add Another Collar' button and left the app on any step later, then after restoring the app should open 'Almost Ready' screen (as we want to force users to start training or at least read necessary information about them). |
+| Start Halo Training |  |
+| Need Help? | Depends on the screen from which it was initiated → therefore the last passed step should be opened after restoring (no need to save and show 'need Help?' screen). |
+| What's In Your Halo Collar Kit? |  |
+| Power Up & Connect | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the collar is added or not). |
+| Assign Your Halo Collar to Your Pet | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the pet is added or not). |
+| Connect Your Halo Collar |  |
+| Halo Collar Updates |  |
+| Halo Collar GPS |  |
+| Beacons | Implementation note: we don't need a special flag here, the app will check it based on their own information (if the beacon is added or not). |
+| ME21-US43-AC02 | If there's a discrepancy between info from BE and the mobile app (e.g. BE says that 'Tell Us Your Name' step isn't completed, but the app has info about user's name), then info from the mobile app should have a higher priority.Implementation note: a step on backend side should be synchronized by mobile side. | - | - |
+| ME21-US43-AC03 | 'Back' button should not be displayed if Onboarding continues from the screen with this button (it's done because it's easier from implementation perspective and seems to be OK from user's perspective). | - | - |
+| Onboarding on several devices |
+| ME21-US43-AC04 | A user should be able to continue from another device (i.e. the progress should be saved per user, not per device). | - | - |
+| ME21-US43-AC05 | 'Enable Permissions' screen should be displayed each time a user enters Onboarding on a new device even if it was shown on a previous device (because a user sets permissions per device, not per account).Note: if a user stopped on the 'Welcome to the Halo Pack!' screen on device 1 and then continues from device 2, then the app should display screens in their usual order (Welcome to the Halo Pack! → 'Halo Help' explanation → Enable Permissions → etc.) | - | - |
+| ME21-US43-AC06 | If a user opens Onboarding simultaneously on several devices at a time, then the app should: sync with BE on every step;move a user to the next uncompleted step if the step was completed on another device. | - | - |
+| ME21-US43-AC09 | If a user adds 2 different collars in parallel on 2 different devices AND after successful adding leaves the app on both devices AND then enters the app again on one device, then the app should proceed with the last added collar.BA note: there's a temporary solution for a corner case as of 17 Nov 2022 . For future there's a task: HALO-14742 - MOB: Handle case when a user adds 2 different collars from 2 devices during Onboarding Closed | - | - |
+| Error handling |
+| ME21-US43-AC07 | Error handling should be applied on every step if request to BE fails (ME14-F01 Unified errors handling) except the following cases:When connection error occur after user clicks 'Add Collar' button and the process of scanning has started, then the app displays a toast message N31 → it's already implemented (see ME03-F00-AC52 in ME03-F00. Add collar).When connection error occur on 'Automatic Halo Collar Updates' screen, then the app should not display M125 Connection error → it's already implemented (see ME21-US07-AC16 in [NI] ME21-US07. Add FW update screens to 'Add Collar' flow);steps that are checked on the mobile side.Seems to be implemented already Connection/ communication errors happened during Onboarding flow (when the app fails to get the list of objects from BE) should be handled as described in ME14-F01-AC08/ ME14-F01-AC09, ME14-F01 Unified errors handling for the following screens: 'Add Pet':"Pet addition is" should be used instead of \<items\>;Profile color selection screen within 'Add Pet' flow:"Pet colors are" should be used instead of \<items\>;'Your Halo Collar Update':"Collar Updates data is" should be used instead of \<items\>'Map Updates' (when user requests an update from 'Collar's GPS Initialization' screen):'Map updates' should be used instead of \<items\>.'Select The Source For Update' screen (when user requests an update from 'Collar's GPS Initialization' screen):'Map updates' should be used instead of \<items\>.'Training':"Training is" should be used instead of \<items\>.'Need Help' screen (when user selects a 'Halo Dog Park' option):See 'Errors when the Dog Park is not available'. | - | - |
+| ME21-US43-AC08 | The app should display Onboarding for existing users only if they don't have a collar in the account at the moment (regardless whether they had a collar previously or not). | - | - |# Implementation notes
+
+| IN | Description | Onboarding stage | end conditions | depends on stages |
+|---|---|---|---|---|
+| ME21-US43-IN01 | Each of the steps has an end indicator - it's either the presence of certain data in the user's account or a set flag to end this step on the backend (set by the mobile client when the step is completed). If onboarding needs to be restored, we go through each stage one by one and check if it was completed and stop at the first unfinished step.A list of steps with a description of the condition of its completion and dependencies on other steps:Onboarding stageend conditionsdepends on stagesTell Us Your Namedefined on the clientNOWelcome to the Halo Pack!stored on backendNO'Halo Help' explanationstored on backendNOEnable Permissionsdefined on the clientNODo You Have a Halo Collar? - selectiondefined on the clientNOLet's Get Startedstored on backendNOLet's Get a Head Startstored on backendNOWhy Halo Collar?stored on backendNOWhat's In Your Halo Collar Kit?stored on backendNOPower Up & Connectdefined on the clientNOAssign Your Halo Collar to Your Petdefined on the clientadd collarConnect Your Halo Collarstored on backendadd collarHalo Collar Updatesstored on backendadd collar + wifi or lteHalo Collar GPSstored on backendadd collarBeaconsdefined on the clientadd collarThe Halo Collar Appstored on backendNOAlmost Readystored on backendNOStart Halo Trainingstored on backendNOThe onboarding end flag is saved on the backend and is used to skip the onboarding flow when the application is launched. Should be include in User Profile | Tell Us Your Name | defined on the client | NO | Welcome to the Halo Pack! | stored on backend | NO | 'Halo Help' explanation | stored on backend | NO | Enable Permissions | defined on the client | NO | Do You Have a Halo Collar? - selection | defined on the client | NO | Let's Get Started | stored on backend | NO | Let's Get a Head Start | stored on backend | NO | Why Halo Collar? | stored on backend | NO | What's In Your Halo Collar Kit? | stored on backend | NO | Power Up & Connect | defined on the client | NO | Assign Your Halo Collar to Your Pet | defined on the client | add collar | Connect Your Halo Collar | stored on backend | add collar | Halo Collar Updates | stored on backend | add collar + wifi or lte | Halo Collar GPS | stored on backend | add collar | Beacons | defined on the client | add collar | The Halo Collar App | stored on backend | NO | Almost Ready | stored on backend | NO | Start Halo Training | stored on backend | NO |
+| Tell Us Your Name | defined on the client | NO |
+| Welcome to the Halo Pack! | stored on backend | NO |
+| 'Halo Help' explanation | stored on backend | NO |
+| Enable Permissions | defined on the client | NO |
+| Do You Have a Halo Collar? - selection | defined on the client | NO |
+| Let's Get Started | stored on backend | NO |
+| Let's Get a Head Start | stored on backend | NO |
+| Why Halo Collar? | stored on backend | NO |
+| What's In Your Halo Collar Kit? | stored on backend | NO |
+| Power Up & Connect | defined on the client | NO |
+| Assign Your Halo Collar to Your Pet | defined on the client | add collar |
+| Connect Your Halo Collar | stored on backend | add collar |
+| Halo Collar Updates | stored on backend | add collar + wifi or lte |
+| Halo Collar GPS | stored on backend | add collar |
+| Beacons | defined on the client | add collar |
+| The Halo Collar App | stored on backend | NO |
+| Almost Ready | stored on backend | NO |
+| Start Halo Training | stored on backend | NO |
+| ME21-US43-IN02 | We should not consider future feature 'Family Account' because within Onboarding. MRGP a user will be able to add a family member only from 'Settings' tab later after completing their onboarding. |

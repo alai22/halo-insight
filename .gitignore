@@ -138,3 +138,11 @@ data/*.log
 # Jira OAuth tokens (sensitive)
 data/jira_oauth_tokens.json
 jira_oauth_tokens.json
+
+# Wiki (Docusaurus) — generated & binary files
+wiki/build/
+wiki/node_modules/
+wiki/.docusaurus/
+wiki/.cache-loader/
+wiki/docs/attachments/
+wiki/docs/images/
