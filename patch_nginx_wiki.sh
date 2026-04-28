@@ -5,11 +5,11 @@
 set -e
 
 CONF="/etc/nginx/conf.d/gladly.conf"
-WIKI_BUILD="/var/www/halo-insight/wiki/build"
+WIKI_BUILD="/home/ec2-user/halo-insight/wiki/build"
 
 echo "==> Checking wiki build dir exists..."
 if [ ! -d "$WIKI_BUILD" ]; then
-    echo "ERROR: $WIKI_BUILD not found. Run 'cd /var/www/halo-insight/wiki && npm install && npm run build' first."
+    echo "ERROR: $WIKI_BUILD not found. Run 'cd /home/ec2-user/halo-insight/wiki && npm install && npm run build' first."
     exit 1
 fi
 
