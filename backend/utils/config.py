@@ -190,6 +190,31 @@ class Config:
     LABELING_S3_PREFIX: str = os.getenv('LABELING_S3_PREFIX', 'extracted-txt/')
     LABELING_S3_STAGING_PREFIX: str = os.getenv('LABELING_S3_STAGING_PREFIX', 'staging/')
     
+    # Snowflake (order reconciliation) — read-only analytics queries.
+    # Auth is a Programmatic Access Token (PAT), not key-pair/password.
+    # WARNING: SNOWFLAKE_ROLE is a broad admin role, not scoped read-only. Every query
+    # is forced through backend/services/snowflake_client.assert_read_only() as a
+    # stopgap. See BOTTLENECKS.md.
+    SNOWFLAKE_ACCOUNT: str = os.getenv('SNOWFLAKE_ACCOUNT', 'hh11549.east-us-2.azure')
+    SNOWFLAKE_USER: str = os.getenv('SNOWFLAKE_USER', 'USERALAI')
+    SNOWFLAKE_PAT: Optional[str] = os.getenv('SNOWFLAKE_PAT')
+    SNOWFLAKE_ROLE: str = os.getenv('SNOWFLAKE_ROLE', 'HALO_ANALYST_ADMIN')
+    SNOWFLAKE_WAREHOUSE: str = os.getenv('SNOWFLAKE_WAREHOUSE', 'HALO_ANALYST_XS')
+    SNOWFLAKE_DATABASE: str = os.getenv('SNOWFLAKE_DATABASE', 'DBT_CORE_PROD')
+    SNOWFLAKE_SCHEMA: str = os.getenv('SNOWFLAKE_SCHEMA', 'silver_ops')
+    SNOWFLAKE_LOGIN_TIMEOUT_SEC: int = int(os.getenv('SNOWFLAKE_LOGIN_TIMEOUT_SEC', '30'))
+    SNOWFLAKE_QUERY_TIMEOUT_SEC: int = int(os.getenv('SNOWFLAKE_QUERY_TIMEOUT_SEC', '120'))
+
+    # Order reconciliation feature
+    ORDER_RECON_TABLE: str = os.getenv(
+        'ORDER_RECON_TABLE', 'DBT_CORE_PROD.silver_ops.order_fulfillment_tracking'
+    )
+    # Cache TTL for reconciliation query results (default 15 min, matches labeling summary)
+    ORDER_RECON_CACHE_TTL_SEC: int = int(os.getenv('ORDER_RECON_CACHE_TTL_SEC', '900'))
+    # Hard cap on rows returned to the UI; CSV export uses ORDER_RECON_MAX_EXPORT_ROWS
+    ORDER_RECON_MAX_ROWS: int = int(os.getenv('ORDER_RECON_MAX_ROWS', '5000'))
+    ORDER_RECON_MAX_EXPORT_ROWS: int = int(os.getenv('ORDER_RECON_MAX_EXPORT_ROWS', '100000'))
+
     # Azure Storage Configuration
     AZURE_CONNECTION_STRING: Optional[str] = os.getenv('AZURE_CONNECTION_STRING')
     AZURE_CONTAINER_NAME: str = os.getenv('AZURE_CONTAINER_NAME', 'gladly-conversations')
