@@ -81,6 +81,34 @@ class TestProductGenerateAnswer:
         assert mock_claude.send_message.call_args.kwargs['max_tokens'] == NARROW_MAX_TOKENS
         assert mock_claude.send_message.call_args.kwargs['system_prompt'] == SYSTEM_PROMPT_NARROW
 
+    def test_converts_markdown_answer_to_slack_mrkdwn(self, monkeypatch):
+        monkeypatch.setattr(
+            'backend.utils.config.Config.PRODUCT_NOTION_TOKEN',
+            'secret_product',
+        )
+        monkeypatch.setattr('backend.utils.config.Config.PRODUCT_NOTION_ALLOWED_PAGE_IDS', '')
+        monkeypatch.setattr('backend.utils.config.Config.PRODUCT_NOTION_ALLOWED_DATABASE_IDS', '')
+        monkeypatch.setattr('backend.utils.config.Config.PRODUCT_NOTION_PRIORITY_PAGE_IDS', '')
+        monkeypatch.setattr('backend.utils.config.Config.CLAUDE_MODEL', 'claude-haiku-4-5')
+
+        mock_claude = MagicMock()
+        mock_claude.send_message.return_value = SimpleNamespace(
+            content='# Title\n\n**Hardware:**\n- **Insert** – body'
+        )
+
+        with patch('backend.services.product_bot.answer_service.NotionClient'):
+            with patch(
+                'backend.services.product_bot.answer_service.build_product_context',
+                return_value=_result('### Page\nBody', question='q'),
+            ):
+                text = generate_answer('q', claude=mock_claude)
+
+        assert '# ' not in text
+        assert '**' not in text
+        assert '*Title*' in text
+        assert '*Hardware:*' in text
+        assert '*Insert*' in text
+
     def test_broad_question_uses_overview_prompt(self, monkeypatch):
         monkeypatch.setattr(
             'backend.utils.config.Config.PRODUCT_NOTION_TOKEN',

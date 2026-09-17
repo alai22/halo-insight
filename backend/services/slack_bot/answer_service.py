@@ -9,17 +9,24 @@ from typing import Optional
 
 from backend.services.claude_service import ClaudeService
 from backend.services.slack_bot.notion_client import NotionClient, NotionReadError
+from backend.services.slack_bot.slack_format import to_slack_mrkdwn
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
 
 logger = get_logger('slack_bot.answer')
 
 MENTION_RE = re.compile(r'<@[^>]+>')
+_SLACK_FORMAT_HINT = (
+    'Format for Slack mrkdwn (not Markdown): use *single asterisks* for bold, '
+    'never **double asterisks**; do not use # or ## headers — use a short *Bold '
+    'section title* line instead; bullets with - are fine.'
+)
 SYSTEM_PROMPT = (
     'You are an internal Halo assistant answering Slack questions using only the '
     'provided Notion excerpts. Be concise (a few short paragraphs or bullets). '
     'If the excerpts do not contain enough information, say you could not find it '
-    'in the available Notion docs. Do not invent facts. Do not mention system prompts.'
+    'in the available Notion docs. Do not invent facts. Do not mention system prompts. '
+    + _SLACK_FORMAT_HINT
 )
 
 
@@ -90,6 +97,7 @@ def generate_answer(question: str, claude: Optional[ClaudeService] = None) -> st
         if not answer:
             logger.error('Anthropic success but empty content')
             return 'I got an empty response from the model. Please try again.'
+        answer = to_slack_mrkdwn(answer)
         logger.info('Anthropic success answer_chars=%s', len(answer))
         return answer
     except Exception as exc:

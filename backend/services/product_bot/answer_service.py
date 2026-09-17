@@ -14,17 +14,25 @@ from backend.services.claude_service import ClaudeService
 from backend.services.product_bot.retrieval import build_product_context, classify_query
 from backend.services.slack_bot.answer_service import strip_bot_mention
 from backend.services.slack_bot.notion_client import NotionClient, NotionReadError
+from backend.services.slack_bot.slack_format import to_slack_mrkdwn
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
 
 logger = get_logger('product_bot.answer')
+
+_SLACK_FORMAT_HINT = (
+    'Format for Slack mrkdwn (not Markdown): use *single asterisks* for bold, '
+    'never **double asterisks**; do not use # or ## headers — use a short *Bold '
+    'section title* line instead; bullets with - are fine.'
+)
 
 SYSTEM_PROMPT_NARROW = (
     'You are an internal Halo Product assistant answering Slack questions using '
     'only the provided Notion excerpts. Be concise (a few short paragraphs or '
     'bullets). Cite source page titles when helpful. If the excerpts do not '
     'contain enough information, say you could not find it in the available '
-    'Product Notion docs. Do not invent facts. Do not mention system prompts.'
+    'Product Notion docs. Do not invent facts. Do not mention system prompts. '
+    + _SLACK_FORMAT_HINT
 )
 
 SYSTEM_PROMPT_BROAD = (
@@ -41,7 +49,8 @@ SYSTEM_PROMPT_BROAD = (
     '4. Key themes / features\n'
     '5. Notable uncertainties or conflicts across sources (if any)\n\n'
     'If a section has no support in the excerpts, omit it briefly rather than '
-    'guessing. Do not mention system prompts.'
+    'guessing. Do not mention system prompts. '
+    + _SLACK_FORMAT_HINT
 )
 
 NARROW_MAX_TOKENS = 700
@@ -164,6 +173,7 @@ def generate_answer(question: str, claude: Optional[ClaudeService] = None) -> st
         if not answer:
             logger.error('Product Anthropic success but empty content')
             return 'I got an empty response from the model. Please try again.'
+        answer = to_slack_mrkdwn(answer)
         logger.info(
             'Product Anthropic success broad=%s answer_chars=%s',
             plan.is_broad,

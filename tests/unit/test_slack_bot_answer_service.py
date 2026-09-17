@@ -75,3 +75,24 @@ class TestGenerateAnswer:
         assert 'Warranty is 1 year' in kwargs['message']
         assert kwargs['temperature'] == 0
         assert kwargs['model'] == 'claude-haiku-4-5'
+
+    def test_converts_markdown_answer_to_slack_mrkdwn(self, monkeypatch):
+        monkeypatch.setattr('backend.utils.config.Config.NOTION_ALLOWED_PAGE_IDS', '')
+        monkeypatch.setattr('backend.utils.config.Config.NOTION_ALLOWED_DATABASE_IDS', '')
+        monkeypatch.setattr('backend.utils.config.Config.SLACK_BOT_MODEL', None)
+        monkeypatch.setattr('backend.utils.config.Config.CLAUDE_MODEL', 'claude-haiku-4-5')
+
+        mock_claude = MagicMock()
+        mock_claude.send_message.return_value = SimpleNamespace(
+            content='# Title\n\n**Hardware:**\n- **Insert** – body'
+        )
+
+        with patch('backend.services.slack_bot.answer_service.NotionClient') as MockNotion:
+            MockNotion.return_value.build_context_for_query.return_value = '### Page\nBody'
+            text = generate_answer('q?', claude=mock_claude)
+
+        assert '# ' not in text
+        assert '**' not in text
+        assert '*Title*' in text
+        assert '*Hardware:*' in text
+        assert '*Insert*' in text

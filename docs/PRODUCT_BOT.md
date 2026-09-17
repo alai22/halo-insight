@@ -25,9 +25,11 @@ Isolated Slack bot for a **Product** Notion corpus. Separate Slack app, signing 
 | Search candidates | ~12 | ~5 |
 | Pages loaded | top 3–5 after title/hub ranking | top ~3 |
 | Page depth | nested blocks (up to 2 levels) | top-level blocks |
-| Synthesis | structured overview; cite page titles; prefer synthesis over abstaining | concise grounded answer |
+| Synthesis | structured overview in Slack mrkdwn; cite page titles; prefer synthesis over abstaining | concise grounded answer |
 
 Ops Slack bot retrieval defaults are unchanged.
+
+Replies are converted to Slack mrkdwn (`*bold*`, no `#` headers) before `chat.postMessage`.
 
 ## Endpoints
 
