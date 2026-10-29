@@ -146,7 +146,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
     {
       id: 'labeling-data',
       name: 'Labeling Data',
-      description: 'Activity labeling inventory and durations',
+      description: 'Activity labeling inventory, collar dump coverage, durations',
       icon: Tags,
       color: 'text-emerald-600',
       bgColor: 'bg-emerald-50',

@@ -370,6 +370,9 @@ class LabelingDataAnalyzer:
         activity_collar_events: Dict[str, int] = defaultdict(int)
         activity_user_reported_events: Dict[str, int] = defaultdict(int)
         sessions_seen: Dict[str, set] = defaultdict(set)
+        session_duration: Dict[Tuple[str, str], float] = defaultdict(float)
+        session_timestamp: Dict[Tuple[str, str], str] = {}
+        session_index: Dict[Tuple[str, str], int] = {}
         by_date: Dict[str, Dict[str, Any]] = {}
         dogs: Dict[str, Dict[str, Any]] = {}
         parse_errors: List[Dict[str, str]] = []
@@ -428,6 +431,8 @@ class LabelingDataAnalyzer:
 
             session_id = f"{ref.timestamp}_{ref.index}"
             sessions_seen[ref.user].add(session_id)
+            session_timestamp[(ref.user, session_id)] = ref.timestamp
+            session_index[(ref.user, session_id)] = ref.index
             day = (ref.timestamp or "")[:10] or "unknown"
             day_stats = by_date.setdefault(
                 day,
@@ -479,6 +484,7 @@ class LabelingDataAnalyzer:
                         collar_stats["activity_duration_seconds"][key] += seconds
                         day_stats["duration_seconds"] += seconds
                         day_user["duration_seconds"] += seconds
+                        session_duration[(ref.user, session_id)] += seconds
                 elif ref.kind == "collar_collected":
                     parsed = parse_collar_collected(text)
                     if parsed.dog_name or parsed.collar_sn:
@@ -532,6 +538,22 @@ class LabelingDataAnalyzer:
                 collars_out, key=lambda c: (-c["sessions"], c["collar_sn"])
             )
 
+        sessions_out: List[Dict[str, Any]] = []
+        for user, sids in sessions_seen.items():
+            for sid in sorted(sids):
+                key = (user, sid)
+                sessions_out.append(
+                    {
+                        "user": user,
+                        "session_id": sid,
+                        "timestamp": session_timestamp.get(key, ""),
+                        "index": session_index.get(key, 0),
+                        "collar_sn": session_collar.get(key) or UNKNOWN_COLLAR_SN,
+                        "duration_seconds": round(float(session_duration.get(key, 0.0)), 3),
+                    }
+                )
+        sessions_out.sort(key=lambda s: (s["user"], s["timestamp"], s["index"]))
+
         by_date_out: List[Dict[str, Any]] = []
         for day in sorted(by_date.keys()):
             dstats = by_date[day]
@@ -567,6 +589,7 @@ class LabelingDataAnalyzer:
                 kind: sum(1 for f in files if f.kind == kind) for kind in FILE_KINDS
             },
             "users": sorted(by_user.values(), key=lambda u: (-u["total_files"], u["user"])),
+            "sessions": sessions_out,
             "by_date": by_date_out,
             "activity_duration_seconds": dict(
                 sorted(activity_duration_seconds.items(), key=lambda kv: (-kv[1], kv[0]))

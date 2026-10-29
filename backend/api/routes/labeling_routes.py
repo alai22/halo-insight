@@ -15,6 +15,11 @@ from flask import Blueprint, jsonify, request
 
 from backend.api.middleware.auth import require_admin_auth
 from backend.services.labeling_data_analyzer import LabelingDataAnalyzer, format_ui_summary
+from backend.services.labeling_collar_sync_service import (
+    LabelingCollarSyncService,
+    azure_configured,
+    redact_secrets,
+)
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
@@ -32,15 +37,15 @@ _CACHE: Dict[str, Any] = {
     "fresh_until": 0.0,
 }
 _DEFAULT_CACHE_TTL_SEC = 15 * 60  # treat as fresh for 15 minutes
-_SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v3.json"
-_SUMMARY_CACHE_MEM_KEY = "summary:v3"
+_SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v4.json"
+_SUMMARY_CACHE_MEM_KEY = "summary:v4"
 _BG_REFRESH_LOCK = threading.Lock()
 _BG_REFRESH_RUNNING = False
 
 _PROCESS_LOCK = threading.Lock()
 _PROCESS_STATE: Dict[str, Any] = {
     "running": False,
-    "job": None,  # "process" | "promote-forwards"
+    "job": None,  # "process" | "promote-forwards" | "sync-collar"
     "started_at": None,
     "finished_at": None,
     "last_report": None,
@@ -158,10 +163,27 @@ def _cache_clear() -> None:
         logger.warning("Failed to clear labeling summary cache: %s", exc)
 
 
+def _attach_collar_coverage(data: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Join mirrored collar-raw/ AI dumps onto the UI summary."""
+    try:
+        coverage = LabelingCollarSyncService().build_coverage(summary=raw)
+        data["collar_coverage"] = coverage
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Collar coverage attach failed: %s", redact_secrets(str(exc)))
+        data["collar_coverage"] = {
+            "azure_configured": azure_configured(),
+            "error": redact_secrets(str(exc)),
+            "totals": {},
+            "by_user": [],
+            "unmatched_samples": [],
+        }
+    return data
+
+
 def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     analyzer = LabelingDataAnalyzer()
     raw = analyzer.analyze(include_content=True)
-    data = format_ui_summary(raw)
+    data = _attach_collar_coverage(format_ui_summary(raw), raw)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     return entry
@@ -303,6 +325,22 @@ def labeling_status():
     try:
         status = LabelingIngestService().staging_status()
         status["process"] = _merge_process_state()
+        collar: Dict[str, Any] = {
+            "azure_configured": azure_configured(),
+            "s3_prefix": (Config.LABELING_COLLAR_S3_PREFIX or "collar-raw/").rstrip("/")
+            + "/",
+        }
+        try:
+            index = LabelingCollarSyncService().load_index()
+            if index:
+                collar["last_index_at"] = index.get("generated_at")
+                totals = (index.get("coverage") or {}).get("totals") or {}
+                collar["last_matched"] = totals.get("matched")
+                collar["last_missing"] = totals.get("missing")
+                collar["last_ai_files"] = totals.get("ai_files")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Collar sync status failed: %s", redact_secrets(str(exc)))
+        status["collar_sync"] = collar
         return jsonify({"success": True, "data": status})
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get labeling status")
@@ -426,6 +464,137 @@ def labeling_promote_forwards():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to promote labeling forwards")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@labeling_bp.route("/sync-collar", methods=["POST"])
+@require_admin_auth
+def labeling_sync_collar():
+    """
+    Copy Azure <sn>/ai/* for labeled collar SNs into collar-raw/, then join.
+
+    JSON body (optional):
+      dry_run: bool (default false)
+      inventory_only: bool (default false)
+      async: bool (default true)
+    """
+    try:
+        if not azure_configured():
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Azure collar blob is not configured. Set LABELING_AZURE_SAS_URL "
+                    "or LABELING_AZURE_BLOB_URL + LABELING_AZURE_SAS_TOKEN on the server."
+                ),
+            }), 400
+
+        body = request.get_json(silent=True) or {}
+        dry_run = bool(body.get("dry_run", False))
+        inventory_only = bool(body.get("inventory_only", False))
+        run_async = bool(body.get("async", True))
+
+        if _is_process_busy():
+            state = _merge_process_state()
+            return jsonify({
+                "success": False,
+                "error": "A labeling process job is already running",
+                "data": state,
+            }), 409
+
+        if run_async:
+            _set_process_state(
+                running=True,
+                job="sync-collar",
+                started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                finished_at=None,
+                last_error=None,
+                last_report=None,
+                message="Syncing Azure collar ai/ dumps into collar-raw/…",
+            )
+
+            def _worker():
+                try:
+                    report = LabelingCollarSyncService().sync(
+                        dry_run=dry_run,
+                        inventory_only=inventory_only,
+                    )
+                    _cache_clear()
+                    matched = ((report.get("coverage") or {}).get("totals") or {}).get(
+                        "matched", 0
+                    )
+                    missing = ((report.get("coverage") or {}).get("totals") or {}).get(
+                        "missing", 0
+                    )
+                    _set_process_state(
+                        running=False,
+                        job="sync-collar",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_report=report,
+                        last_error=None,
+                        message=(
+                            f"Collar sync done — copied {report.get('copied', 0)} files, "
+                            f"{matched} sessions matched, {missing} missing"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Async collar sync failed")
+                    _set_process_state(
+                        running=False,
+                        job="sync-collar",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_error=redact_secrets(str(exc)),
+                        message="Collar sync failed",
+                    )
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return jsonify({
+                "success": True,
+                "async": True,
+                "message": "Collar sync started in background. Safe to leave this page.",
+                "data": _merge_process_state(),
+            })
+
+        _set_process_state(
+            running=True,
+            job="sync-collar",
+            started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            finished_at=None,
+            last_error=None,
+            message="Syncing Azure collar ai/ dumps into collar-raw/…",
+        )
+        try:
+            report = LabelingCollarSyncService().sync(
+                dry_run=dry_run,
+                inventory_only=inventory_only,
+            )
+            _cache_clear()
+            state = _set_process_state(
+                running=False,
+                job="sync-collar",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_report=report,
+                last_error=None,
+                message=f"Done — copied {report.get('copied', 0)} files",
+            )
+            return jsonify({
+                "success": True,
+                "async": False,
+                "data": report,
+                "process": state,
+            })
+        except Exception as exc:  # noqa: BLE001
+            _set_process_state(
+                running=False,
+                job="sync-collar",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_error=redact_secrets(str(exc)),
+                message="Collar sync failed",
+            )
+            raise
+    except ValueError as exc:
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to sync labeling collar data")
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 500
 
 
 @labeling_bp.route("/process", methods=["POST"])

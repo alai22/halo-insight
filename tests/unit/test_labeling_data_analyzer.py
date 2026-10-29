@@ -118,6 +118,9 @@ class TestLocalAnalyze:
         assert summary["by_date"][0]["date"] == "2026-04-21"
         assert summary["by_date"][0]["duration_seconds"] > 0
         assert summary["by_date"][0]["sessions"] >= 1
+        assert summary["sessions"]
+        assert summary["sessions"][0]["collar_sn"]
+        assert summary["sessions"][0]["duration_seconds"] > 0
 
     def test_format_ui_summary(self):
         analyzer = LabelingDataAnalyzer(bucket_name="local", prefix="extracted-txt/")

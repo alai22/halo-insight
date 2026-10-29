@@ -10,11 +10,11 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, Clock, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, CloudDownload, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
-const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v3';
+const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v4';
 
 const COLORS = [
   '#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#9334E6',
@@ -201,6 +201,7 @@ const LabelingDataDashboard = () => {
   const [processing, setProcessing] = useState(false);
   const [processNotice, setProcessNotice] = useState(null); // success | error banner after job
   const [promoting, setPromoting] = useState(false);
+  const [syncingCollar, setSyncingCollar] = useState(false);
   const [error, setError] = useState(null);
   const [cached, setCached] = useState(Boolean(stored?.cached));
   const [stale, setStale] = useState(Boolean(stored?.stale));
@@ -223,6 +224,7 @@ const LabelingDataDashboard = () => {
         const running = Boolean(proc?.running);
         setProcessing(running);
         setPromoting(running && proc?.job === 'promote-forwards');
+        setSyncingCollar(running && proc?.job === 'sync-collar');
         return next;
       }
     } catch (err) {
@@ -372,6 +374,55 @@ const LabelingDataDashboard = () => {
     [fetchStatus]
   );
 
+  const syncCollar = useCallback(async () => {
+    setError(null);
+    setProcessNotice(null);
+    try {
+      const response = await axios.post('/api/labeling/sync-collar', {
+        dry_run: false,
+        async: true,
+      });
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Collar sync failed');
+      }
+      wasProcessingRef.current = true;
+      setProcessing(true);
+      setSyncingCollar(true);
+      setProcessInfo(
+        response.data.data || {
+          running: true,
+          job: 'sync-collar',
+          message: response.data.message,
+        }
+      );
+      setProcessNotice({
+        type: 'info',
+        text: 'Collar sync started in the background. Copying Azure ai/ dumps into S3 — safe to leave this tab.',
+      });
+      await fetchStatus();
+    } catch (err) {
+      if (err.response?.status === 409) {
+        wasProcessingRef.current = true;
+        setProcessing(true);
+        setProcessInfo(err.response.data?.data || { running: true });
+        setProcessNotice({
+          type: 'info',
+          text: 'A labeling job is already running. Waiting for it to finish…',
+        });
+        await fetchStatus();
+        return;
+      }
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        err.message ||
+        'Failed to sync collar data';
+      setError(errorMsg);
+      setProcessing(false);
+      setSyncingCollar(false);
+    }
+  }, [fetchStatus]);
+
   useEffect(() => {
     fetchStatus();
     // Prefer cached/last results; only full-screen wait when nothing is stored yet
@@ -438,10 +489,17 @@ const LabelingDataDashboard = () => {
         wasProcessingRef.current = false;
         const proc = next?.process;
         if (proc?.last_error) {
+          const jobLabel =
+            proc?.job === 'promote-forwards'
+              ? 'Promote'
+              : proc?.job === 'sync-collar'
+                ? 'Collar sync'
+                : 'Process';
           setProcessNotice({
             type: 'error',
-            text: `${proc?.job === 'promote-forwards' ? 'Promote' : 'Process'} failed: ${proc.last_error}`,
+            text: `${jobLabel} failed: ${proc.last_error}`,
           });
+          setSyncingCollar(false);
         } else if (proc?.job === 'promote-forwards') {
           setProcessNotice({
             type: 'success',
@@ -450,6 +508,13 @@ const LabelingDataDashboard = () => {
               'Forwards promoted into staging. Click Process staging to include them in charts.',
           });
           setPromoting(false);
+        } else if (proc?.job === 'sync-collar') {
+          setProcessNotice({
+            type: 'success',
+            text: proc?.message || 'Collar sync finished. Refreshing coverage…',
+          });
+          setSyncingCollar(false);
+          await fetchSummary({ refresh: true });
         } else {
           setProcessNotice({
             type: 'success',
@@ -589,6 +654,22 @@ const LabelingDataDashboard = () => {
   const userChartHeight = Math.max(220, userContributionData.length * 48 + 48);
   const gpsUserChartHeight = Math.max(180, gpsUserContributionData.length * 48 + 48);
   const hasGps = (gpsTotals.files || 0) > 0 || gpsChartData.length > 0;
+  const collarCoverage = data?.collar_coverage || null;
+  const collarTotals = collarCoverage?.totals || {};
+  const azureConfigured = Boolean(status?.collar_sync?.azure_configured);
+  const collarUserChart = useMemo(
+    () =>
+      (collarCoverage?.by_user || []).map((u) => ({
+        email: u.email,
+        label: shortLabeler(u.email),
+        matched: Number(u.matched_seconds) || 0,
+        missing: Number(u.missing_seconds) || 0,
+        matchedSessions: u.matched_sessions || 0,
+        missingSessions: u.missing_sessions || 0,
+      })),
+    [collarCoverage]
+  );
+  const collarUserChartHeight = Math.max(180, collarUserChart.length * 48 + 48);
 
   if (loading && !data) {
     return (
@@ -646,12 +727,30 @@ const LabelingDataDashboard = () => {
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50"
             title="Starts a background job: staging → extracted-txt/<email>/<collar-sn>/"
           >
-            {processing ? (
+            {processing && !syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
             ) : (
               <Play className="h-4 w-4" />
             )}
-            {processing ? 'Processing…' : 'Process staging'}
+            {processing && !syncingCollar ? 'Processing…' : 'Process staging'}
+          </button>
+          <button
+            type="button"
+            onClick={syncCollar}
+            disabled={processing || !azureConfigured}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-sky-700 text-white rounded-lg text-sm hover:bg-sky-800 disabled:opacity-50"
+            title={
+              azureConfigured
+                ? 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars'
+                : 'Set LABELING_AZURE_SAS_URL (or BLOB_URL + SAS_TOKEN) on the server'
+            }
+          >
+            {syncingCollar ? (
+              <RefreshCw className="h-4 w-4 animate-spin" />
+            ) : (
+              <CloudDownload className="h-4 w-4" />
+            )}
+            {syncingCollar ? 'Syncing…' : 'Sync collar data'}
           </button>
           <button
             type="button"
@@ -741,6 +840,17 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
+      {!azureConfigured ? (
+        <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800">
+          Collar dump sync is off until the server has{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_SAS_URL</span> (or{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_BLOB_URL</span> +{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_SAS_TOKEN</span>) in{' '}
+          <span className="font-mono text-xs">.env</span>. Coverage below still reflects whatever
+          is already in <span className="font-mono text-xs">collar-raw/</span>.
+        </div>
+      ) : null}
+
       {processing ? (
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900 flex items-start gap-3">
           <RefreshCw className="h-5 w-5 animate-spin flex-shrink-0 mt-0.5" />
@@ -748,13 +858,17 @@ const LabelingDataDashboard = () => {
             <div className="font-medium">
               {promoting || processInfo?.job === 'promote-forwards'
                 ? 'Promoting forwards'
-                : 'Processing in progress'}
+                : syncingCollar || processInfo?.job === 'sync-collar'
+                  ? 'Syncing collar dumps'
+                  : 'Processing in progress'}
             </div>
             <div className="mt-0.5">
               {processInfo?.message ||
                 (promoting
                   ? 'Copying quarantine batches into staging/<labeler>/…'
-                  : 'Copying staging files into extracted-txt by collar SN…')}
+                  : syncingCollar
+                    ? 'Copying Azure <sn>/ai/* into collar-raw/…'
+                    : 'Copying staging files into extracted-txt by collar SN…')}
             </div>
             <div className="mt-1 text-xs text-blue-800">
               Safe to close or leave this tab. Started{' '}
@@ -785,8 +899,9 @@ const LabelingDataDashboard = () => {
             <div>{processNotice.text}</div>
             {processReport && processNotice.type === 'success' ? (
               <div className="mt-1 text-xs opacity-80">
-                Copied {processReport.copied} files · {processReport.sessions} sessions ·{' '}
-                {(processReport.errors || []).length} errors
+                {processReport.collar_prefix
+                  ? `Copied ${processReport.copied || 0} files · listed ${processReport.listed || 0} · ${(processReport.errors || []).length} errors`
+                  : `Copied ${processReport.copied} files · ${processReport.sessions} sessions · ${(processReport.errors || []).length} errors`}
               </div>
             ) : null}
           </div>
@@ -799,6 +914,132 @@ const LabelingDataDashboard = () => {
           </button>
         </div>
       ) : null}
+
+      <div className="mb-2">
+        <h2 className="text-xl font-semibold text-gray-900">Collar dumps</h2>
+        <p className="text-sm text-gray-500">
+          Binary <span className="font-mono text-xs">&lt;sn&gt;/ai/*.log</span> from Azure, joined
+          to labeled sessions by collar SN + timestamp
+          {status?.collar_sync?.last_index_at
+            ? ` · last sync ${formatUpdatedAt(status.collar_sync.last_index_at)}`
+            : ''}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <SummaryCard
+          icon={CheckCircle2}
+          label="Sessions with collar data"
+          value={collarTotals.matched ?? 0}
+          hint={
+            collarTotals.sessions
+              ? `${collarTotals.sessions} labeled sessions`
+              : 'Run Sync collar data'
+          }
+        />
+        <SummaryCard
+          icon={AlertCircle}
+          label="Missing dumps"
+          value={collarTotals.missing ?? 0}
+          hint={
+            collarTotals.unknown_sn
+              ? `${collarTotals.unknown_sn} with no SN`
+              : null
+          }
+        />
+        <SummaryCard
+          icon={FolderOpen}
+          label="AI files in S3"
+          value={collarTotals.ai_files ?? 0}
+          hint={collarTotals.sns ? `${collarTotals.sns} collars` : null}
+        />
+        <SummaryCard
+          icon={Clock}
+          label="Matched duration"
+          value={formatSecondsShort(collarTotals.matched_seconds)}
+          hint={
+            collarTotals.missing_seconds
+              ? `${formatSecondsShort(collarTotals.missing_seconds)} unmatched`
+              : null
+          }
+        />
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">
+          Coverage by labeler
+        </h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Labeled duration with a matching Azure <span className="font-mono text-xs">ai/</span>{' '}
+          dump (green) vs still missing (red)
+        </p>
+        {collarUserChart.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            No labeled sessions to join yet. Process staging, then Sync collar data.
+          </p>
+        ) : (
+          <>
+            <div style={{ height: collarUserChartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={collarUserChart}
+                  layout="vertical"
+                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(v) => formatSecondsShort(v)}
+                  />
+                  <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(value, name, props) => [
+                      `${formatSecondsShort(value)} · ${
+                        name === 'matched'
+                          ? props.payload.matchedSessions
+                          : props.payload.missingSessions
+                      } sessions`,
+                      name === 'matched' ? 'Matched' : 'Missing',
+                    ]}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="matched" name="matched" stackId="cov" fill="#34A853" />
+                  <Bar dataKey="missing" name="missing" stackId="cov" fill="#EA4335" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <CollapsibleTable label="Show unmatched session samples">
+              {(collarCoverage?.unmatched_samples || []).length === 0 ? (
+                <p className="text-sm text-gray-500">All labeled sessions have a matching dump.</p>
+              ) : (
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="py-2 pr-4 font-medium">Labeler</th>
+                      <th className="py-2 pr-4 font-medium">Family</th>
+                      <th className="py-2 pr-4 font-medium">Session</th>
+                      <th className="py-2 pr-4 font-medium">Collar SN</th>
+                      <th className="py-2 font-medium">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(collarCoverage?.unmatched_samples || []).map((row, i) => (
+                      <tr key={`${row.email}-${row.timestamp}-${i}`} className="border-b border-gray-100">
+                        <td className="py-2 pr-4 text-gray-900">{row.email}</td>
+                        <td className="py-2 pr-4 text-gray-700">{row.family}</td>
+                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.timestamp}</td>
+                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.collar_sn}</td>
+                        <td className="py-2 text-gray-500">{row.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CollapsibleTable>
+          </>
+        )}
+      </div>
 
       <div className="mb-2">
         <h2 className="text-xl font-semibold text-gray-900">Posture</h2>

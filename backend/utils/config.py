@@ -189,6 +189,13 @@ class Config:
     )
     LABELING_S3_PREFIX: str = os.getenv('LABELING_S3_PREFIX', 'extracted-txt/')
     LABELING_S3_STAGING_PREFIX: str = os.getenv('LABELING_S3_STAGING_PREFIX', 'staging/')
+    # Azure collar dumps (binary ai/*.log) mirrored beside app labels.
+    # Prefer LABELING_AZURE_SAS_URL (container URL + SAS). URL+TOKEN split also works.
+    LABELING_AZURE_SAS_URL: Optional[str] = os.getenv('LABELING_AZURE_SAS_URL')
+    LABELING_AZURE_BLOB_URL: Optional[str] = os.getenv('LABELING_AZURE_BLOB_URL')
+    LABELING_AZURE_SAS_TOKEN: Optional[str] = os.getenv('LABELING_AZURE_SAS_TOKEN')
+    LABELING_COLLAR_S3_PREFIX: str = os.getenv('LABELING_COLLAR_S3_PREFIX', 'collar-raw/')
+    LABELING_COLLAR_MATCH_PAD_SEC: int = int(os.getenv('LABELING_COLLAR_MATCH_PAD_SEC', '300'))
     
     # Azure Storage Configuration
     AZURE_CONNECTION_STRING: Optional[str] = os.getenv('AZURE_CONNECTION_STRING')
