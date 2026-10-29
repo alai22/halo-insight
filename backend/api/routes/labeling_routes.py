@@ -369,8 +369,6 @@ def _is_process_busy() -> bool:
     return bool(state.get("running"))
 
 
-@labeling_bp.route("/status", methods=["GET"])
-@require_admin_auth
 def _staging_inventory() -> Dict[str, Any]:
     now = time.time()
     with _INVENTORY_LOCK:
@@ -384,6 +382,8 @@ def _staging_inventory() -> Dict[str, Any]:
     return dict(fresh)
 
 
+@labeling_bp.route("/status", methods=["GET"])
+@require_admin_auth
 def labeling_status():
     """Staging vs processed output inventory + process job state."""
     try:

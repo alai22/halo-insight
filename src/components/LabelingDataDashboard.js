@@ -1097,7 +1097,7 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      {!azureConfigured ? (
+      {status?.collar_sync && !azureConfigured ? (
         <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800">
           Collar dump sync is off until the server has{' '}
           <span className="font-mono text-xs">LABELING_AZURE_SAS_URL</span> (or{' '}

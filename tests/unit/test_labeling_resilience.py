@@ -103,6 +103,30 @@ def test_summary_waits_while_a_job_is_running(monkeypatch):
     assert "waits" in body["message"]
 
 
+def test_status_route_returns_azure_configured_flag(monkeypatch):
+    """The page hides collar sync when this flag is missing from the response."""
+    monkeypatch.setattr(
+        routes,
+        "_staging_inventory",
+        lambda: {"staging_extracted_files": 4, "output_files": 9},
+    )
+    monkeypatch.setattr(routes, "_merge_process_state", lambda: {"running": False, "job": None})
+    monkeypatch.setattr(routes, "azure_configured", lambda: True)
+
+    class _Index:
+        def load_index(self):
+            return None
+
+    monkeypatch.setattr(routes, "LabelingCollarSyncService", _Index)
+
+    response = _client().get("/api/labeling/status", headers={"X-Admin-Token": "t"})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["data"]["staging_extracted_files"] == 4
+    assert body["data"]["collar_sync"]["azure_configured"] is True
+
+
 def test_root_health_returns_rss_without_service_container():
     import serve
 
