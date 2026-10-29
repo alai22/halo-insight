@@ -4,7 +4,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,7 +16,8 @@ import { AlertCircle, CheckCircle2, Clock, CloudDownload, Dog, FolderOpen, Play,
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
-const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v4';
+const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v5';
+const DOG_CHART_LIMIT = 15;
 
 const COLORS = [
   '#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#9334E6',
@@ -42,6 +45,8 @@ function buildDateLabelerStack(byDate, labelerKeys) {
       date: d.date,
       label: (d.date || '').length >= 10 ? d.date.slice(5) : d.date,
       total: Number(d.duration_seconds) || 0,
+      dogs: Number(d.dogs) || 0,
+      owners: Number(d.users) || 0,
     };
     const byUser = {};
     (d.by_user || []).forEach((u) => {
@@ -61,6 +66,8 @@ function buildActivityLabelerStack(activities, users, labelerKeys) {
       label: a.label,
       name: displayLabel(a.label),
       total: Number(a.seconds) || 0,
+      dogs: Number(a.dogs) || 0,
+      owners: Number(a.owners) || 0,
     };
     (labelerKeys || []).forEach((email) => {
       const user = (users || []).find((u) => u.email === email);
@@ -69,6 +76,25 @@ function buildActivityLabelerStack(activities, users, labelerKeys) {
     });
     return row;
   });
+}
+
+function VarietyTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload || {};
+  const durations = payload.filter((item) => item.dataKey !== 'dogs' && Number(item.value));
+  return (
+    <div className="bg-white border border-gray-200 rounded-md px-3 py-2 text-xs shadow-sm">
+      <div className="font-medium text-gray-900 mb-1">{label}</div>
+      {durations.map((item) => (
+        <div key={String(item.dataKey)} className="text-gray-700">
+          {shortLabeler(item.name || item.dataKey)} {formatSecondsShort(item.value)}
+        </div>
+      ))}
+      <div className="text-gray-500 mt-1">
+        {Number(row.dogs) || 0} dogs · {Number(row.owners) || 0} owners
+      </div>
+    </div>
+  );
 }
 
 function StackedDurationChart({
@@ -85,34 +111,117 @@ function StackedDurationChart({
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis dataKey={xKey} tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
-          <Tooltip
-            formatter={(value, name) => [
-              formatSecondsShort(value),
-              shortLabeler(name),
-            ]}
-            labelFormatter={(label) => String(label)}
+          <YAxis
+            yAxisId="duration"
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v) => formatSecondsShort(v)}
           />
+          <YAxis
+            yAxisId="dogs"
+            orientation="right"
+            tick={{ fontSize: 12 }}
+            allowDecimals={false}
+            width={36}
+          />
+          <Tooltip content={<VarietyTooltip />} />
           <Legend
-            formatter={(value) => shortLabeler(value)}
+            formatter={(value) => (value === 'Dogs' ? 'Dogs' : shortLabeler(value))}
             wrapperStyle={{ fontSize: 12 }}
           />
           {seriesKeys.map((key, index) => (
             <Bar
               key={key}
+              yAxisId="duration"
               dataKey={key}
+              name={key}
               stackId="stack"
               fill={colorMap[key] || COLORS[index % COLORS.length]}
               radius={index === seriesKeys.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
             />
           ))}
+          <Line
+            yAxisId="dogs"
+            type="monotone"
+            dataKey="dogs"
+            name="Dogs"
+            stroke="#111827"
+            strokeWidth={2}
+            dot={{ r: 3, fill: '#111827' }}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function LabelerVarietyChart({ data, height }) {
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ top: 20, right: 24, left: 8, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis
+            xAxisId="duration"
+            type="number"
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v) => formatSecondsShort(v)}
+          />
+          <XAxis
+            xAxisId="dogs"
+            type="number"
+            orientation="top"
+            allowDecimals={false}
+            tick={{ fontSize: 12 }}
+          />
+          <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+          <Tooltip
+            formatter={(value, name, props) => {
+              if (name === 'Dogs') return [value, 'Dogs'];
+              return [
+                `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.sessions} sessions`,
+                props.payload.email,
+              ];
+            }}
+          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar
+            xAxisId="duration"
+            dataKey="seconds"
+            name="Duration"
+            barSize={10}
+            radius={[0, 4, 4, 0]}
+          >
+            {data.map((entry, index) => (
+              <Cell key={entry.email} fill={COLORS[index % COLORS.length]} />
+            ))}
+          </Bar>
+          <Bar
+            xAxisId="dogs"
+            dataKey="dogs"
+            name="Dogs"
+            fill="#111827"
+            barSize={8}
+            radius={[0, 4, 4, 0]}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>
   );
+}
+
+function dogAxisLabel(dog) {
+  const name = (dog?.name || '').trim() || 'Unnamed';
+  const sn = dog?.collar_sn;
+  if (!sn || sn === '_unknown') return `${name} · unknown`;
+  const short = sn.length > 8 ? sn.slice(-6) : sn;
+  return `${name} · ${short}`;
 }
 
 const GPS_LABEL_DISPLAY = {
@@ -548,6 +657,8 @@ const LabelingDataDashboard = () => {
         name: a.name,
         label: a.label,
         seconds: a.seconds,
+        dogs: a.dogs || 0,
+        owners: a.owners || 0,
       })),
     [activities]
   );
@@ -560,6 +671,7 @@ const LabelingDataDashboard = () => {
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
+        dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
     [users]
@@ -575,6 +687,7 @@ const LabelingDataDashboard = () => {
         sessions: d.sessions || 0,
         files: d.files || 0,
         users: d.users || 0,
+        dogs: d.dogs || 0,
         human: d.duration_human || formatSecondsShort(d.duration_seconds),
       })),
     [byDate]
@@ -611,6 +724,8 @@ const LabelingDataDashboard = () => {
         name: displayLabel(a.name),
         label: displayLabel(a.label),
         seconds: a.seconds,
+        dogs: a.dogs || 0,
+        owners: a.owners || 0,
       })),
     [gpsActivities]
   );
@@ -622,6 +737,7 @@ const LabelingDataDashboard = () => {
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
+        dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
     [gpsUsers]
@@ -635,6 +751,7 @@ const LabelingDataDashboard = () => {
         sessions: d.sessions || 0,
         files: d.files || 0,
         users: d.users || 0,
+        dogs: d.dogs || 0,
         human: d.duration_human || formatSecondsShort(d.duration_seconds),
       })),
     [gps?.by_date]
@@ -651,8 +768,29 @@ const LabelingDataDashboard = () => {
   const stagingEmails = Object.keys(status?.staging_by_email || {});
   const outputEmails = status?.output_emails || [];
   const unprocessedEmails = stagingEmails.filter((e) => !outputEmails.includes(e));
-  const userChartHeight = Math.max(220, userContributionData.length * 48 + 48);
-  const gpsUserChartHeight = Math.max(180, gpsUserContributionData.length * 48 + 48);
+  const userChartHeight = Math.max(240, userContributionData.length * 56 + 64);
+  const gpsUserChartHeight = Math.max(200, gpsUserContributionData.length * 56 + 64);
+  const dogRows = useMemo(() => {
+    const list = data?.dogs || [];
+    return [...list].sort(
+      (a, b) => (b.total_duration_seconds || 0) - (a.total_duration_seconds || 0)
+    );
+  }, [data?.dogs]);
+  const dogChartData = useMemo(
+    () =>
+      dogRows.slice(0, DOG_CHART_LIMIT).map((dog) => ({
+        label: dogAxisLabel(dog),
+        name: (dog.name || '').trim() || 'Unnamed',
+        breed: dog.breed || '',
+        collar_sn: dog.collar_sn,
+        seconds: dog.total_duration_seconds || 0,
+        sessions: dog.sessions || 0,
+        owners: (dog.owners || dog.users || []).join(', '),
+        human: dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds),
+      })),
+    [dogRows]
+  );
+  const dogChartHeight = Math.max(220, dogChartData.length * 36 + 48);
   const hasGps = (gpsTotals.files || 0) > 0 || gpsChartData.length > 0;
   const collarCoverage = data?.collar_coverage || null;
   const collarTotals = collarCoverage?.totals || {};
@@ -1048,7 +1186,7 @@ const LabelingDataDashboard = () => {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <SummaryCard
           icon={Users}
           label="Processed users"
@@ -1059,8 +1197,9 @@ const LabelingDataDashboard = () => {
               : null
           }
         />
+        <SummaryCard icon={Dog} label="Unique dogs" value={totals.dogs ?? 0} />
         <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
-        <SummaryCard icon={Dog} label="Files" value={totals.files ?? 0} />
+        <SummaryCard icon={FolderOpen} label="Files" value={totals.files ?? 0} />
         <SummaryCard
           icon={Clock}
           label="Total labeled duration"
@@ -1073,7 +1212,8 @@ const LabelingDataDashboard = () => {
           Duration by date · stacked by labeler
         </h3>
         <p className="text-sm text-gray-500 mb-4">
-          Session-day volume with each labeler as a stack segment
+          Session-day volume with each labeler as a stack segment. The line is distinct dogs
+          that day (right axis).
         </p>
         <StackedDurationChart
           data={dateLabelerStack}
@@ -1089,7 +1229,8 @@ const LabelingDataDashboard = () => {
           Duration by posture · stacked by labeler
         </h3>
         <p className="text-sm text-gray-500 mb-4">
-          Each posture bar broken down by who labeled it
+          Each posture bar broken down by who labeled it. The line is distinct dogs that
+          contributed (right axis).
         </p>
         <StackedDurationChart
           data={activityLabelerStack}
@@ -1120,7 +1261,7 @@ const LabelingDataDashboard = () => {
                 />
                 <Tooltip
                   formatter={(value, _name, props) => [
-                    `${formatSecondsShort(value)} (${Number(value).toFixed(1)}s)`,
+                    `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.owners} owners`,
                     props.payload.label,
                   ]}
                 />
@@ -1141,7 +1282,9 @@ const LabelingDataDashboard = () => {
                 <tr className="text-left text-gray-500 border-b">
                   <th className="py-2 pr-4 font-medium">Posture</th>
                   <th className="py-2 pr-4 font-medium">Duration</th>
-                  <th className="py-2 font-medium">Seconds</th>
+                  <th className="py-2 pr-4 font-medium">Seconds</th>
+                  <th className="py-2 pr-4 font-medium">Dogs</th>
+                  <th className="py-2 font-medium">Owners</th>
                 </tr>
               </thead>
               <tbody>
@@ -1149,7 +1292,9 @@ const LabelingDataDashboard = () => {
                   <tr key={a.label} className="border-b border-gray-100">
                     <td className="py-2 pr-4 text-gray-900">{a.label}</td>
                     <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                    <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
+                    <td className="py-2 pr-4 text-gray-500">{a.seconds.toFixed(1)}</td>
+                    <td className="py-2 pr-4 text-gray-500">{a.dogs ?? 0}</td>
+                    <td className="py-2 text-gray-500">{a.owners ?? 0}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1161,8 +1306,8 @@ const LabelingDataDashboard = () => {
       <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-1">Contribution by labeler</h3>
         <p className="text-sm text-gray-500 mb-4">
-          Ranked by total labeled duration from processed{' '}
-          <span className="font-mono text-xs">activity_session_*_durations.txt</span>
+          Ranked by total labeled duration. Duration uses the bottom axis; distinct dogs use
+          the top axis.
         </p>
         {userContributionData.length === 0 ? (
           <p className="text-sm text-gray-500">
@@ -1170,39 +1315,7 @@ const LabelingDataDashboard = () => {
           </p>
         ) : (
           <>
-            <div style={{ height: userChartHeight }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={userContributionData}
-                  layout="vertical"
-                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 12 }}
-                    tickFormatter={(v) => formatSecondsShort(v)}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="label"
-                    width={120}
-                    tick={{ fontSize: 12 }}
-                  />
-                  <Tooltip
-                    formatter={(value, _name, props) => [
-                      `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.files} files`,
-                      props.payload.email,
-                    ]}
-                  />
-                  <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
-                    {userContributionData.map((entry, index) => (
-                      <Cell key={entry.email} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <LabelerVarietyChart data={userContributionData} height={userChartHeight} />
             <CollapsibleTable label="Show labeler table">
               <table className="min-w-full text-sm">
                 <thead>
@@ -1210,6 +1323,7 @@ const LabelingDataDashboard = () => {
                     <th className="py-2 pr-4 font-medium">Rank</th>
                     <th className="py-2 pr-4 font-medium">Labeler</th>
                     <th className="py-2 pr-4 font-medium">Duration</th>
+                    <th className="py-2 pr-4 font-medium">Dogs</th>
                     <th className="py-2 pr-4 font-medium">Sessions</th>
                     <th className="py-2 font-medium">Files</th>
                   </tr>
@@ -1220,8 +1334,82 @@ const LabelingDataDashboard = () => {
                       <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
                       <td className="py-2 pr-4 text-gray-900">{u.email}</td>
                       <td className="py-2 pr-4 text-gray-700">{u.human}</td>
+                      <td className="py-2 pr-4 text-gray-500">{u.dogs}</td>
                       <td className="py-2 pr-4 text-gray-500">{u.sessions}</td>
                       <td className="py-2 text-gray-500">{u.files}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CollapsibleTable>
+          </>
+        )}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">Minutes by dog</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Labeled duration per collar. A few long bars mean minutes are concentrated on those
+          dogs.
+          {dogRows.length > DOG_CHART_LIMIT
+            ? ` Chart shows the top ${DOG_CHART_LIMIT} of ${dogRows.length}.`
+            : ''}
+        </p>
+        {dogChartData.length === 0 ? (
+          <p className="text-sm text-gray-500">No dogs found in processed sessions.</p>
+        ) : (
+          <>
+            <div style={{ height: dogChartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={dogChartData}
+                  layout="vertical"
+                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(v) => formatSecondsShort(v)}
+                  />
+                  <YAxis type="category" dataKey="label" width={140} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(value, _name, props) => [
+                      `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.owners || 'no owner'}`,
+                      props.payload.breed
+                        ? `${props.payload.name} · ${props.payload.breed}`
+                        : props.payload.name,
+                    ]}
+                  />
+                  <Bar dataKey="seconds" fill="#4285F4" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <CollapsibleTable label="Show dog table">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-2 pr-4 font-medium">Dog</th>
+                    <th className="py-2 pr-4 font-medium">Collar SN</th>
+                    <th className="py-2 pr-4 font-medium">Breed</th>
+                    <th className="py-2 pr-4 font-medium">Owners</th>
+                    <th className="py-2 pr-4 font-medium">Sessions</th>
+                    <th className="py-2 font-medium">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dogRows.map((dog) => (
+                    <tr key={dog.collar_sn || dog.name} className="border-b border-gray-100">
+                      <td className="py-2 pr-4 text-gray-900">{(dog.name || '').trim() || 'Unnamed'}</td>
+                      <td className="py-2 pr-4 font-mono text-xs text-gray-700">{dog.collar_sn}</td>
+                      <td className="py-2 pr-4 text-gray-500">{dog.breed || '—'}</td>
+                      <td className="py-2 pr-4 text-gray-500">
+                        {(dog.owners || dog.users || []).join(', ') || '—'}
+                      </td>
+                      <td className="py-2 pr-4 text-gray-500">{dog.sessions ?? 0}</td>
+                      <td className="py-2 text-gray-700">
+                        {dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1254,7 +1442,7 @@ const LabelingDataDashboard = () => {
                   />
                   <Tooltip
                     formatter={(value, _name, props) => [
-                      `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.users} users`,
+                      `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.users} owners · ${props.payload.sessions} sessions`,
                       props.payload.date,
                     ]}
                   />
@@ -1268,8 +1456,9 @@ const LabelingDataDashboard = () => {
                   <tr className="text-left text-gray-500 border-b">
                     <th className="py-2 pr-4 font-medium">Date</th>
                     <th className="py-2 pr-4 font-medium">Duration</th>
+                    <th className="py-2 pr-4 font-medium">Dogs</th>
                     <th className="py-2 pr-4 font-medium">Sessions</th>
-                    <th className="py-2 pr-4 font-medium">Users</th>
+                    <th className="py-2 pr-4 font-medium">Owners</th>
                     <th className="py-2 font-medium">Files</th>
                   </tr>
                 </thead>
@@ -1278,6 +1467,7 @@ const LabelingDataDashboard = () => {
                     <tr key={d.date} className="border-b border-gray-100">
                       <td className="py-2 pr-4 text-gray-900 font-mono text-xs">{d.date}</td>
                       <td className="py-2 pr-4 text-gray-700">{d.human}</td>
+                      <td className="py-2 pr-4 text-gray-500">{d.dogs}</td>
                       <td className="py-2 pr-4 text-gray-500">{d.sessions}</td>
                       <td className="py-2 pr-4 text-gray-500">{d.users}</td>
                       <td className="py-2 text-gray-500">{d.files}</td>
@@ -1301,10 +1491,11 @@ const LabelingDataDashboard = () => {
 
       {hasGps ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
+            <SummaryCard icon={Dog} label="GPS dogs" value={gpsTotals.dogs ?? 0} />
             <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
-            <SummaryCard icon={Dog} label="GPS files" value={gpsTotals.files ?? 0} />
+            <SummaryCard icon={FolderOpen} label="GPS files" value={gpsTotals.files ?? 0} />
             <SummaryCard
               icon={Clock}
               label="GPS labeled duration"
@@ -1317,7 +1508,8 @@ const LabelingDataDashboard = () => {
               GPS by date · stacked by labeler
             </h3>
             <p className="text-sm text-gray-500 mb-4">
-              Session-day GPS volume with each labeler as a stack segment
+              Session-day GPS volume with each labeler as a stack segment. The line is distinct
+              dogs that day (right axis).
             </p>
             <StackedDurationChart
               data={gpsDateLabelerStack}
@@ -1333,7 +1525,8 @@ const LabelingDataDashboard = () => {
               GPS by environment · stacked by labeler
             </h3>
             <p className="text-sm text-gray-500 mb-4">
-              Each environment bar broken down by who labeled it
+              Each environment bar broken down by who labeled it. The line is distinct dogs that
+              contributed (right axis).
             </p>
             <StackedDurationChart
               data={gpsActivityLabelerStack}
@@ -1361,7 +1554,7 @@ const LabelingDataDashboard = () => {
                     <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
                     <Tooltip
                       formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} (${Number(value).toFixed(1)}s)`,
+                        `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.owners} owners`,
                         props.payload.label,
                       ]}
                     />
@@ -1381,7 +1574,9 @@ const LabelingDataDashboard = () => {
                     <tr className="text-left text-gray-500 border-b">
                       <th className="py-2 pr-4 font-medium">Environment</th>
                       <th className="py-2 pr-4 font-medium">Duration</th>
-                      <th className="py-2 font-medium">Seconds</th>
+                      <th className="py-2 pr-4 font-medium">Seconds</th>
+                      <th className="py-2 pr-4 font-medium">Dogs</th>
+                      <th className="py-2 font-medium">Owners</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1389,7 +1584,9 @@ const LabelingDataDashboard = () => {
                       <tr key={a.label} className="border-b border-gray-100">
                         <td className="py-2 pr-4 text-gray-900">{displayLabel(a.label)}</td>
                         <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                        <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
+                        <td className="py-2 pr-4 text-gray-500">{a.seconds.toFixed(1)}</td>
+                        <td className="py-2 pr-4 text-gray-500">{a.dogs ?? 0}</td>
+                        <td className="py-2 text-gray-500">{a.owners ?? 0}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1402,37 +1599,13 @@ const LabelingDataDashboard = () => {
             <h3 className="text-lg font-semibold text-gray-900 mb-1">
               GPS contribution by labeler
             </h3>
+            <p className="text-sm text-gray-500 mb-4">
+              Duration uses the bottom axis; distinct dogs use the top axis.
+            </p>
             {gpsUserContributionData.length === 0 ? (
               <p className="text-sm text-gray-500">No GPS labelers yet.</p>
             ) : (
-              <div style={{ height: gpsUserChartHeight }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={gpsUserContributionData}
-                    layout="vertical"
-                    margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis
-                      type="number"
-                      tick={{ fontSize: 12 }}
-                      tickFormatter={(v) => formatSecondsShort(v)}
-                    />
-                    <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} · ${props.payload.sessions} sessions`,
-                        props.payload.email,
-                      ]}
-                    />
-                    <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
-                      {gpsUserContributionData.map((entry, index) => (
-                        <Cell key={entry.email} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <LabelerVarietyChart data={gpsUserContributionData} height={gpsUserChartHeight} />
             )}
           </div>
 
@@ -1452,7 +1625,7 @@ const LabelingDataDashboard = () => {
                     <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
                     <Tooltip
                       formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} · ${props.payload.sessions} sessions`,
+                        `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.users} owners · ${props.payload.sessions} sessions`,
                         props.payload.date,
                       ]}
                     />
