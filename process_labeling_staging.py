@@ -7,6 +7,8 @@ Usage:
   python process_labeling_staging.py
   python process_labeling_staging.py --clear-output
   python process_labeling_staging.py --status
+  python process_labeling_staging.py --compact --dry-run
+  python process_labeling_staging.py --compact
 """
 
 from __future__ import annotations
@@ -39,6 +41,14 @@ def main(argv=None) -> int:
         "--status",
         action="store_true",
         help="Print staging vs output inventory and exit",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help=(
+            "Delete duplicate extracted copies in staging (same filename, same size). "
+            "Keeps the latest message. Does not change extracted-txt charts."
+        ),
     )
     parser.add_argument("--json", action="store_true", help="Print JSON report")
     parser.add_argument(
@@ -88,6 +98,31 @@ def main(argv=None) -> int:
                 f"({', '.join(status['output_emails']) or 'none'})"
             )
         return 0
+
+    if args.compact:
+        report = svc.compact_staging(dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"Bucket: s3://{report['bucket']}")
+            print(f"dry_run={report['dry_run']}")
+            print(
+                f"Extracted files={report['raw_extracted_files']} "
+                f"unique_filenames={report['unique_filenames']} "
+                f"dupes_planned={report['extracted_duplicates_planned']} "
+                f"dupes_removed={report['extracted_duplicates_removed']} "
+                f"raw_planned={report['raw_objects_planned']} "
+                f"raw_removed={report['raw_objects_removed']} "
+                f"empty_batches={report['empty_batches']} "
+                f"size_mismatches_kept={report['size_mismatch_copies_kept']}"
+            )
+            if report.get("dry_run"):
+                print("No objects deleted (dry run).")
+            else:
+                print(
+                    "Charts are unchanged. Run without --compact to refresh extracted-txt."
+                )
+        return 1 if report.get("errors") else 0
 
     report = svc.process_staging(
         dry_run=args.dry_run,

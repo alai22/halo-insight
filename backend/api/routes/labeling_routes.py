@@ -46,12 +46,13 @@ _BG_REFRESH_RUNNING = False
 _PROCESS_LOCK = threading.Lock()
 _PROCESS_STATE: Dict[str, Any] = {
     "running": False,
-    "job": None,  # "process" | "promote-forwards" | "sync-collar"
+    "job": None,  # "process" | "promote-forwards" | "compact-staging" | "sync-collar"
     "started_at": None,
     "finished_at": None,
     "last_report": None,
     "last_error": None,
     "message": None,
+    "progress": None,
 }
 _STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
@@ -253,6 +254,10 @@ def _annotate_runtime(snap: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _progress_value(value: Any) -> Optional[Dict[str, Any]]:
+    return value if isinstance(value, dict) else None
+
+
 def _process_fields() -> Dict[str, Any]:
     return {
         "running": bool(_PROCESS_STATE["running"]),
@@ -262,6 +267,7 @@ def _process_fields() -> Dict[str, Any]:
         "last_error": _PROCESS_STATE["last_error"],
         "last_report": _PROCESS_STATE["last_report"],
         "message": _PROCESS_STATE["message"],
+        "progress": _progress_value(_PROCESS_STATE.get("progress")),
     }
 
 
@@ -352,6 +358,7 @@ def _merge_process_state() -> Dict[str, Any]:
             "last_error": persisted.get("last_error"),
             "last_report": persisted.get("last_report"),
             "message": persisted.get("message"),
+            "progress": _progress_value(persisted.get("progress")),
         }
     )
 
@@ -362,6 +369,64 @@ def _set_process_state(**kwargs: Any) -> Dict[str, Any]:
         snap = _process_fields()
     _persist_process_state(snap)
     return _annotate_runtime(snap)
+
+
+def _progress_callback(job: str):
+    def _on_progress(payload: Dict[str, Any]) -> None:
+        _set_process_state(
+            running=True,
+            job=job,
+            message=payload.get("message"),
+            progress={
+                "phase": payload.get("phase"),
+                "done": int(payload.get("done") or 0),
+                "total": int(payload.get("total") or 0),
+            },
+        )
+
+    return _on_progress
+
+
+def _process_done_message(report: Dict[str, Any]) -> str:
+    health = report.get("health") or {}
+    unique = health.get("unique_files_after_dedupe")
+    incomplete = int(report.get("incomplete_sessions") or 0)
+    unique_bit = (
+        f" About {unique} unique files after dedupe." if unique is not None else ""
+    )
+    incomplete_bit = (
+        f" {incomplete} incomplete sessions were kept as-is." if incomplete else ""
+    )
+    skipped = int(report.get("skipped_unchanged") or 0)
+    skipped_bit = f" Skipped {skipped} already in output." if skipped else ""
+    return (
+        f"Done — copied {report.get('copied', 0)} files across "
+        f"{report.get('sessions', 0)} sessions.{skipped_bit}{unique_bit}{incomplete_bit} "
+        "Charts match that deduped set."
+    )
+
+
+def _compact_done_message(report: Dict[str, Any]) -> str:
+    if report.get("dry_run"):
+        return (
+            f"Dry run — would remove {report.get('extracted_duplicates_planned', 0)} "
+            f"duplicate extracted files and {report.get('raw_objects_planned', 0)} raw objects."
+        )
+    extracted = int(report.get("extracted_duplicates_removed") or 0)
+    raw = int(report.get("raw_objects_removed") or 0)
+    kept = int(report.get("unique_filenames") or 0)
+    mismatch = int(report.get("size_mismatch_copies_kept") or 0)
+    raw_bit = (
+        f" and {raw} raw objects from batches that added nothing new" if raw else ""
+    )
+    mismatch_bit = (
+        f" {mismatch} size-mismatch copies were left in place." if mismatch else ""
+    )
+    return (
+        f"Removed {extracted} duplicate extracted files{raw_bit}. "
+        f"{kept} filenames kept.{mismatch_bit} "
+        "Charts stay unchanged until you Process staging."
+    )
 
 
 def _is_process_busy() -> bool:
@@ -691,6 +756,126 @@ def labeling_sync_collar():
         return jsonify({"success": False, "error": redact_secrets(str(exc))}), 500
 
 
+
+@labeling_bp.route("/compact", methods=["POST"])
+@require_admin_auth
+def labeling_compact():
+    """
+    Delete duplicate extracted copies under staging/<email>/<message-id>/.
+
+    Keeps the latest message_id when file sizes match. Leaves size mismatches.
+    Also deletes raw zips from batches that kept no extracted file.
+
+    JSON body (optional):
+      dry_run: bool (default false)
+      async: bool (default true)
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        dry_run = bool(body.get("dry_run", False))
+        run_async = bool(body.get("async", True))
+
+        if _is_process_busy():
+            state = _merge_process_state()
+            return jsonify({
+                "success": False,
+                "error": "A labeling job is already running",
+                "data": state,
+            }), 409
+
+        def _run():
+            return LabelingIngestService().compact_staging(
+                dry_run=dry_run,
+                on_progress=_progress_callback("compact-staging"),
+            )
+
+        if run_async:
+            _set_process_state(
+                running=True,
+                job="compact-staging",
+                started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                finished_at=None,
+                last_error=None,
+                last_report=None,
+                progress={"phase": "listing", "done": 0, "total": 0},
+                message="Listing staging files…",
+            )
+
+            def _worker():
+                try:
+                    report = _run()
+                    _set_process_state(
+                        running=False,
+                        job="compact-staging",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_report=report,
+                        last_error=None,
+                        progress=None,
+                        message=_compact_done_message(report),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Async labeling compact failed")
+                    _set_process_state(
+                        running=False,
+                        job="compact-staging",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_error=str(exc),
+                        progress=None,
+                        message="Removing duplicate copies failed",
+                    )
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return jsonify({
+                "success": True,
+                "async": True,
+                "message": "Removing duplicate copies in the background.",
+                "data": _merge_process_state(),
+            })
+
+        _set_process_state(
+            running=True,
+            job="compact-staging",
+            started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            finished_at=None,
+            last_error=None,
+            progress={"phase": "listing", "done": 0, "total": 0},
+            message="Listing staging files…",
+        )
+        try:
+            report = _run()
+            state = _set_process_state(
+                running=False,
+                job="compact-staging",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_report=report,
+                last_error=None,
+                progress=None,
+                message=_compact_done_message(report),
+            )
+            return jsonify({
+                "success": True,
+                "async": False,
+                "data": report,
+                "process": state,
+            })
+        except Exception as exc:  # noqa: BLE001
+            _set_process_state(
+                running=False,
+                job="compact-staging",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_error=str(exc),
+                progress=None,
+                message="Removing duplicate copies failed",
+            )
+            raise
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to compact labeling staging")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+
 @labeling_bp.route("/process", methods=["POST"])
 @require_admin_auth
 def labeling_process():
@@ -725,6 +910,7 @@ def labeling_process():
                 finished_at=None,
                 last_error=None,
                 last_report=None,
+                progress={"phase": "listing", "done": 0, "total": 0},
                 message=(
                     "Rebuilding extracted-txt from staging…"
                     if clear_output
@@ -738,6 +924,7 @@ def labeling_process():
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
                         clear_output=clear_output,
+                        on_progress=_progress_callback("process"),
                     )
                     _refresh_summary_after_process(report, clear_output, dry_run)
                     _set_process_state(
@@ -746,11 +933,8 @@ def labeling_process():
                         finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         last_report=report,
                         last_error=None,
-                        message=(
-                            f"Done — copied {report.get('copied', 0)} files, "
-                            f"skipped {report.get('skipped_unchanged', 0)} already present, "
-                            f"{report.get('sessions', 0)} sessions"
-                        ),
+                        progress=None,
+                        message=_process_done_message(report),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling process failed")
@@ -759,6 +943,7 @@ def labeling_process():
                         job="process",
                         finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         last_error=str(exc),
+                        progress=None,
                         message="Process failed",
                     )
                 finally:
@@ -778,6 +963,7 @@ def labeling_process():
             started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             finished_at=None,
             last_error=None,
+            progress={"phase": "listing", "done": 0, "total": 0},
             message=(
                 "Rebuilding extracted-txt from staging…"
                 if clear_output
@@ -788,6 +974,7 @@ def labeling_process():
             report = LabelingIngestService().process_staging(
                 dry_run=dry_run,
                 clear_output=clear_output,
+                on_progress=_progress_callback("process"),
             )
             _refresh_summary_after_process(report, clear_output, dry_run)
             state = _set_process_state(
@@ -796,10 +983,8 @@ def labeling_process():
                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 last_report=report,
                 last_error=None,
-                message=(
-                    f"Done — copied {report.get('copied', 0)} files, "
-                    f"skipped {report.get('skipped_unchanged', 0)} already present"
-                ),
+                progress=None,
+                message=_process_done_message(report),
             )
             return jsonify({"success": True, "async": False, "data": report, "process": state})
         except Exception as exc:  # noqa: BLE001
@@ -808,6 +993,7 @@ def labeling_process():
                 job="process",
                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 last_error=str(exc),
+                progress=None,
                 message="Process failed",
             )
             raise
