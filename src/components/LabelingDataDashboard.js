@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, Clock, CloudDownload, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -326,6 +326,8 @@ const LabelingDataDashboard = () => {
   const [cached, setCached] = useState(Boolean(stored?.cached));
   const [stale, setStale] = useState(Boolean(stored?.stale));
   const [generatedAt, setGeneratedAt] = useState(stored?.generatedAt || null);
+  const [summaryPending, setSummaryPending] = useState(false);
+  const [summaryMessage, setSummaryMessage] = useState(null);
   const [expandedUser, setExpandedUser] = useState(null);
   const wasProcessingRef = useRef(false);
   const autoPromoteAttemptedRef = useRef(false);
@@ -363,20 +365,25 @@ const LabelingDataDashboard = () => {
         params: refresh ? { refresh: 1 } : undefined,
       });
       if (response.data.success) {
+        const pending = Boolean(response.data.pending);
         const nextData = response.data.data;
         const nextGenerated = response.data.generated_at || null;
         const nextCached = Boolean(response.data.cached);
-        const nextStale = Boolean(response.data.stale);
-        setData(nextData);
+        const nextStale = Boolean(response.data.stale) || pending;
+        setSummaryPending(pending);
+        setSummaryMessage(response.data.message || null);
         setCached(nextCached);
         setStale(nextStale);
-        setGeneratedAt(nextGenerated);
-        writeStoredSummary({
-          data: nextData,
-          generatedAt: nextGenerated,
-          cached: nextCached,
-          stale: nextStale,
-        });
+        if (nextGenerated) setGeneratedAt(nextGenerated);
+        if (nextData) {
+          setData(nextData);
+          writeStoredSummary({
+            data: nextData,
+            generatedAt: nextGenerated,
+            cached: nextCached,
+            stale: nextStale,
+          });
+        }
       } else {
         setError(response.data.error || 'Failed to load labeling data');
       }
@@ -569,19 +576,22 @@ const LabelingDataDashboard = () => {
 
   // If server returned a stale snapshot, poll briefly so background rescan can land
   useEffect(() => {
-    if (!stale) return undefined;
+    if (!stale && !summaryPending) return undefined;
     let cancelled = false;
     let attempts = 0;
     const id = setInterval(async () => {
       attempts += 1;
-      if (cancelled || attempts > 6) {
+      // A full scan can take several minutes. Keep the last charts up meanwhile.
+      if (cancelled || attempts > 60) {
         clearInterval(id);
         return;
       }
       try {
         const response = await axios.get('/api/labeling/summary');
         if (!response.data?.success || cancelled) return;
-        if (!response.data.stale) {
+        const pending = Boolean(response.data.pending);
+        setSummaryPending(pending);
+        if (response.data.data && !pending && !response.data.stale) {
           setData(response.data.data);
           setCached(Boolean(response.data.cached));
           setStale(false);
@@ -602,7 +612,7 @@ const LabelingDataDashboard = () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [stale]);
+  }, [stale, summaryPending]);
 
   // Poll while a background process is running (also resumes after page reload)
   useEffect(() => {
@@ -895,13 +905,20 @@ const LabelingDataDashboard = () => {
   const behindChartHeight = Math.max(180, behindChartRows.length * 36 + 48);
   const missingReasons = collarCoverage?.missing_reasons || {};
 
-  if (loading && !data) {
+  if ((loading || summaryPending) && !data) {
     return (
       <div className="flex items-center justify-center h-full p-8">
         <div className="text-center">
           <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading labeling data from S3...</p>
-          <p className="text-xs text-gray-400 mt-2">Scanning extracted-txt and summing durations</p>
+          <p className="text-gray-600">
+            {summaryPending ? 'Building the summary in the background…' : 'Loading labeling data from S3...'}
+          </p>
+          <p className="text-xs text-gray-400 mt-2">
+            {summaryMessage ||
+              (summaryPending
+                ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
+                : 'Scanning extracted-txt and summing durations')}
+          </p>
         </div>
       </div>
     );
@@ -933,12 +950,25 @@ const LabelingDataDashboard = () => {
           <h2 className="text-2xl font-bold text-gray-900">Labeling Data</h2>
           <p className="text-sm text-gray-500 mt-1">
             {generatedAt ? `Updated ${formatUpdatedAt(generatedAt)}` : 'Activity labeling totals'}
+            {processInfo?.runtime?.rss_mb != null ? (
+              <span
+                className={`ml-2 text-xs ${
+                  processInfo.runtime.rss_mb >= 2200 ? 'text-amber-700 font-medium' : 'text-gray-400'
+                }`}
+                title="Resident memory of the web process. A sustained climb during a job is the usual cause of a 503."
+              >
+                Server {processInfo.runtime.rss_mb} MB
+                {processInfo.runtime.peak_rss_mb
+                  ? ` · peak ${processInfo.runtime.peak_rss_mb} MB`
+                  : ''}
+              </span>
+            ) : null}
             {loading && data ? (
               <span className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600">
                 <RefreshCw className="h-3 w-3 animate-spin" />
                 Checking…
               </span>
-            ) : stale ? (
+            ) : summaryPending || stale ? (
               <span className="ml-2 text-xs text-gray-400">Refreshing in background…</span>
             ) : null}
           </p>
@@ -972,7 +1002,7 @@ const LabelingDataDashboard = () => {
             {syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
             ) : (
-              <CloudDownload className="h-4 w-4" />
+              <DownloadCloud className="h-4 w-4" />
             )}
             {syncingCollar ? 'Syncing…' : 'Sync collar data'}
           </button>
@@ -1101,6 +1131,13 @@ const LabelingDataDashboard = () => {
             <div className="mt-1 text-xs text-blue-800">
               Safe to close or leave this tab. Started{' '}
               {processInfo?.started_at ? processInfo.started_at.replace('T', ' ').replace('Z', ' UTC') : 'just now'}.
+              {processInfo?.runtime?.rss_mb != null
+                ? ` Memory ${processInfo.runtime.rss_mb} MB${
+                    processInfo.runtime.peak_rss_mb
+                      ? ` (peak ${processInfo.runtime.peak_rss_mb} MB)`
+                      : ''
+                  }.`
+                : ''}
             </div>
           </div>
         </div>
@@ -1205,7 +1242,7 @@ const LabelingDataDashboard = () => {
               {azureCheckRunning ? (
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <CloudDownload className="h-3.5 w-3.5" />
+                <DownloadCloud className="h-3.5 w-3.5" />
               )}
               {azureCheckRunning ? 'Checking…' : 'Check Azure'}
             </button>

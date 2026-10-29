@@ -933,7 +933,7 @@ class LabelingIngestService:
         self,
         dry_run: bool = False,
         clear_output: bool = True,
-        workers: int = 16,
+        workers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process all staging extracted files into extracted-txt/<email>/<collar-sn>/.
@@ -952,6 +952,10 @@ class LabelingIngestService:
             output_prefix=self.output_prefix,
             dry_run=dry_run,
         )
+        if workers is None:
+            from ..utils.runtime_stats import env_int
+
+            workers = env_int("LABELING_PROCESS_WORKERS", 4)
         workers = max(1, int(workers or 1))
 
         if clear_output:

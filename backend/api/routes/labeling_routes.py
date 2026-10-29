@@ -23,6 +23,7 @@ from backend.services.labeling_collar_sync_service import (
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
+from backend.utils.runtime_stats import log_rss, snapshot as runtime_snapshot
 
 logger = get_logger("labeling_routes")
 
@@ -54,6 +55,11 @@ _PROCESS_STATE: Dict[str, Any] = {
 }
 _STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
+# Status polls every few seconds. Re-listing the whole staging tree that often
+# competes with the job that is copying those same objects.
+_INVENTORY_LOCK = threading.Lock()
+_INVENTORY_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+_INVENTORY_TTL_SEC = 15
 
 
 def _s3_client():
@@ -189,39 +195,66 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     return entry
 
 
-def _maybe_start_background_refresh(ttl_sec: int) -> None:
+def _maybe_start_background_refresh(ttl_sec: int) -> bool:
+    """Start one summary scan off the request thread. False when a job is busy."""
     global _BG_REFRESH_RUNNING
+    if _is_process_busy():
+        logger.info("Deferring labeling summary refresh until the current job finishes")
+        return False
     with _BG_REFRESH_LOCK:
         if _BG_REFRESH_RUNNING:
-            return
+            return True
         _BG_REFRESH_RUNNING = True
 
     def _worker():
         global _BG_REFRESH_RUNNING
         try:
-            logger.info("Background labeling summary refresh started")
+            log_rss(logger, "labeling summary refresh start")
             _compute_summary(ttl_sec)
-            logger.info("Background labeling summary refresh finished")
+            log_rss(logger, "labeling summary refresh finish")
         except Exception:  # noqa: BLE001
+            log_rss(logger, "labeling summary refresh failed")
             logger.exception("Background labeling summary refresh failed")
         finally:
             with _BG_REFRESH_LOCK:
                 _BG_REFRESH_RUNNING = False
 
     threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
-def _process_snapshot() -> Dict[str, Any]:
+def _annotate_runtime(snap: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(snap)
+    out["runtime"] = runtime_snapshot()
+    return out
+
+
+def _process_fields() -> Dict[str, Any]:
+    return {
+        "running": bool(_PROCESS_STATE["running"]),
+        "job": _PROCESS_STATE.get("job"),
+        "started_at": _PROCESS_STATE["started_at"],
+        "finished_at": _PROCESS_STATE["finished_at"],
+        "last_error": _PROCESS_STATE["last_error"],
+        "last_report": _PROCESS_STATE["last_report"],
+        "message": _PROCESS_STATE["message"],
+    }
+
+
+def process_liveness() -> Dict[str, Any]:
+    """In-memory job flag for /health. Does not read S3."""
     with _PROCESS_LOCK:
         return {
             "running": bool(_PROCESS_STATE["running"]),
             "job": _PROCESS_STATE.get("job"),
-            "started_at": _PROCESS_STATE["started_at"],
-            "finished_at": _PROCESS_STATE["finished_at"],
-            "last_error": _PROCESS_STATE["last_error"],
-            "last_report": _PROCESS_STATE["last_report"],
             "message": _PROCESS_STATE["message"],
         }
+
+
+def _process_snapshot() -> Dict[str, Any]:
+    with _PROCESS_LOCK:
+        snap = _process_fields()
+    return _annotate_runtime(snap)
 
 
 def _persist_process_state(state: Dict[str, Any]) -> None:
@@ -286,31 +319,25 @@ def _merge_process_state() -> Dict[str, Any]:
     # Keep last_report from whichever is newer
     if not persisted.get("last_report") and mem.get("last_report"):
         persisted["last_report"] = mem["last_report"]
-    return {
-        "running": bool(persisted.get("running")),
-        "job": persisted.get("job"),
-        "started_at": persisted.get("started_at"),
-        "finished_at": persisted.get("finished_at"),
-        "last_error": persisted.get("last_error"),
-        "last_report": persisted.get("last_report"),
-        "message": persisted.get("message"),
-    }
+    return _annotate_runtime(
+        {
+            "running": bool(persisted.get("running")),
+            "job": persisted.get("job"),
+            "started_at": persisted.get("started_at"),
+            "finished_at": persisted.get("finished_at"),
+            "last_error": persisted.get("last_error"),
+            "last_report": persisted.get("last_report"),
+            "message": persisted.get("message"),
+        }
+    )
 
 
 def _set_process_state(**kwargs: Any) -> Dict[str, Any]:
     with _PROCESS_LOCK:
         _PROCESS_STATE.update(kwargs)
-        snap = {
-            "running": bool(_PROCESS_STATE["running"]),
-            "job": _PROCESS_STATE.get("job"),
-            "started_at": _PROCESS_STATE["started_at"],
-            "finished_at": _PROCESS_STATE["finished_at"],
-            "last_error": _PROCESS_STATE["last_error"],
-            "last_report": _PROCESS_STATE["last_report"],
-            "message": _PROCESS_STATE["message"],
-        }
+        snap = _process_fields()
     _persist_process_state(snap)
-    return snap
+    return _annotate_runtime(snap)
 
 
 def _is_process_busy() -> bool:
@@ -320,10 +347,23 @@ def _is_process_busy() -> bool:
 
 @labeling_bp.route("/status", methods=["GET"])
 @require_admin_auth
+def _staging_inventory() -> Dict[str, Any]:
+    now = time.time()
+    with _INVENTORY_LOCK:
+        cached = _INVENTORY_CACHE["data"]
+        if isinstance(cached, dict) and (now - float(_INVENTORY_CACHE["at"])) < _INVENTORY_TTL_SEC:
+            return dict(cached)
+    fresh = LabelingIngestService().staging_status()
+    with _INVENTORY_LOCK:
+        _INVENTORY_CACHE["data"] = fresh
+        _INVENTORY_CACHE["at"] = time.time()
+    return dict(fresh)
+
+
 def labeling_status():
     """Staging vs processed output inventory + process job state."""
     try:
-        status = LabelingIngestService().staging_status()
+        status = _staging_inventory()
         status["process"] = _merge_process_state()
         collar: Dict[str, Any] = {
             "azure_configured": azure_configured(),
@@ -395,6 +435,7 @@ def labeling_promote_forwards():
             )
 
             def _worker():
+                log_rss(logger, "labeling promote start")
                 try:
                     report = _run()
                     promoted = len(report.get("promoted") or [])
@@ -419,6 +460,8 @@ def labeling_promote_forwards():
                         last_error=str(exc),
                         message="Promote forwards failed",
                     )
+                finally:
+                    log_rss(logger, "labeling promote end")
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -520,6 +563,7 @@ def labeling_sync_collar():
             )
 
             def _worker():
+                log_rss(logger, "labeling collar sync start")
                 try:
                     report = LabelingCollarSyncService().sync(
                         dry_run=dry_run,
@@ -560,6 +604,8 @@ def labeling_sync_collar():
                         last_error=redact_secrets(str(exc)),
                         message="Collar sync failed",
                     )
+                finally:
+                    log_rss(logger, "labeling collar sync end")
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -659,6 +705,7 @@ def labeling_process():
             )
 
             def _worker():
+                log_rss(logger, "labeling process start")
                 try:
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
@@ -685,6 +732,8 @@ def labeling_process():
                         last_error=str(exc),
                         message="Process failed",
                     )
+                finally:
+                    log_rss(logger, "labeling process end")
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -740,12 +789,11 @@ def labeling_summary():
     Summarize processed labeling exports under extracted-txt/.
 
     Serves the last computed summary immediately when available (memory, then S3).
-    If that snapshot is older than ttl, it is still returned and a background
-    rescan is kicked off. Full synchronous rescan only when no cache exists or
-    refresh=1.
+    A cold cache or refresh=1 starts a background rescan and returns pending.
+    The scan never runs on this request, so a health check can still get through.
 
     Query params:
-      refresh=1  — force synchronous rescan
+      refresh=1  — start a background rescan (last summary is still returned)
       ttl=900    — freshness window seconds (stale after this; 0 = always stale)
     """
     try:
@@ -755,33 +803,42 @@ def labeling_summary():
         except ValueError:
             ttl = _DEFAULT_CACHE_TTL_SEC
 
-        if not refresh:
-            entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY)
-            if entry is None:
-                entry = _load_summary_cache_s3(ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC)
-            if entry is not None:
-                if entry.get("stale"):
-                    _maybe_start_background_refresh(
-                        ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
-                    )
-                return jsonify(
-                    {
-                        "success": True,
-                        "cached": True,
-                        "stale": bool(entry.get("stale")),
-                        "generated_at": entry.get("generated_at_iso"),
-                        "data": entry["data"],
-                    }
-                )
+        ttl_sec = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+        entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY)
+        if entry is None:
+            entry = _load_summary_cache_s3(ttl_sec)
+        if entry is not None and not refresh:
+            if entry.get("stale"):
+                _maybe_start_background_refresh(ttl_sec)
+            return jsonify(
+                {
+                    "success": True,
+                    "pending": False,
+                    "cached": True,
+                    "stale": bool(entry.get("stale")),
+                    "generated_at": entry.get("generated_at_iso"),
+                    "data": entry["data"],
+                }
+            )
 
-        entry = _compute_summary(ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC)
+        # A full scan downloads every labeling file. Doing that inside the
+        # request is what stalls health checks. Always scan in the background.
+        started = _maybe_start_background_refresh(ttl_sec)
+        if not started:
+            message = "Summary refresh waits until the current labeling job finishes."
+        elif entry is not None:
+            message = "Refreshing the summary in the background."
+        else:
+            message = "Building the summary in the background."
         return jsonify(
             {
                 "success": True,
-                "cached": False,
-                "stale": False,
-                "generated_at": entry.get("generated_at_iso"),
-                "data": entry["data"],
+                "pending": True,
+                "cached": entry is not None,
+                "stale": True,
+                "generated_at": entry.get("generated_at_iso") if entry else None,
+                "data": entry["data"] if entry else None,
+                "message": message,
             }
         )
     except ValueError as exc:
