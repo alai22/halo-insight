@@ -31,6 +31,7 @@ function phaseLabel(progress, job) {
   if (job === 'promote-forwards') return 'Promoting forwards';
   return 'Processing staging';
 }
+
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v3';
 
 const COLORS = [
@@ -1188,8 +1189,7 @@ const LabelingDataDashboard = () => {
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Data sync</h2>
           <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            When labeled sessions arrived, and who sent them. Bar height is that day’s duration;
-            color is the labeler.
+            When labeled sessions arrived, and who sent them.
           </p>
         </div>
         <div className={`${chartPairClass} mb-4`}>
@@ -1260,8 +1260,7 @@ const LabelingDataDashboard = () => {
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900">How broad the data is</h2>
           <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            Which postures and environments the set actually covers. {breadthSummary}. Color
-            is the labeler.
+            Which postures and environments the set actually covers: {breadthSummary}. Each color is a labeler.
           </p>
         </div>
         <div className={chartPairClass}>
