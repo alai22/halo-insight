@@ -338,6 +338,9 @@ def labeling_status():
                 collar["last_matched"] = totals.get("matched")
                 collar["last_missing"] = totals.get("missing")
                 collar["last_ai_files"] = totals.get("ai_files")
+                clone = index.get("clone")
+                if isinstance(clone, dict) and clone.get("generated_at"):
+                    collar["clone"] = clone
         except Exception as exc:  # noqa: BLE001
             logger.warning("Collar sync status failed: %s", redact_secrets(str(exc)))
         status["collar_sync"] = collar
@@ -500,6 +503,11 @@ def labeling_sync_collar():
                 "data": state,
             }), 409
 
+        start_message = (
+            "Listing Azure collar ai/ dumps for labeled collars…"
+            if inventory_only
+            else "Syncing Azure collar ai/ dumps into collar-raw/…"
+        )
         if run_async:
             _set_process_state(
                 running=True,
@@ -508,7 +516,7 @@ def labeling_sync_collar():
                 finished_at=None,
                 last_error=None,
                 last_report=None,
-                message="Syncing Azure collar ai/ dumps into collar-raw/…",
+                message=start_message,
             )
 
             def _worker():
@@ -524,16 +532,24 @@ def labeling_sync_collar():
                     missing = ((report.get("coverage") or {}).get("totals") or {}).get(
                         "missing", 0
                     )
+                    clone = report.get("clone") or {}
+                    if inventory_only:
+                        done_message = (
+                            f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
+                            f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
+                        )
+                    else:
+                        done_message = (
+                            f"Collar sync done — copied {report.get('copied', 0)} files, "
+                            f"{matched} sessions matched, {missing} missing"
+                        )
                     _set_process_state(
                         running=False,
                         job="sync-collar",
                         finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         last_report=report,
                         last_error=None,
-                        message=(
-                            f"Collar sync done — copied {report.get('copied', 0)} files, "
-                            f"{matched} sessions matched, {missing} missing"
-                        ),
+                        message=done_message,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async collar sync failed")
@@ -559,7 +575,7 @@ def labeling_sync_collar():
             started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             finished_at=None,
             last_error=None,
-            message="Syncing Azure collar ai/ dumps into collar-raw/…",
+            message=start_message,
         )
         try:
             report = LabelingCollarSyncService().sync(
@@ -567,13 +583,21 @@ def labeling_sync_collar():
                 inventory_only=inventory_only,
             )
             _cache_clear()
+            clone = report.get("clone") or {}
+            if inventory_only:
+                done_message = (
+                    f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
+                    f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
+                )
+            else:
+                done_message = f"Done — copied {report.get('copied', 0)} files"
             state = _set_process_state(
                 running=False,
                 job="sync-collar",
                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 last_report=report,
                 last_error=None,
-                message=f"Done — copied {report.get('copied', 0)} files",
+                message=done_message,
             )
             return jsonify({
                 "success": True,
