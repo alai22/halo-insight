@@ -143,6 +143,12 @@ case $ENVIRONMENT in
         # Remove existing container if present (running or stopped — name must be free)
         print_status "Removing existing container if present..."
         docker rm -f gladly-prod 2>/dev/null || true
+
+        # t3.medium has 4 GiB. Cap the container so an OOM restarts the app
+        # instead of wedging sshd. memory-swap == memory disables container swap,
+        # which is what makes the instance need a reboot.
+        CONTAINER_MEMORY="${CONTAINER_MEMORY:-2800m}"
+        print_status "Container memory cap: ${CONTAINER_MEMORY} (override with CONTAINER_MEMORY)"
         
         # Use --env-file to load all variables from .env (handles spaces and special chars)
         # Also explicitly pass critical variables as -e flags to ensure they're set
@@ -150,6 +156,8 @@ case $ENVIRONMENT in
             docker run -d \
                 -p 127.0.0.1:5000:5000 \
                 --restart unless-stopped \
+                --memory "${CONTAINER_MEMORY}" \
+                --memory-swap "${CONTAINER_MEMORY}" \
                 --env-file .env \
                 -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-haiku-4-5}" \
                 -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
@@ -167,6 +175,8 @@ case $ENVIRONMENT in
             docker run -d \
                 -p 127.0.0.1:5000:5000 \
                 --restart unless-stopped \
+                --memory "${CONTAINER_MEMORY}" \
+                --memory-swap "${CONTAINER_MEMORY}" \
                 -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
                 -e CLAUDE_MODEL="${CLAUDE_MODEL:-claude-haiku-4-5}" \
                 -e GLADLY_API_KEY="${GLADLY_API_KEY}" \
@@ -200,7 +210,7 @@ case $ENVIRONMENT in
         print_status "Image saved as $PROJECT_NAME-$ENVIRONMENT.tar.gz"
         print_status "Transfer this file to your EC2 instance and run:"
         echo "  gunzip -c $PROJECT_NAME-$ENVIRONMENT.tar.gz | docker load"
-        echo "  docker run -d -p 80:5000 --restart unless-stopped --name gladly-app \\"
+        echo "  docker run -d -p 80:5000 --restart unless-stopped --memory 2800m --memory-swap 2800m --name gladly-app \\"
         echo "    -e ANTHROPIC_API_KEY=\$ANTHROPIC_API_KEY \\"
         echo "    -e GLADLY_API_KEY=\$GLADLY_API_KEY \\"
         echo "    -e GLADLY_AGENT_EMAIL=\$GLADLY_AGENT_EMAIL \\"

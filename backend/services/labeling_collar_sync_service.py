@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ class SyncReport:
     bytes_copied: int = 0
     errors: List[Dict[str, str]] = field(default_factory=list)
     coverage: Dict[str, Any] = field(default_factory=dict)
+    clone: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -157,6 +159,7 @@ class SyncReport:
             "bytes_copied": self.bytes_copied,
             "errors": self.errors,
             "coverage": self.coverage,
+            "clone": self.clone,
         }
 
 
@@ -191,12 +194,40 @@ def match_coverage(
         "missing_seconds": 0.0,
     }
     by_user: Dict[str, Dict[str, Any]] = {}
+    by_sn: Dict[str, Dict[str, Any]] = {}
+    missing_reasons = {
+        "no_blobs_for_sn": 0,
+        "time_gap": 0,
+        "unknown_sn": 0,
+        "bad_timestamp": 0,
+    }
     unmatched: List[Dict[str, Any]] = []
+
+    def _touch_sn(sn: str) -> Dict[str, Any]:
+        return by_sn.setdefault(
+            sn,
+            {
+                "collar_sn": sn,
+                "sessions": 0,
+                "matched": 0,
+                "missing": 0,
+                "s3_files": 0,
+                "no_blobs_for_sn": 0,
+                "time_gap": 0,
+                "unknown_sn": 0,
+                "bad_timestamp": 0,
+            },
+        )
 
     for session in sessions:
         totals["sessions"] += 1
         email = session.get("user") or session.get("email") or ""
-        sn = sanitize_collar_sn(session.get("collar_sn"))
+        raw_sn = session.get("collar_sn")
+        # Keep the sentinel. sanitize_collar_sn strips the leading underscore.
+        if not raw_sn or raw_sn == UNKNOWN_COLLAR_SN:
+            sn = UNKNOWN_COLLAR_SN
+        else:
+            sn = sanitize_collar_sn(raw_sn)
         family = session.get("family") or "activity"
         duration = float(session.get("duration_seconds") or 0.0)
         user = by_user.setdefault(
@@ -212,11 +243,16 @@ def match_coverage(
             },
         )
         user["sessions"] += 1
+        sn_row = _touch_sn(sn or UNKNOWN_COLLAR_SN)
+        sn_row["sessions"] += 1
 
         if not sn or sn == UNKNOWN_COLLAR_SN:
             totals["unknown_sn"] += 1
             totals["missing"] += 1
             totals["missing_seconds"] += duration
+            missing_reasons["unknown_sn"] += 1
+            sn_row["missing"] += 1
+            sn_row["unknown_sn"] += 1
             user["unknown_sn_sessions"] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
@@ -237,6 +273,9 @@ def match_coverage(
         if start is None:
             totals["missing"] += 1
             totals["missing_seconds"] += duration
+            missing_reasons["bad_timestamp"] += 1
+            sn_row["missing"] += 1
+            sn_row["bad_timestamp"] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
             if len(unmatched) < UNMATCHED_SAMPLE_LIMIT:
@@ -260,6 +299,7 @@ def match_coverage(
         if hits:
             totals["matched"] += 1
             totals["matched_seconds"] += duration
+            sn_row["matched"] += 1
             user["matched_sessions"] += 1
             user["matched_seconds"] += duration
         else:
@@ -270,6 +310,9 @@ def match_coverage(
                 reason = "no_blobs_for_sn"
             totals["missing"] += 1
             totals["missing_seconds"] += duration
+            missing_reasons[reason] += 1
+            sn_row["missing"] += 1
+            sn_row[reason] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
             if len(unmatched) < UNMATCHED_SAMPLE_LIMIT:
@@ -295,6 +338,12 @@ def match_coverage(
         ),
         key=lambda u: (-u["matched_seconds"], u["email"]),
     )
+    for blob in files_list:
+        _touch_sn(blob.collar_sn)["s3_files"] += 1
+    by_sn_out = sorted(
+        by_sn.values(),
+        key=lambda row: (-row["missing"], -row["sessions"], row["collar_sn"]),
+    )
     return {
         "totals": {
             "sessions": totals["sessions"],
@@ -307,8 +356,74 @@ def match_coverage(
             "ai_bytes": int(sum(b.size for b in files_list)),
             "sns": len({b.collar_sn for b in files_list}),
         },
+        "missing_reasons": missing_reasons,
         "by_user": users_out,
+        "by_sn": by_sn_out,
         "unmatched_samples": unmatched,
+    }
+
+
+def empty_clone_row(sn: str) -> Dict[str, Any]:
+    return {
+        "collar_sn": sn,
+        "azure_files": 0,
+        "s3_files": 0,
+        "copied": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
+
+
+def classify_blob_presence(existing_size: Optional[int], azure_size: int) -> str:
+    """Return skipped when S3 already has the same bytes, else copied (needs clone)."""
+    if existing_size is not None and int(existing_size) == int(azure_size):
+        return "skipped"
+    return "copied"
+
+
+def build_clone_snapshot(
+    rows: Iterable[Dict[str, Any]],
+    *,
+    inventory_only: bool,
+    generated_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Summarize an Azure listing against S3.
+
+    Per row: collar_sn, azure_files, s3_files, copied, skipped, errors.
+    On an inventory check, copied means "not in S3 or a different size".
+    After a copy, copied means "just written", so not_cloned is the error count.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        normalized.append(
+            {
+                "collar_sn": row.get("collar_sn") or UNKNOWN_COLLAR_SN,
+                "azure_files": int(row.get("azure_files") or 0),
+                "s3_files": int(row.get("s3_files") or 0),
+                "copied": int(row.get("copied") or 0),
+                "skipped": int(row.get("skipped") or 0),
+                "errors": int(row.get("errors") or 0),
+            }
+        )
+    normalized.sort(key=lambda row: row["collar_sn"])
+    azure_files = sum(row["azure_files"] for row in normalized)
+    s3_files = sum(row["s3_files"] for row in normalized)
+    copied = sum(row["copied"] for row in normalized)
+    skipped = sum(row["skipped"] for row in normalized)
+    errors = sum(row["errors"] for row in normalized)
+    not_cloned = (copied + errors) if inventory_only else errors
+    return {
+        "generated_at": generated_at
+        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "inventory_only": bool(inventory_only),
+        "azure_files": azure_files,
+        "s3_files": s3_files,
+        "copied": copied,
+        "skipped_unchanged": skipped,
+        "errors": errors,
+        "not_cloned": not_cloned,
+        "by_sn": normalized,
     }
 
 
@@ -426,10 +541,16 @@ class LabelingCollarSyncService:
         coverage["pad_sec"] = self.pad_sec
         return coverage
 
-    def persist_index(self, coverage: Dict[str, Any]) -> None:
+    def persist_index(
+        self, coverage: Dict[str, Any], clone: Optional[Dict[str, Any]] = None
+    ) -> None:
+        if clone is None:
+            existing = self.load_index() or {}
+            clone = existing.get("clone")
         payload = {
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "coverage": coverage,
+            "clone": clone,
         }
         try:
             self.s3_client.put_object(
@@ -467,13 +588,17 @@ class LabelingCollarSyncService:
         if dry_run:
             return "copied"
         client = self.azure_client()
-        data = client.get_blob_client(blob_name).download_blob().readall()
-        self.s3_client.put_object(
-            Bucket=self.bucket_name,
-            Key=dest_key,
-            Body=data,
-            ContentType="application/octet-stream",
-        )
+        downloader = client.get_blob_client(blob_name).download_blob()
+        # Spill to disk after 8 MiB so parallel copies cannot pin whole logs in RAM.
+        with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as tmp:
+            downloader.readinto(tmp)
+            tmp.seek(0)
+            self.s3_client.upload_fileobj(
+                tmp,
+                self.bucket_name,
+                dest_key,
+                ExtraArgs={"ContentType": "application/octet-stream"},
+            )
         return "copied"
 
     def sync(
@@ -481,7 +606,7 @@ class LabelingCollarSyncService:
         dry_run: bool = False,
         inventory_only: bool = False,
         sns: Optional[List[str]] = None,
-        workers: int = 8,
+        workers: Optional[int] = None,
         summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -511,27 +636,29 @@ class LabelingCollarSyncService:
         else:
             report.sns = self.labeled_collar_sns(files=analyzer.list_session_files())
 
+        stats: Dict[str, Dict[str, Any]] = {
+            sn: empty_clone_row(sn) for sn in report.sns
+        }
+
         if not report.sns:
             logger.info("No labeled collar SNs in extracted-txt; skipping Azure copy")
-            report.coverage = match_coverage(
-                sessions_from_analyze(summary),
-                self.list_collar_ai_files(),
-                pad_sec=self.pad_sec,
-            )
-            report.coverage["azure_configured"] = report.azure_configured
-            report.coverage["collar_prefix"] = self.collar_prefix
-            report.coverage["pad_sec"] = self.pad_sec
-            if not dry_run and not inventory_only:
+            report.coverage = self.build_coverage(summary=summary)
+            if inventory_only and not dry_run:
+                report.clone = build_clone_snapshot([], inventory_only=True)
+                self.persist_index(report.coverage, report.clone)
+            elif not dry_run:
                 self.persist_index(report.coverage)
             return report.to_dict()
 
         azure = self.azure_client()
-        planned: List[Tuple[str, str, int]] = []  # blob_name, dest_key, size
+        # sn, blob_name, dest_key, size
+        planned: List[Tuple[str, str, str, int]] = []
         for sn in report.sns:
             prefix = f"{sn}/ai/"
             try:
                 blobs = list(azure.list_blobs(name_starts_with=prefix))
             except Exception as exc:  # noqa: BLE001
+                stats[sn]["errors"] += 1
                 report.errors.append({"sn": sn, "error": redact_secrets(str(exc))})
                 logger.warning("Failed listing Azure %s: %s", prefix, redact_secrets(str(exc)))
                 continue
@@ -544,55 +671,75 @@ class LabelingCollarSyncService:
                     continue
                 dest_key = f"{self.collar_prefix}{sn}/{rel}"
                 size = int(getattr(blob, "size", 0) or 0)
-                planned.append((name, dest_key, size))
+                stats[sn]["azure_files"] += 1
+                planned.append((sn, name, dest_key, size))
 
         report.listed = len(planned)
+
+        def _note(sn: str, action: str) -> None:
+            row = stats.setdefault(sn, empty_clone_row(sn))
+            if action == "skipped":
+                row["skipped"] += 1
+            elif action == "copied":
+                row["copied"] += 1
+            else:
+                row["errors"] += 1
+
         if inventory_only:
-            report.coverage = match_coverage(
-                sessions_from_analyze(summary),
-                self.list_collar_ai_files(),
-                pad_sec=self.pad_sec,
-            )
-            report.coverage["azure_configured"] = report.azure_configured
-            report.coverage["collar_prefix"] = self.collar_prefix
-            report.coverage["listed"] = report.listed
-            return report.to_dict()
+            for sn, _blob_name, dest_key, size in planned:
+                action = classify_blob_presence(self._s3_size(dest_key), size)
+                _note(sn, action)
+                if action == "skipped":
+                    report.skipped_unchanged += 1
+        else:
+            if workers is None:
+                from ..utils.runtime_stats import env_int
 
-        workers = max(1, int(workers or 1))
+                workers = env_int("LABELING_SYNC_WORKERS", 4)
+            workers = max(1, int(workers or 1))
 
-        def _one(item: Tuple[str, str, int]) -> Tuple[str, str, int, Optional[str]]:
-            blob_name, dest_key, size = item
-            try:
-                action = self._copy_blob(blob_name, dest_key, size, dry_run=dry_run)
-                return action, dest_key, size, None
-            except Exception as exc:  # noqa: BLE001
-                return "error", dest_key, size, redact_secrets(str(exc))
+            def _one(item: Tuple[str, str, str, int]) -> Tuple[str, str, str, int, Optional[str]]:
+                sn, blob_name, dest_key, size = item
+                try:
+                    action = self._copy_blob(blob_name, dest_key, size, dry_run=dry_run)
+                    return action, sn, dest_key, size, None
+                except Exception as exc:  # noqa: BLE001
+                    return "error", sn, dest_key, size, redact_secrets(str(exc))
 
-        if planned:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_one, item) for item in planned]
-                done = 0
-                for fut in as_completed(futures):
-                    action, dest_key, size, err = fut.result()
-                    done += 1
-                    if action == "copied":
-                        report.copied += 1
-                        report.bytes_copied += size
-                    elif action == "skipped":
-                        report.skipped_unchanged += 1
-                    else:
-                        report.errors.append({"key": dest_key, "error": err or "copy failed"})
-                    if done % 50 == 0 or done == len(futures):
-                        logger.info(
-                            "Collar sync copy %s/%s (copied=%s skipped=%s errors=%s)",
-                            done,
-                            len(futures),
-                            report.copied,
-                            report.skipped_unchanged,
-                            len(report.errors),
-                        )
+            if planned:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(_one, item) for item in planned]
+                    done = 0
+                    for fut in as_completed(futures):
+                        action, sn, dest_key, size, err = fut.result()
+                        done += 1
+                        _note(sn, action)
+                        if action == "copied":
+                            report.copied += 1
+                            report.bytes_copied += size
+                        elif action == "skipped":
+                            report.skipped_unchanged += 1
+                        else:
+                            report.errors.append({"key": dest_key, "error": err or "copy failed"})
+                        if done % 50 == 0 or done == len(futures):
+                            logger.info(
+                                "Collar sync copy %s/%s (copied=%s skipped=%s errors=%s)",
+                                done,
+                                len(futures),
+                                report.copied,
+                                report.skipped_unchanged,
+                                len(report.errors),
+                            )
 
         report.coverage = self.build_coverage(summary=summary)
+        for row in report.coverage.get("by_sn") or []:
+            sn = row.get("collar_sn")
+            if not sn:
+                continue
+            stats.setdefault(sn, empty_clone_row(sn))["s3_files"] = int(row.get("s3_files") or 0)
+        report.clone = build_clone_snapshot(
+            stats.values(), inventory_only=inventory_only
+        )
         if not dry_run:
-            self.persist_index(report.coverage)
+            self.persist_index(report.coverage, report.clone)
         return report.to_dict()

@@ -118,6 +118,18 @@ class TestLocalAnalyze:
         assert summary["by_date"][0]["date"] == "2026-04-21"
         assert summary["by_date"][0]["duration_seconds"] > 0
         assert summary["by_date"][0]["sessions"] >= 1
+        assert summary["by_date"][0]["dogs"] == 1
+        assert summary["by_date"][0]["by_user"][0]["dogs"] == 1
+        assert summary["total_dogs"] == 1
+        diamond = next(d for d in summary["dogs"] if d["collar_sn"] == "24h4290312rt")
+        assert diamond["name"] == "Diamond"
+        assert diamond["breed"] == "Mixed"
+        assert diamond["sessions"] == 2
+        assert diamond["total_duration_seconds"] == pytest.approx(85.7)
+        assert diamond["owners"] == ["laura.k.entsminger@gmail.com"]
+        standing_dogs = summary["activity_dog_counts"]["Standing"]
+        assert standing_dogs == 1
+        assert summary["activity_owner_counts"]["Standing"] == 1
         assert summary["sessions"]
         assert summary["sessions"][0]["collar_sn"]
         assert summary["sessions"][0]["duration_seconds"] > 0
@@ -126,15 +138,24 @@ class TestLocalAnalyze:
         analyzer = LabelingDataAnalyzer(bucket_name="local", prefix="extracted-txt/")
         ui = format_ui_summary(analyzer.analyze_local(str(TREE)))
         assert ui["totals"]["users"] >= 1
+        assert ui["totals"]["dogs"] == 1
         assert ui["totals"]["duration_seconds"] > 0
-        assert any(a["name"] == "Standing" and a["label"] == "Standing" for a in ui["activities"])
+        standing = next(a for a in ui["activities"] if a["name"] == "Standing")
+        assert standing["label"] == "Standing"
+        assert standing["dogs"] == 1
+        assert standing["owners"] == 1
         assert ui["by_date"]
         assert ui["by_date"][0]["date"] == "2026-04-21"
+        assert ui["by_date"][0]["dogs"] == 1
         assert ui["users"][0]["email"]
         assert ui["users"][0]["total_duration_seconds"] > 0
+        assert ui["users"][0]["dogs"] == 1
         assert ui["users"][0]["collar_sns"]
         assert ui["users"][0]["collars"]
         assert ui["users"][0]["collars"][0]["collar_sn"] == "24h4290312rt"
+        diamond = next(d for d in ui["dogs"] if d["collar_sn"] == "24h4290312rt")
+        assert diamond["sessions"] == 2
+        assert diamond["total_duration_seconds"] == pytest.approx(85.7)
 
     def test_gps_indoor_outdoor_summary(self):
         analyzer = LabelingDataAnalyzer(bucket_name="local", prefix="extracted-txt/")
@@ -145,7 +166,15 @@ class TestLocalAnalyze:
         assert gps["activity_duration_seconds"].get("OutdoorOpenSky", 0) > 0
         ui = format_ui_summary(summary)
         assert ui["gps"]["totals"]["duration_seconds"] > 0
-        assert any(a["name"] == "IndoorBlocked" for a in ui["gps"]["activities"])
+        assert ui["gps"]["totals"]["dogs"] == 1
+        indoor = next(a for a in ui["gps"]["activities"] if a["name"] == "IndoorBlocked")
+        assert indoor["dogs"] == 1
+        assert indoor["owners"] == 1
+        gps_dog = next(d for d in ui["gps"]["dogs"] if d["collar_sn"] == "24h4390528rt")
+        assert gps_dog["name"] == "Reeses Midnight"
+        assert gps_dog["owners"] == ["kehrman@halocollar.com"]
+        assert gps_dog["sessions"] == 1
+        assert gps_dog["total_duration_seconds"] == pytest.approx(141.5)
 
     def test_merges_bare_and_id_duration_labels(self, tmp_path: Path):
         user_dir = tmp_path / "labeler@x.com" / "collar1"
@@ -163,3 +192,50 @@ class TestLocalAnalyze:
         assert summary["activity_duration_seconds"]["Standing"] == pytest.approx(13.0)
         assert summary["activity_duration_seconds"]["Walking"] == pytest.approx(7.0)
         assert len(summary["activity_duration_seconds"]) == 2
+
+    def test_unknown_collar_excluded_from_dog_counts(self, tmp_path: Path):
+        known = tmp_path / "owner@x.com" / "snknown1"
+        known.mkdir(parents=True)
+        (known / "activity_session_2026-04-21T18:38:31_0_durations.txt").write_text(
+            '{ "Standing (10)": "00:00:10.0000000" }\n',
+            encoding="utf-8",
+        )
+        (known / "activity_session_2026-04-21T18:38:31_0_collar_collected.txt").write_text(
+            "18:38:31.123: Dog's name: Ace\n"
+            "18:38:31.150: Dog's breed: Beagle\n"
+            "18:38:31.150: Dog's weight: 12.5\n"
+            "18:38:31.150: Collar SN: snknown1\n",
+            encoding="utf-8",
+        )
+        legacy = tmp_path / "owner@x.com"
+        (legacy / "activity_session_2026-04-22T18:38:31_0_durations.txt").write_text(
+            '{ "Walking (1)": "00:00:04.0000000" }\n',
+            encoding="utf-8",
+        )
+
+        analyzer = LabelingDataAnalyzer(bucket_name="local", prefix="extracted-txt/")
+        summary = analyzer.analyze_local(str(tmp_path))
+        assert summary["total_dogs"] == 1
+        by_day = {row["date"]: row for row in summary["by_date"]}
+        assert by_day["2026-04-21"]["dogs"] == 1
+        assert by_day["2026-04-21"]["by_user"][0]["dogs"] == 1
+        assert by_day["2026-04-22"]["dogs"] == 0
+
+        ui = format_ui_summary(summary)
+        assert ui["totals"]["dogs"] == 1
+        assert ui["users"][0]["dogs"] == 1
+        standing = next(a for a in ui["activities"] if a["name"] == "Standing")
+        walking = next(a for a in ui["activities"] if a["name"] == "Walking")
+        assert standing["dogs"] == 1
+        assert standing["owners"] == 1
+        assert walking["dogs"] == 0
+        assert walking["owners"] == 1
+        known_dog = next(d for d in ui["dogs"] if d["collar_sn"] == "snknown1")
+        unknown_dog = next(d for d in ui["dogs"] if d["collar_sn"] == "_unknown")
+        assert known_dog["name"] == "Ace"
+        assert known_dog["breed"] == "Beagle"
+        assert known_dog["sessions"] == 1
+        assert known_dog["total_duration_seconds"] == pytest.approx(10.0)
+        assert known_dog["owners"] == ["owner@x.com"]
+        assert unknown_dog["total_duration_seconds"] == pytest.approx(4.0)
+        assert unknown_dog["sessions"] == 1

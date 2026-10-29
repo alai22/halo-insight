@@ -44,8 +44,8 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--workers",
         type=int,
-        default=16,
-        help="Parallel S3 workers for collar-SN reads and copies (default 16)",
+        default=None,
+        help="Parallel S3 workers (default 4, or LABELING_PROCESS_WORKERS)",
     )
     args = parser.parse_args(argv)
 
