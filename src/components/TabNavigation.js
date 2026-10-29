@@ -16,6 +16,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { getPathFromMode, isHomeTabMode, isProductResearchMode, isHardwareMode } from '../utils/routes';
+import { prefetchMode } from './modePrefetch';
 
 const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -195,6 +196,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
   const openMenuFor = (key) => {
     clearCloseTimer();
     setOpenMenu(key);
+    const menu = menus[key];
+    if (!menu) return;
+    prefetchMode(menu.defaultMode);
+    menu.items.forEach((item) => prefetchMode(item.id));
   };
 
   const selectMode = (modeId) => {
@@ -222,6 +227,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
       >
         <button
           type="button"
+          onPointerDown={() => {
+            prefetchMode(menu.defaultMode);
+            menu.items.forEach((item) => prefetchMode(item.id));
+          }}
           onClick={() => {
             if (isOpen) {
               setOpenMenu(null);
@@ -318,6 +327,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
 
           <button
             type="button"
+            onPointerDown={() => prefetchMode('bug-triage')}
+            onMouseEnter={() => prefetchMode('bug-triage')}
             onClick={() => {
               setOpenMenu(null);
               if (currentMode !== 'bug-triage') {

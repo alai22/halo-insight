@@ -1,33 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useDeferredValue } from 'react';
 import { Settings, Menu, LogOut } from 'lucide-react';
 import PromptInput from './components/PromptInput';
-import ConversationDisplay from './components/ConversationDisplay';
 import Sidebar from './components/Sidebar';
 import SettingsPanel from './components/SettingsPanel';
 import Login from './components/Login';
 import TabNavigation from './components/TabNavigation';
-import DownloadManager from './components/DownloadManager';
-import ZoomDownloadManager from './components/ZoomDownloadManager';
-import ChurnTrendsChart from './components/ChurnTrendsChart';
-import ConversationTrendsChart from './components/ConversationTrendsChart';
-import ApiDataManager from './components/ApiDataManager';
-import SurveyManager from './components/SurveyManager';
-import Tools from './components/Tools';
-import AnalyticsDashboard from './components/AnalyticsDashboard';
-import LabelingDataDashboard from './components/LabelingDataDashboard';
-import BugTriageCopilot from './components/BugTriageCopilot';
-import JiraStatusView from './components/JiraStatusView';
-import TextInterviewHub from './components/interview/TextInterviewHub';
+import ModePanel from './components/ModePanel';
 import InterviewParticipantPage from './components/interview/InterviewParticipantPage';
-import SurveyHub from './components/surveys/SurveyHub';
-import SurveyBuilder from './components/surveys/SurveyBuilder';
 import SurveyParticipantPage from './components/surveys/SurveyParticipantPage';
-import NeckFitModelingTool from './components/neckFit/NeckFitModelingTool';
 import { useAnalytics } from './hooks/useAnalytics';
 import axios from 'axios';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { getSurvicateDataSource } from './utils/constants';
-import { getModeFromPath, getPathFromMode, getRouteFromPath, isPathBasedMode, isInterviewParticipantPath, isSurveyParticipantPath, isSurveyBuilderPath, getSurveyBuilderId, pathMatchesMode } from './utils/routes';
+import { getModeFromPath, getPathFromMode, getRouteFromPath, isPathBasedMode, isInterviewParticipantPath, isSurveyParticipantPath, isSurveyBuilderPath, pathMatchesMode } from './utils/routes';
 
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
@@ -336,12 +321,21 @@ function App() {
     checkAuthStatus();
   }, []);
 
+  const checkHealth = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/health');
+      setHealthStatus(response.data);
+    } catch (error) {
+      setHealthStatus({ status: 'unhealthy', error: error.message });
+    }
+  }, []);
+
   // Check backend health on component mount (only when authenticated)
   useEffect(() => {
     if (isAuthenticated) {
       checkHealth();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, checkHealth]);
 
   // Track pageviews with analytics
   useAnalytics();
@@ -399,14 +393,13 @@ function App() {
     }
   };
 
-  const checkHealth = async () => {
-    try {
-      const response = await axios.get('/api/health');
-      setHealthStatus(response.data);
-    } catch (error) {
-      setHealthStatus({ status: 'unhealthy', error: error.message });
-    }
-  };
+  const closeSettings = useCallback(() => setShowSettings(false), []);
+  const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+
+  // Tab chrome updates immediately. Heavy panel trees follow on the next frame
+  // so a click is not blocked by charts, triage, or the neck-fit model.
+  const deferredMode = useDeferredValue(currentMode);
+  const deferredAdminMode = useDeferredValue(adminMode);
 
   // Handle admin authentication check
   const handleAdminLogin = async () => {
@@ -791,12 +784,12 @@ function App() {
       <Sidebar 
         healthStatus={healthStatus}
         onRefreshHealth={checkHealth}
-        currentMode={currentMode}
+        currentMode={deferredMode}
         setAdminMode={setAdminMode}
         setCurrentMode={setCurrentMode}
-        onCloseSettings={() => setShowSettings(false)}
+        onCloseSettings={closeSettings}
         mobileDrawerOpen={mobileSidebarOpen}
-        onCloseMobile={() => setMobileSidebarOpen(false)}
+        onCloseMobile={closeMobileSidebar}
       />
 
       {/* Main Content */}
@@ -882,70 +875,29 @@ function App() {
             adminMode={adminMode}
             setAdminMode={setAdminMode}
             setCurrentMode={setCurrentMode}
-            onClose={() => setShowSettings(false)}
+            onClose={closeSettings}
           />
         )}
 
         {/* Main Content Area */}
-        <div className={`flex-1 ${currentMode === 'churn-trends' || currentMode === 'conversation-trends' || currentMode === 'api-data-manager' || currentMode === 'survey-manager' || currentMode === 'tools' || currentMode === 'zoom' || currentMode === 'analytics' || currentMode === 'labeling-data' || currentMode === 'bug-triage' || currentMode === 'jira-status' || currentMode === 'text-interview' || currentMode === 'halo-surveys' || currentMode === 'neck-fit-modeler' || adminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
-          {/* Show actual tool components when active */}
-          {currentMode === 'bug-triage' ? (
-            <BugTriageCopilot />
-          ) : currentMode === 'jira-status' ? (
-            <JiraStatusView setCurrentMode={setCurrentMode} />
-          ) : currentMode === 'api-data-manager' ? (
-            <ApiDataManager />
-          ) : currentMode === 'survey-manager' ? (
-            <SurveyManager />
-          ) : currentMode === 'zoom' ? (
-            <ZoomDownloadManager />
-          ) : currentMode === 'analytics' ? (
-            <AnalyticsDashboard />
-          ) : currentMode === 'labeling-data' ? (
-            <LabelingDataDashboard />
-          ) : adminMode === 'download' ? (
-            <DownloadManager />
-          ) : adminMode === 'claude' ? (
-            <ConversationDisplay
-              conversations={getCurrentConversations()}
-              isLoading={isLoading}
-              error={error}
-            />
-          ) : currentMode === 'tools' ? (
-            <Tools 
-              currentMode={currentMode}
-              setCurrentMode={setCurrentMode}
-              adminMode={adminMode}
-              setAdminMode={setAdminMode}
-            />
-          ) : currentMode === 'text-interview' ? (
-            <TextInterviewHub />
-          ) : currentMode === 'halo-surveys' ? (
-            getSurveyBuilderId(location.pathname) ? (
-              <SurveyBuilder surveyId={getSurveyBuilderId(location.pathname)} />
-            ) : (
-              <SurveyHub />
-            )
-          ) : currentMode === 'neck-fit-modeler' ? (
-            <NeckFitModelingTool />
-          ) : currentMode === 'churn-trends' ? (
-            <ChurnTrendsChart />
-          ) : currentMode === 'conversation-trends' ? (
-            <ConversationTrendsChart />
-          ) : (
-            <ConversationDisplay
-              conversations={getCurrentConversations()}
-              isLoading={isLoading}
-              error={error}
-            />
-          )}
+        <div className={`flex-1 ${deferredMode === 'churn-trends' || deferredMode === 'conversation-trends' || deferredMode === 'api-data-manager' || deferredMode === 'survey-manager' || deferredMode === 'tools' || deferredMode === 'zoom' || deferredMode === 'analytics' || deferredMode === 'labeling-data' || deferredMode === 'bug-triage' || deferredMode === 'jira-status' || deferredMode === 'text-interview' || deferredMode === 'halo-surveys' || deferredMode === 'neck-fit-modeler' || deferredAdminMode === 'download' ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+          <ModePanel
+            mode={deferredMode}
+            adminMode={deferredAdminMode}
+            conversations={conversations}
+            isLoading={isLoading}
+            error={error}
+            pathname={location.pathname}
+            setCurrentMode={setCurrentMode}
+            setAdminMode={setAdminMode}
+          />
         </div>
 
         {/* Prompt Input */}
-        {adminMode !== 'download' && currentMode !== 'churn-trends' && currentMode !== 'conversation-trends' && currentMode !== 'api-data-manager' && currentMode !== 'survey-manager' && currentMode !== 'tools' && currentMode !== 'zoom' && currentMode !== 'analytics' && currentMode !== 'labeling-data' && currentMode !== 'bug-triage' && currentMode !== 'jira-status' && currentMode !== 'text-interview' && currentMode !== 'halo-surveys' && currentMode !== 'neck-fit-modeler' && (
+        {deferredAdminMode !== 'download' && deferredMode !== 'churn-trends' && deferredMode !== 'conversation-trends' && deferredMode !== 'api-data-manager' && deferredMode !== 'survey-manager' && deferredMode !== 'tools' && deferredMode !== 'zoom' && deferredMode !== 'analytics' && deferredMode !== 'labeling-data' && deferredMode !== 'bug-triage' && deferredMode !== 'jira-status' && deferredMode !== 'text-interview' && deferredMode !== 'halo-surveys' && deferredMode !== 'neck-fit-modeler' && (
           <div className="bg-white border-t border-gray-200 p-6">
             {/* Clear Conversation Button for Survicate Mode */}
-            {currentMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (
+            {deferredMode === 'survicate' && conversations.survicate && conversations.survicate.length > 0 && (
               <div className="mb-4 flex justify-end">
                 <button
                   onClick={clearSurvicateConversations}
@@ -963,17 +915,17 @@ function App() {
               onSendMessage={handleSendMessage}
               isLoading={isLoading}
               placeholder={
-                adminMode === 'claude' ? 'Ask Claude anything...' :
-                currentMode === 'conversations' ? 'Search Gladly conversation data...' :
-                currentMode === 'survicate' ? 'Ask about cancellation survey data (e.g., "What are the main cancellation reasons?")' :
+                deferredAdminMode === 'claude' ? 'Ask Claude anything...' :
+                deferredMode === 'conversations' ? 'Search Gladly conversation data...' :
+                deferredMode === 'survicate' ? 'Ask about cancellation survey data (e.g., "What are the main cancellation reasons?")' :
                 'Ask Claude to analyze your conversation data (e.g., "What are the main customer complaints?")'
               }
               exampleQuestions={
-                currentMode === 'ask' ? [
+                deferredMode === 'ask' ? [
                   'What are the main customer complaints or issues mentioned in the conversations?',
                   'What are the most common topics or themes in the conversation data?',
                   'Analyze customer sentiment and satisfaction trends in the conversations'
-                ] : currentMode === 'survicate' ? [
+                ] : deferredMode === 'survicate' ? [
                   'What are the main reasons customers canceled their Halo Pack Membership?',
                   'How have GPS and location accuracy complaints changed over time?',
                   'What are the most common themes in customer feedback about battery life and charging issues?'

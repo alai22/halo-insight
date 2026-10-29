@@ -58,6 +58,7 @@ const PlacementPanel = ({
   onInputChange,
   onOptimizePlacement,
   optimizeMessage,
+  optimizing = false,
 }) => {
   const set = (key) => (val) => onInputChange({ ...inputs, [key]: val });
   if (!onOptimizePlacement) return null;
@@ -70,10 +71,11 @@ const PlacementPanel = ({
       <button
         type="button"
         onClick={onOptimizePlacement}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors shadow-sm"
+        disabled={optimizing}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors shadow-sm disabled:opacity-60 disabled:cursor-wait"
       >
-        <RotateCw className="h-4 w-4" />
-        Re-run auto-fit
+        <RotateCw className={`h-4 w-4 ${optimizing ? 'animate-spin' : ''}`} />
+        {optimizing ? 'Fitting…' : 'Re-run auto-fit'}
       </button>
       {optimizeMessage && (
         <p className="text-[10px] text-indigo-800 leading-snug">{optimizeMessage}</p>
@@ -118,6 +120,7 @@ const NeckFitControls = ({
   onSmoothingChange,
   onOptimizePlacement,
   optimizeMessage,
+  optimizing = false,
   activeTab,
   onActiveTabChange,
 }) => {
@@ -151,6 +154,7 @@ const NeckFitControls = ({
         onInputChange={onInputChange}
         onOptimizePlacement={onOptimizePlacement}
         optimizeMessage={optimizeMessage}
+        optimizing={optimizing}
       />
 
       <div className="space-y-4">

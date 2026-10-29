@@ -23,7 +23,9 @@ import {
   maxPolylinePolygonPenetration,
   offsetPolygon,
   pointInPolygon,
+  pointInPolygonXY,
   pointToPolygonBoundary,
+  pointToPolygonBoundaryXY,
   polylineEntryTangent,
   polylineExitTangent,
   polygonCentroid,
@@ -184,7 +186,6 @@ function hardwareFarStartAnchor(seatPt, neckCenter, clearanceOffset, halfThickne
  * @param {{ electronics: number, gps: number }} halfThicknesses max half-thickness for settle conservatism (electronics)
  * @param {number} gpsBaseThickness mm at GPS junction half (strap half uses 2×)
  * @param {Point} inward unit vector toward neck
- * @param {ReturnType<typeof buildArcLengthTable>} seatingTable
  */
 function settleHardwareTowardNeck(
   electronicsPath,
@@ -192,8 +193,7 @@ function settleHardwareTowardNeck(
   neckPoints,
   halfThicknesses,
   gpsBaseThickness,
-  inward,
-  seatingTable
+  inward
 ) {
   const hasElec = electronicsPath.length >= 2;
   const hasGps = gpsPath.length >= 2;
@@ -206,28 +206,41 @@ function settleHardwareTowardNeck(
   let insetMm = 0;
   let minNeckClearance = Infinity;
 
+  // Pad samples are translation-invariant, so split once and shift the query point.
+  const probes = [];
+  if (hasElec) probes.push({ path: electronicsPath, halfThickness: halfThicknesses.electronics });
+  if (hasGps) {
+    const gpsSegs = gpsContactPadSegments(gpsPath, gpsBaseThickness);
+    for (let i = 0; i < gpsSegs.length; i++) {
+      probes.push({ path: gpsSegs[i].path, halfThickness: gpsSegs[i].halfThickness });
+    }
+  }
+
   for (let inset = SETTLE_STEP_MM; inset <= SETTLE_MAX_INSET_MM; inset += SETTLE_STEP_MM) {
     const dx = inward.x * inset;
     const dy = inward.y * inset;
-    const trialElec = hasElec ? translatePath(electronicsPath, dx, dy) : electronicsPath;
-    const trialGps = hasGps ? translatePath(gpsPath, dx, dy) : gpsPath;
-    const pads = analyzeContactPads(
-      [
-        ...(hasElec
-          ? [{ path: trialElec, halfThickness: halfThicknesses.electronics, segment: 'electronics' }]
-          : []),
-        ...(hasGps ? gpsContactPadSegments(trialGps, gpsBaseThickness) : []),
-      ],
-      seatingTable,
-      neckPoints
-    );
-    if (pads.some((p) => !p.valid)) break;
+    let stepOk = true;
+    let stepMin = Infinity;
+    for (let p = 0; p < probes.length; p++) {
+      const probed = probePathClearance(probes[p].path, probes[p].halfThickness, dx, dy, neckPoints);
+      if (!probed.ok) {
+        stepOk = false;
+        break;
+      }
+      if (probed.min < stepMin) stepMin = probed.min;
+    }
+    if (!stepOk) break;
 
-    bestElec = trialElec;
-    bestGps = trialGps;
     insetMm = inset;
-    minNeckClearance = Math.min(...pads.map((p) => p.neckClearance));
+    minNeckClearance = stepMin;
     if (minNeckClearance <= SETTLE_CONTACT_THRESHOLD_MM) break;
+  }
+
+  if (insetMm > 0) {
+    const dx = inward.x * insetMm;
+    const dy = inward.y * insetMm;
+    if (hasElec) bestElec = translatePath(electronicsPath, dx, dy);
+    if (hasGps) bestGps = translatePath(gpsPath, dx, dy);
   }
 
   return {
@@ -236,6 +249,32 @@ function settleHardwareTowardNeck(
     insetMm,
     minNeckClearance,
   };
+}
+
+/**
+ * Same sample points and validity rule as analyzeContactPads, without seating-path work.
+ * @returns {{ ok: boolean, min: number }}
+ */
+function probePathClearance(path, halfThickness, dx, dy, neckPoints) {
+  if (path.length < 2) return { ok: true, min: Infinity };
+  const total = polylineLength(path);
+  const steps = Math.max(1, Math.ceil(total / 10));
+  const last = path.length - 1;
+  let min = Infinity;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const idx = Math.min(Math.floor(t * last), last - 1);
+    const frac = t * last - idx;
+    const a = path[idx];
+    const b = path[idx + 1];
+    const px = a.x + frac * (b.x - a.x) + dx;
+    const py = a.y + frac * (b.y - a.y) + dy;
+    if (pointInPolygonXY(px, py, neckPoints)) return { ok: false, min };
+    const clearance = pointToPolygonBoundaryXY(px, py, neckPoints) - halfThickness;
+    if (clearance < -0.15) return { ok: false, min };
+    if (clearance < min) min = clearance;
+  }
+  return { ok: true, min };
 }
 
 /**
@@ -486,19 +525,30 @@ function computeNeckContactPoints(centerline, table, clearanceOffset) {
  * @param {{ smoothing?: number }} [options]
  * @returns {FitResult}
  */
-export function computeFit(rawNeckPoints, inputs, options = {}) {
-  const warnings = [];
-  const smoothing = options.smoothing ?? 0;
-
+/**
+ * Neck skin, seating loop, and arc table. Independent of collar placement and rotation,
+ * so the placement search can build this once and reuse it.
+ * @param {Point[]} rawNeckPoints
+ * @param {FitInputs} inputs
+ * @param {number} smoothing
+ */
+function prepareNeckGeometry(rawNeckPoints, inputs, smoothing) {
   let neckPoints = rawNeckPoints.map((p) => ({ ...p }));
   if (smoothing > 0) {
     neckPoints = smoothPolygon(neckPoints, smoothing);
   }
   neckPoints = ensureTracheaDown(neckPoints);
   neckPoints = scaleProfileToPerimeter(neckPoints, inputs.neckCircumference);
-
   const collarOffsetPoints = offsetPolygon(neckPoints, inputs.clearanceOffset);
   const table = buildArcLengthTable(collarOffsetPoints);
+  return { neckPoints, collarOffsetPoints, table };
+}
+
+export function computeFit(rawNeckPoints, inputs, options = {}) {
+  const warnings = [];
+  const smoothing = options.smoothing ?? 0;
+  const prepared = options.preparedNeck || prepareNeckGeometry(rawNeckPoints, inputs, smoothing);
+  const { neckPoints, collarOffsetPoints, table } = prepared;
   const collarPathLength = table.total;
 
   // Trachea (+y / ground) is the strap-side anchor; placement is offset from there.
@@ -565,8 +615,7 @@ export function computeFit(rawNeckPoints, inputs, options = {}) {
     neckPoints,
     { electronics: elecHalf, gps: inputs.gpsAntennaThickness },
     gpsBaseThickness,
-    settleInward,
-    table
+    settleInward
   );
   electronicsPath = settled.electronicsPath;
   gpsPath = settled.gpsPath;
@@ -829,52 +878,81 @@ function placementImprovement(fromResult, toResult) {
  *
  * @param {Point[]} rawNeckPoints
  * @param {FitInputs} inputs
- * @param {{ smoothing?: number, coarseStep?: number, fineStep?: number, maxIterations?: number }} [options]
- * @returns {{ optimalPlacementS: number, optimalBodyRotationDeg: number, fitResult: FitResult, baselineMaxNeckGap: number, baselineStrapEndpointGap: number }}
+ * @param {{ smoothing?: number, coarseStep?: number, fineStep?: number, maxIterations?: number, checkpoint?: () => (Promise<void> | void) }} [options]
+ * checkpoint may return a promise so the search can yield the main thread between evaluations.
+ * @returns {Promise<{ optimalPlacementS: number, optimalBodyRotationDeg: number, fitResult: FitResult, baselineMaxNeckGap: number, baselineStrapEndpointGap: number }>}
  */
-export function optimizeCollarPlacement(rawNeckPoints, inputs, options = {}) {
+export async function optimizeCollarPlacement(rawNeckPoints, inputs, options = {}) {
   const smoothing = options.smoothing ?? 0;
   const coarseStep = options.coarseStep ?? 5;
   const fineStep = options.fineStep ?? 1;
   const maxIterations = options.maxIterations ?? 200;
   const rotationStep = options.rotationStep ?? 3;
   const rotationRange = options.rotationRange ?? 35;
+  const checkpoint = options.checkpoint;
+  const rotLimit = rotationRange + rotationStep;
 
-  const baseline = computeFit(rawNeckPoints, inputs, { smoothing });
+  const preparedNeck = prepareNeckGeometry(rawNeckPoints, inputs, smoothing);
+  const baseline = computeFit(rawNeckPoints, inputs, { smoothing, preparedNeck });
   const loop = baseline.collarPathLength;
 
-  const evaluate = (offsetS, rotationDeg) => {
-    const placementS = normalizePlacementOffset(offsetS, loop);
-    const result = computeFit(
-      rawNeckPoints,
-      { ...inputs, electronicsPlacementS: placementS, electronicsBodyRotationDeg: rotationDeg },
-      { smoothing }
-    );
-    return { placementS, rotationDeg, result, score: scoreFitForPlacement(result, inputs) };
+  const pause = async () => {
+    if (!checkpoint) return;
+    const pending = checkpoint();
+    if (pending && typeof pending.then === 'function') await pending;
   };
 
-  /** Best rotation for a fixed placement (hardware pose, not neck tangent). */
-  const bestRotationAt = (placementS) => {
-    const baseRot = inputs.electronicsBodyRotationDeg ?? 0;
-    let best = evaluate(placementS, baseRot);
-    for (let d = -rotationRange; d <= rotationRange; d += rotationStep) {
-      const trial = evaluate(placementS, d);
+  const evalCache = new Map();
+  const evaluate = async (offsetS, rotationDeg) => {
+    const placementS = normalizePlacementOffset(offsetS, loop);
+    const clampedRot = Math.max(-rotLimit, Math.min(rotLimit, rotationDeg));
+    const rotKey = Math.round(clampedRot * 1000) / 1000;
+    const placeKey = Math.round(placementS * 1000) / 1000;
+    const key = placeKey + '|' + rotKey;
+    const cached = evalCache.get(key);
+    if (cached) return cached;
+    await pause();
+    const result = computeFit(
+      rawNeckPoints,
+      { ...inputs, electronicsPlacementS: placementS, electronicsBodyRotationDeg: rotKey },
+      { smoothing, preparedNeck }
+    );
+    const scored = { placementS, rotationDeg: rotKey, result, score: scoreFitForPlacement(result, inputs) };
+    evalCache.set(key, scored);
+    return scored;
+  };
+
+  /**
+   * Best rotation for a fixed placement.
+   * Absolute sweeps cover ±range around 0 (plus the caller's current rotation).
+   * Relative sweeps stay near `center` so the placement climb does not rescan every pose.
+   */
+  const bestRotationAt = async (placementS, center, range, absolute = false) => {
+    const origin = absolute ? 0 : center;
+    let best = await evaluate(placementS, absolute ? (inputs.electronicsBodyRotationDeg ?? 0) : center);
+    for (let d = origin - range; d <= origin + range + 1e-6; d += rotationStep) {
+      const trial = await evaluate(placementS, d);
       if (trial.score < best.score) best = trial;
     }
-    for (let d = best.rotationDeg - rotationStep; d <= best.rotationDeg + rotationStep; d += 1) {
-      const trial = evaluate(placementS, d);
+    for (let d = best.rotationDeg - rotationStep; d <= best.rotationDeg + rotationStep + 1e-6; d += 1) {
+      const trial = await evaluate(placementS, d);
       if (trial.score < best.score) best = trial;
     }
     return best;
   };
 
-  let current = bestRotationAt(inputs.electronicsPlacementS);
+  let current = await bestRotationAt(
+    inputs.electronicsPlacementS,
+    inputs.electronicsBodyRotationDeg ?? 0,
+    rotationRange,
+    true
+  );
 
-  const climb = (step) => {
+  const climb = async (step, range) => {
     const minGain = 0.05;
     for (let i = 0; i < maxIterations; i++) {
-      const cw = bestRotationAt(current.placementS + step);
-      const ccw = bestRotationAt(current.placementS - step);
+      const cw = await bestRotationAt(current.placementS + step, current.rotationDeg, range, false);
+      const ccw = await bestRotationAt(current.placementS - step, current.rotationDeg, range, false);
       const cwGain = placementImprovement(current.result, cw.result);
       const ccwGain = placementImprovement(current.result, ccw.result);
 
@@ -899,8 +977,14 @@ export function optimizeCollarPlacement(rawNeckPoints, inputs, options = {}) {
     }
   };
 
-  climb(coarseStep);
-  climb(fineStep);
+  // Tight rotation window while walking placement, then one full pose sweep to
+  // recover a rotation the window could not see, then a short fine walk.
+  const climbWindow = rotationStep * 2;
+  await climb(coarseStep, climbWindow);
+  await climb(fineStep, rotationStep);
+  const polished = await bestRotationAt(current.placementS, current.rotationDeg, rotationRange, true);
+  if (polished.score < current.score) current = polished;
+  await climb(fineStep, rotationStep);
 
   return {
     optimalPlacementS: Math.round(current.placementS * 10) / 10,

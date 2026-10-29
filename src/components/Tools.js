@@ -1,4 +1,5 @@
 import React from 'react';
+import { prefetchMode } from './modePrefetch';
 import {
   Download,
   Database,
@@ -271,6 +272,8 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
                     key={tool.id}
                     type="button"
                     onClick={tool.action}
+                    onPointerEnter={() => prefetchMode(tool.id)}
+                    onFocus={() => prefetchMode(tool.id)}
                     className={`p-5 border-2 rounded-lg text-left transition-all hover:shadow-md ${
                       isActive
                         ? `${tool.bgColor} ${tool.borderColor}`

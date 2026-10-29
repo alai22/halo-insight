@@ -27,7 +27,9 @@ const NeckFitModelingTool = () => {
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState(null);
   const [optimizeMessage, setOptimizeMessage] = useState(null);
+  const [optimizing, setOptimizing] = useState(false);
   const [controlsTab, setControlsTab] = useState('neck');
+  const fitRunRef = useRef(0);
 
   const activeProfile = useMemo(() => {
     if (customProfile && profileId === customProfile.id) return customProfile;
@@ -42,32 +44,68 @@ const NeckFitModelingTool = () => {
     return computeFit(activeProfile.points, inputs, { smoothing });
   }, [activeProfile, inputs, smoothing]);
 
-  const applyOptimizedPlacement = useCallback(
-    (profilePoints, currentInputs) => {
-      const {
-        optimalPlacementS,
-        optimalBodyRotationDeg,
-        fitResult: optimized,
-        baselineMaxNeckGap,
-      } = optimizeCollarPlacement(profilePoints, currentInputs, { smoothing });
-      setInputs((prev) => ({
-        ...prev,
-        electronicsPlacementS: optimalPlacementS,
-        electronicsBodyRotationDeg: optimalBodyRotationDeg,
-      }));
-      const gapDelta = baselineMaxNeckGap - optimized.maxNeckGap;
-      setOptimizeMessage(
-        `Placement ${optimalPlacementS.toFixed(0)} mm, body rotation ${optimalBodyRotationDeg.toFixed(0)}° — gap ${optimized.maxNeckGap.toFixed(1)} mm (${gapDelta >= 0 ? '−' : '+'}${Math.abs(gapDelta).toFixed(1)}), ${optimized.contactPadViolations} pad violations`
-      );
+  const runOptimization = useCallback(
+    async (profilePoints, currentInputs) => {
+      const runId = ++fitRunRef.current;
+      setOptimizing(true);
+      setOptimizeMessage('Fitting collar…');
+      let sliceStart = performance.now();
+      try {
+        const {
+          optimalPlacementS,
+          optimalBodyRotationDeg,
+          fitResult: optimized,
+          baselineMaxNeckGap,
+        } = await optimizeCollarPlacement(profilePoints, currentInputs, {
+          smoothing,
+          checkpoint: () => {
+            if (runId !== fitRunRef.current) {
+              const aborted = new Error('aborted');
+              aborted.name = 'AbortError';
+              throw aborted;
+            }
+            if (performance.now() - sliceStart < 12) return undefined;
+            sliceStart = performance.now();
+            return new Promise((resolve) => {
+              setTimeout(resolve, 0);
+            });
+          },
+        });
+        if (runId !== fitRunRef.current) return;
+        const latest = inputsRef.current;
+        const edited = Object.keys(currentInputs).some((key) => {
+          if (key === 'electronicsPlacementS' || key === 'electronicsBodyRotationDeg') return false;
+          return latest[key] !== currentInputs[key];
+        });
+        if (edited) return;
+        setInputs((prev) => ({
+          ...prev,
+          electronicsPlacementS: optimalPlacementS,
+          electronicsBodyRotationDeg: optimalBodyRotationDeg,
+        }));
+        const gapDelta = baselineMaxNeckGap - optimized.maxNeckGap;
+        setOptimizeMessage(
+          `Placement ${optimalPlacementS.toFixed(0)} mm, body rotation ${optimalBodyRotationDeg.toFixed(0)}° — gap ${optimized.maxNeckGap.toFixed(1)} mm (${gapDelta >= 0 ? '−' : '+'}${Math.abs(gapDelta).toFixed(1)}), ${optimized.contactPadViolations} pad violations`
+        );
+      } catch (err) {
+        if (err?.name !== 'AbortError' && runId === fitRunRef.current) {
+          setOptimizeMessage('Auto-fit failed. Adjust placement manually.');
+        }
+      } finally {
+        if (runId === fitRunRef.current) setOptimizing(false);
+      }
     },
     [smoothing]
   );
 
   // Re-fit placement when the neck profile changes (initial load, profile switch, image upload).
   useEffect(() => {
-    if (!activeProfile?.points?.length) return;
-    applyOptimizedPlacement(activeProfile.points, inputsRef.current);
-  }, [activeProfile, applyOptimizedPlacement]);
+    if (!activeProfile?.points?.length) return undefined;
+    runOptimization(activeProfile.points, inputsRef.current);
+    return () => {
+      fitRunRef.current += 1;
+    };
+  }, [activeProfile, runOptimization]);
 
   const handleImageUpload = useCallback(async (file) => {
     setImageLoading(true);
@@ -84,9 +122,9 @@ const NeckFitModelingTool = () => {
   }, [smoothing]);
 
   const handleOptimizePlacement = useCallback(() => {
-    if (!activeProfile?.points?.length) return;
-    applyOptimizedPlacement(activeProfile.points, inputsRef.current);
-  }, [activeProfile, applyOptimizedPlacement]);
+    if (!activeProfile?.points?.length || optimizing) return;
+    runOptimization(activeProfile.points, inputsRef.current);
+  }, [activeProfile, optimizing, runOptimization]);
 
   const handleExportSvg = useCallback(() => {
     if (!fitResult) return;
@@ -143,6 +181,7 @@ const NeckFitModelingTool = () => {
               onSmoothingChange={setSmoothing}
               onOptimizePlacement={handleOptimizePlacement}
               optimizeMessage={optimizeMessage}
+              optimizing={optimizing}
               activeTab={controlsTab}
               onActiveTabChange={setControlsTab}
             />
