@@ -157,6 +157,147 @@ function CollapsibleTable({ label = 'Show data table', children }) {
   );
 }
 
+function ChartCard({ kicker, title, description, children }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-5 h-full">
+      {kicker ? (
+        <div className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-1">
+          {kicker}
+        </div>
+      ) : null}
+      <h3 className="text-lg font-semibold text-gray-900 mb-1">{title}</h3>
+      {description ? <p className="text-sm text-gray-500 mb-4">{description}</p> : null}
+      {children}
+    </div>
+  );
+}
+
+function DateVolumeTable({ rows }) {
+  if (!rows?.length) return null;
+  return (
+    <CollapsibleTable label="Show date table">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="text-left text-gray-500 border-b">
+            <th className="py-2 pr-4 font-medium">Date</th>
+            <th className="py-2 pr-4 font-medium">Duration</th>
+            <th className="py-2 pr-4 font-medium">Sessions</th>
+            <th className="py-2 pr-4 font-medium">Users</th>
+            <th className="py-2 font-medium">Files</th>
+          </tr>
+        </thead>
+        <tbody>
+          {[...rows].reverse().map((d) => (
+            <tr key={d.date} className="border-b border-gray-100">
+              <td className="py-2 pr-4 text-gray-900 font-mono text-xs">{d.date}</td>
+              <td className="py-2 pr-4 text-gray-700">{d.human}</td>
+              <td className="py-2 pr-4 text-gray-500">{d.sessions}</td>
+              <td className="py-2 pr-4 text-gray-500">{d.users}</td>
+              <td className="py-2 text-gray-500">{d.files}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </CollapsibleTable>
+  );
+}
+
+function ActivityDurationTable({ rows, labelHeader, formatName }) {
+  if (!rows?.length) return null;
+  const nameOf = formatName || ((row) => row.label);
+  return (
+    <CollapsibleTable label={`Show ${labelHeader.toLowerCase()} table`}>
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="text-left text-gray-500 border-b">
+            <th className="py-2 pr-4 font-medium">{labelHeader}</th>
+            <th className="py-2 pr-4 font-medium">Duration</th>
+            <th className="py-2 font-medium">Seconds</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label} className="border-b border-gray-100">
+              <td className="py-2 pr-4 text-gray-900">{nameOf(row)}</td>
+              <td className="py-2 pr-4 text-gray-700">{row.human}</td>
+              <td className="py-2 text-gray-500">{Number(row.seconds).toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </CollapsibleTable>
+  );
+}
+
+function LabelerContributionChart({ data, height, colorMap, emptyText }) {
+  if (!data?.length) {
+    return <p className="text-sm text-gray-500">{emptyText}</p>;
+  }
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis
+            type="number"
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v) => formatSecondsShort(v)}
+          />
+          <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+          <Tooltip
+            formatter={(value, _name, props) => [
+              `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.files} files`,
+              props.payload.email,
+            ]}
+          />
+          <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
+            {data.map((entry, index) => (
+              <Cell
+                key={entry.email}
+                fill={(colorMap && colorMap[entry.email]) || COLORS[index % COLORS.length]}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function LabelerTable({ rows }) {
+  if (!rows?.length) return null;
+  return (
+    <CollapsibleTable label="Show labeler table">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="text-left text-gray-500 border-b">
+            <th className="py-2 pr-4 font-medium">Rank</th>
+            <th className="py-2 pr-4 font-medium">Labeler</th>
+            <th className="py-2 pr-4 font-medium">Duration</th>
+            <th className="py-2 pr-4 font-medium">Sessions</th>
+            <th className="py-2 font-medium">Files</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((u, i) => (
+            <tr key={u.email} className="border-b border-gray-100">
+              <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
+              <td className="py-2 pr-4 text-gray-900">{u.email}</td>
+              <td className="py-2 pr-4 text-gray-700">{u.human}</td>
+              <td className="py-2 pr-4 text-gray-500">{u.sessions}</td>
+              <td className="py-2 text-gray-500">{u.files}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </CollapsibleTable>
+  );
+}
+
 function formatSecondsShort(seconds) {
   const s = Number(seconds) || 0;
   if (s < 60) return `${s.toFixed(1)}s`;
@@ -578,16 +719,6 @@ const LabelingDataDashboard = () => {
   const labelerKeys = useMemo(() => users.map((u) => u.email).filter(Boolean), [users]);
   const labelerColors = useMemo(() => labelerColorMap(labelerKeys), [labelerKeys]);
 
-  const chartData = useMemo(
-    () =>
-      activities.map((a) => ({
-        name: a.name,
-        label: a.label,
-        seconds: a.seconds,
-      })),
-    [activities]
-  );
-
   const userContributionData = useMemo(
     () =>
       users.map((u) => ({
@@ -641,15 +772,6 @@ const LabelingDataDashboard = () => {
     () => labelerColorMap(gpsLabelerKeys),
     [gpsLabelerKeys]
   );
-  const gpsChartData = useMemo(
-    () =>
-      gpsActivities.map((a) => ({
-        name: displayLabel(a.name),
-        label: displayLabel(a.label),
-        seconds: a.seconds,
-      })),
-    [gpsActivities]
-  );
   const gpsUserContributionData = useMemo(
     () =>
       gpsUsers.map((u) => ({
@@ -689,7 +811,34 @@ const LabelingDataDashboard = () => {
   const unprocessedEmails = stagingEmails.filter((e) => !outputEmails.includes(e));
   const userChartHeight = Math.max(220, userContributionData.length * 48 + 48);
   const gpsUserChartHeight = Math.max(180, gpsUserContributionData.length * 48 + 48);
-  const hasGps = (gpsTotals.files || 0) > 0 || gpsChartData.length > 0;
+  const hasGps =
+    (gpsTotals.files || 0) > 0 || gpsActivities.length > 0 || (gps?.by_date || []).length > 0;
+  const collarCount = useMemo(() => {
+    const sns = new Set();
+    [...users, ...gpsUsers].forEach((user) => {
+      (user.collar_sns || []).forEach((sn) => {
+        if (sn) sns.add(sn);
+      });
+    });
+    return sns.size;
+  }, [users, gpsUsers]);
+  const chartPairClass = hasGps
+    ? 'grid grid-cols-1 xl:grid-cols-2 gap-4'
+    : 'grid grid-cols-1 gap-4';
+  const breadthLabelerCount = useMemo(
+    () => new Set([...labelerKeys, ...gpsLabelerKeys]).size,
+    [labelerKeys, gpsLabelerKeys]
+  );
+  const breadthSummary = [
+    `${activities.length} posture${activities.length === 1 ? '' : 's'}`,
+    hasGps
+      ? `${gpsActivities.length} environment${gpsActivities.length === 1 ? '' : 's'}`
+      : null,
+    `${collarCount} collar${collarCount === 1 ? '' : 's'}`,
+    `${breadthLabelerCount} labeler${breadthLabelerCount === 1 ? '' : 's'}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   if (loading && !data) {
     return (
@@ -989,436 +1138,178 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      <div className="mb-2">
-        <h2 className="text-xl font-semibold text-gray-900">Posture</h2>
-        <p className="text-sm text-gray-500">
-          From <span className="font-mono text-xs">activity_session_*</span>
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <SummaryCard
-          icon={Users}
-          label="Processed users"
-          value={totals.users ?? 0}
-          hint={
-            stagingEmails.length > (totals.users ?? 0)
-              ? `${stagingEmails.length} in staging`
-              : null
-          }
-        />
-        <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
-        <SummaryCard icon={Dog} label="Files" value={totals.files ?? 0} />
-        <SummaryCard
-          icon={Clock}
-          label="Total labeled duration"
-          value={totals.duration_human || formatSecondsShort(totals.duration_seconds)}
-        />
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          Duration by date · stacked by labeler
-        </h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Session-day volume with each labeler as a stack segment
-        </p>
-        <StackedDurationChart
-          data={dateLabelerStack}
-          seriesKeys={labelerKeys}
-          colorMap={labelerColors}
-          xKey="label"
-          emptyText="No dated sessions found."
-        />
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          Duration by posture · stacked by labeler
-        </h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Each posture bar broken down by who labeled it
-        </p>
-        <StackedDurationChart
-          data={activityLabelerStack}
-          seriesKeys={labelerKeys}
-          colorMap={labelerColors}
-          xKey="name"
-          emptyText="No non-zero activity durations found."
-        />
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">Duration by posture</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Posture / activity labels from{' '}
-          <span className="font-mono text-xs">activity_session_*_durations.txt</span>
-        </p>
-        {chartData.length === 0 ? (
-          <p className="text-sm text-gray-500">No non-zero activity durations found.</p>
-        ) : (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                <YAxis
-                  tick={{ fontSize: 12 }}
-                  tickFormatter={(v) => formatSecondsShort(v)}
-                />
-                <Tooltip
-                  formatter={(value, _name, props) => [
-                    `${formatSecondsShort(value)} (${Number(value).toFixed(1)}s)`,
-                    props.payload.label,
-                  ]}
-                />
-                <Bar dataKey="seconds" radius={[4, 4, 0, 0]}>
-                  {chartData.map((entry, index) => (
-                    <Cell key={entry.label} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+      <div className={hasGps ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8' : 'mb-8'}>
+        <div>
+          <div className="text-base font-semibold text-gray-900">Posture</div>
+          <p className="text-sm text-gray-500 mb-3">
+            From <span className="font-mono text-xs">activity_session_*</span>
+          </p>
+          <div className={hasGps ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-2 md:grid-cols-4 gap-4'}>
+            <SummaryCard
+              icon={Users}
+              label="Processed users"
+              value={totals.users ?? 0}
+              hint={
+                stagingEmails.length > (totals.users ?? 0)
+                  ? `${stagingEmails.length} in staging`
+                  : null
+              }
+            />
+            <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
+            <SummaryCard icon={Dog} label="Files" value={totals.files ?? 0} />
+            <SummaryCard
+              icon={Clock}
+              label="Labeled duration"
+              value={totals.duration_human || formatSecondsShort(totals.duration_seconds)}
+            />
           </div>
-        )}
-
-        {activities.length > 0 ? (
-          <CollapsibleTable label="Show posture table">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-2 pr-4 font-medium">Posture</th>
-                  <th className="py-2 pr-4 font-medium">Duration</th>
-                  <th className="py-2 font-medium">Seconds</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activities.map((a) => (
-                  <tr key={a.label} className="border-b border-gray-100">
-                    <td className="py-2 pr-4 text-gray-900">{a.label}</td>
-                    <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                    <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CollapsibleTable>
+        </div>
+        {hasGps ? (
+          <div>
+            <div className="text-base font-semibold text-gray-900">Indoor / outdoor</div>
+            <p className="text-sm text-gray-500 mb-3">
+              From <span className="font-mono text-xs">gps_session_*</span>
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
+              <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
+              <SummaryCard icon={Dog} label="GPS files" value={gpsTotals.files ?? 0} />
+              <SummaryCard
+                icon={Clock}
+                label="GPS duration"
+                value={gpsTotals.duration_human || formatSecondsShort(gpsTotals.duration_seconds)}
+              />
+            </div>
+          </div>
         ) : null}
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">Contribution by labeler</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Ranked by total labeled duration from processed{' '}
-          <span className="font-mono text-xs">activity_session_*_durations.txt</span>
-        </p>
-        {userContributionData.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            No processed users yet. Click Process staging to build extracted-txt from staging.
+      <section className="mb-10">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold text-gray-900">Data sync</h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+            When labeled sessions arrived, and who sent them. Bar height is that day’s duration;
+            color is the labeler.
           </p>
-        ) : (
-          <>
-            <div style={{ height: userChartHeight }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={userContributionData}
-                  layout="vertical"
-                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 12 }}
-                    tickFormatter={(v) => formatSecondsShort(v)}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="label"
-                    width={120}
-                    tick={{ fontSize: 12 }}
-                  />
-                  <Tooltip
-                    formatter={(value, _name, props) => [
-                      `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.files} files`,
-                      props.payload.email,
-                    ]}
-                  />
-                  <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
-                    {userContributionData.map((entry, index) => (
-                      <Cell key={entry.email} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <CollapsibleTable label="Show labeler table">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="py-2 pr-4 font-medium">Rank</th>
-                    <th className="py-2 pr-4 font-medium">Labeler</th>
-                    <th className="py-2 pr-4 font-medium">Duration</th>
-                    <th className="py-2 pr-4 font-medium">Sessions</th>
-                    <th className="py-2 font-medium">Files</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userContributionData.map((u, i) => (
-                    <tr key={u.email} className="border-b border-gray-100">
-                      <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
-                      <td className="py-2 pr-4 text-gray-900">{u.email}</td>
-                      <td className="py-2 pr-4 text-gray-700">{u.human}</td>
-                      <td className="py-2 pr-4 text-gray-500">{u.sessions}</td>
-                      <td className="py-2 text-gray-500">{u.files}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CollapsibleTable>
-          </>
-        )}
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">Volume by date</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Labeled duration per session day (from activity_session timestamps)
-        </p>
-        {byDateChartData.length === 0 ? (
-          <p className="text-sm text-gray-500">No dated sessions found.</p>
-        ) : (
-          <>
-            <div className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={byDateChartData}
-                  margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                  <YAxis
-                    tick={{ fontSize: 12 }}
-                    tickFormatter={(v) => formatSecondsShort(v)}
-                  />
-                  <Tooltip
-                    formatter={(value, _name, props) => [
-                      `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.users} users`,
-                      props.payload.date,
-                    ]}
-                  />
-                  <Bar dataKey="seconds" fill="#4285F4" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <CollapsibleTable label="Show date table">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="py-2 pr-4 font-medium">Date</th>
-                    <th className="py-2 pr-4 font-medium">Duration</th>
-                    <th className="py-2 pr-4 font-medium">Sessions</th>
-                    <th className="py-2 pr-4 font-medium">Users</th>
-                    <th className="py-2 font-medium">Files</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...byDateChartData].reverse().map((d) => (
-                    <tr key={d.date} className="border-b border-gray-100">
-                      <td className="py-2 pr-4 text-gray-900 font-mono text-xs">{d.date}</td>
-                      <td className="py-2 pr-4 text-gray-700">{d.human}</td>
-                      <td className="py-2 pr-4 text-gray-500">{d.sessions}</td>
-                      <td className="py-2 pr-4 text-gray-500">{d.users}</td>
-                      <td className="py-2 text-gray-500">{d.files}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CollapsibleTable>
-          </>
-        )}
-      </div>
-
-      <div className="mb-2 mt-2">
-        <h2 className="text-xl font-semibold text-gray-900">Indoor / Outdoor</h2>
-        <p className="text-sm text-gray-500">
-          Separate GPS environment model from{' '}
-          <span className="font-mono text-xs">gps_session_*</span>
-          {!hasGps ? ' — none processed yet (run Process staging)' : null}
-        </p>
-      </div>
-
-      {hasGps ? (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
-            <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
-            <SummaryCard icon={Dog} label="GPS files" value={gpsTotals.files ?? 0} />
-            <SummaryCard
-              icon={Clock}
-              label="GPS labeled duration"
-              value={gpsTotals.duration_human || formatSecondsShort(gpsTotals.duration_seconds)}
-            />
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-1">
-              GPS by date · stacked by labeler
-            </h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Session-day GPS volume with each labeler as a stack segment
-            </p>
+        </div>
+        <div className={`${chartPairClass} mb-4`}>
+          <ChartCard
+            kicker="Posture"
+            title="By date"
+            description="Session-day volume, stacked by labeler"
+          >
             <StackedDurationChart
-              data={gpsDateLabelerStack}
-              seriesKeys={gpsLabelerKeys}
-              colorMap={gpsLabelerColors}
+              data={dateLabelerStack}
+              seriesKeys={labelerKeys}
+              colorMap={labelerColors}
               xKey="label"
-              emptyText="No dated GPS sessions found."
+              emptyText="No dated sessions found."
             />
-          </div>
+            <DateVolumeTable rows={byDateChartData} />
+          </ChartCard>
+          {hasGps ? (
+            <ChartCard
+              kicker="Indoor / outdoor"
+              title="By date"
+              description="Session-day GPS volume, stacked by labeler"
+            >
+              <StackedDurationChart
+                data={gpsDateLabelerStack}
+                seriesKeys={gpsLabelerKeys}
+                colorMap={gpsLabelerColors}
+                xKey="label"
+                emptyText="No dated GPS sessions found."
+              />
+              <DateVolumeTable rows={gpsByDateChartData} />
+            </ChartCard>
+          ) : null}
+        </div>
+        <div className={chartPairClass}>
+          <ChartCard
+            kicker="Posture"
+            title="By labeler"
+            description="Ranked by labeled duration"
+          >
+            <LabelerContributionChart
+              data={userContributionData}
+              height={userChartHeight}
+              colorMap={labelerColors}
+              emptyText="No processed users yet. Click Process staging to build extracted-txt from staging."
+            />
+            <LabelerTable rows={userContributionData} />
+          </ChartCard>
+          {hasGps ? (
+            <ChartCard
+              kicker="Indoor / outdoor"
+              title="By labeler"
+              description="Ranked by GPS labeled duration"
+            >
+              <LabelerContributionChart
+                data={gpsUserContributionData}
+                height={gpsUserChartHeight}
+                colorMap={gpsLabelerColors}
+                emptyText="No GPS labelers yet."
+              />
+              <LabelerTable rows={gpsUserContributionData} />
+            </ChartCard>
+          ) : null}
+        </div>
+      </section>
 
-          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-1">
-              GPS by environment · stacked by labeler
-            </h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Each environment bar broken down by who labeled it
-            </p>
+      <section className="mb-10">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold text-gray-900">How broad the data is</h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+            Which postures and environments the set actually covers. {breadthSummary}. Color
+            is the labeler.
+          </p>
+        </div>
+        <div className={chartPairClass}>
+          <ChartCard
+            kicker="Posture"
+            title="By posture"
+            description="Each posture, stacked by who labeled it"
+          >
             <StackedDurationChart
-              data={gpsActivityLabelerStack}
-              seriesKeys={gpsLabelerKeys}
-              colorMap={gpsLabelerColors}
+              data={activityLabelerStack}
+              seriesKeys={labelerKeys}
+              colorMap={labelerColors}
               xKey="name"
-              emptyText="No non-zero GPS durations found."
+              emptyText="No non-zero activity durations found."
             />
-          </div>
+            <ActivityDurationTable rows={activities} labelHeader="Posture" />
+          </ChartCard>
+          {hasGps ? (
+            <ChartCard
+              kicker="Indoor / outdoor"
+              title="By environment"
+              description="Each environment, stacked by who labeled it"
+            >
+              <StackedDurationChart
+                data={gpsActivityLabelerStack}
+                seriesKeys={gpsLabelerKeys}
+                colorMap={gpsLabelerColors}
+                xKey="name"
+                emptyText="No non-zero GPS durations found."
+              />
+              <ActivityDurationTable
+                rows={gpsActivities}
+                labelHeader="Environment"
+                formatName={(row) => displayLabel(row.label)}
+              />
+            </ChartCard>
+          ) : null}
+        </div>
+      </section>
 
-          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-1">Duration by environment</h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Indoor / outdoor labels from{' '}
-              <span className="font-mono text-xs">gps_session_*_durations.txt</span>
-            </p>
-            {gpsChartData.length === 0 ? (
-              <p className="text-sm text-gray-500">No non-zero GPS durations found.</p>
-            ) : (
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={gpsChartData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
-                    <Tooltip
-                      formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} (${Number(value).toFixed(1)}s)`,
-                        props.payload.label,
-                      ]}
-                    />
-                    <Bar dataKey="seconds" radius={[4, 4, 0, 0]}>
-                      {gpsChartData.map((entry, index) => (
-                        <Cell key={entry.label} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-            {gpsActivities.length > 0 ? (
-              <CollapsibleTable label="Show environment table">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500 border-b">
-                      <th className="py-2 pr-4 font-medium">Environment</th>
-                      <th className="py-2 pr-4 font-medium">Duration</th>
-                      <th className="py-2 font-medium">Seconds</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {gpsActivities.map((a) => (
-                      <tr key={a.label} className="border-b border-gray-100">
-                        <td className="py-2 pr-4 text-gray-900">{displayLabel(a.label)}</td>
-                        <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                        <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </CollapsibleTable>
-            ) : null}
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-1">
-              GPS contribution by labeler
-            </h3>
-            {gpsUserContributionData.length === 0 ? (
-              <p className="text-sm text-gray-500">No GPS labelers yet.</p>
-            ) : (
-              <div style={{ height: gpsUserChartHeight }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={gpsUserContributionData}
-                    layout="vertical"
-                    margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis
-                      type="number"
-                      tick={{ fontSize: 12 }}
-                      tickFormatter={(v) => formatSecondsShort(v)}
-                    />
-                    <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} · ${props.payload.sessions} sessions`,
-                        props.payload.email,
-                      ]}
-                    />
-                    <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
-                      {gpsUserContributionData.map((entry, index) => (
-                        <Cell key={entry.email} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-1">GPS volume by date</h3>
-            {gpsByDateChartData.length === 0 ? (
-              <p className="text-sm text-gray-500">No dated GPS sessions found.</p>
-            ) : (
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={gpsByDateChartData}
-                    margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
-                    <Tooltip
-                      formatter={(value, _name, props) => [
-                        `${formatSecondsShort(value)} · ${props.payload.sessions} sessions`,
-                        props.payload.date,
-                      ]}
-                    />
-                    <Bar dataKey="seconds" fill="#34A853" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">By user (detail)</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Posture model — ranked by contribution; expand for per-activity and collar SN breakdown
-        </p>
-
+      <section>
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold text-gray-900">By labeler</h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+            Posture sessions for each person. Expand a row for activities and collar serials.
+          </p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-5">
         <div className="space-y-3">
           {users.map((user) => {
             const isOpen = expandedUser === user.email;
@@ -1522,6 +1413,7 @@ const LabelingDataDashboard = () => {
           })}
         </div>
       </div>
+      </section>
 
       <details className="mt-8 group">
         <summary className="cursor-pointer list-none text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">

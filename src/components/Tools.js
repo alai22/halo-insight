@@ -17,6 +17,7 @@ import {
   Cpu,
   Bug,
   Home,
+  FolderOpen,
 } from 'lucide-react';
 
 const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
@@ -50,6 +51,16 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
           bgColor: 'bg-emerald-50',
           borderColor: 'border-emerald-200',
           action: () => openTool('labeling-data'),
+        },
+        {
+          id: 'collar-logs',
+          name: 'Collar Logs',
+          description: 'Inventory of collar logs copied into S3, by dataset and serial',
+          icon: FolderOpen,
+          color: 'text-sky-700',
+          bgColor: 'bg-sky-50',
+          borderColor: 'border-sky-200',
+          action: () => openTool('collar-logs'),
         },
       ],
     },

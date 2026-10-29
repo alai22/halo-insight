@@ -16,6 +16,7 @@ from flask import Blueprint, jsonify, request
 from backend.api.middleware.auth import require_admin_auth
 from backend.services.labeling_data_analyzer import LabelingDataAnalyzer, format_ui_summary
 from backend.services.labeling_ingest_service import LabelingIngestService
+from backend.services.ml_processed_inventory import MlProcessedInventory, ml_object_key_allowed
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
 
@@ -769,3 +770,195 @@ def labeling_summary():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build labeling summary")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+_ML_CACHE_LOCK = threading.Lock()
+_ML_CACHE: Dict[str, Any] = {
+    "payload": None,
+    "generated_at": 0.0,
+    "fresh_until": 0.0,
+}
+_ML_INDEX_KEY = "labeling-jobs/ml_processed_index_v1.json"
+_ML_BG_LOCK = threading.Lock()
+_ML_BG_RUNNING = False
+
+
+def _ml_cache_get() -> Optional[Dict[str, Any]]:
+    with _ML_CACHE_LOCK:
+        if _ML_CACHE["payload"] is None:
+            return None
+        return _cache_entry(
+            _ML_CACHE["payload"],
+            float(_ML_CACHE["generated_at"] or 0),
+            float(_ML_CACHE["fresh_until"] or 0),
+        )
+
+
+def _ml_cache_set(
+    payload: Dict[str, Any], ttl_sec: int, generated_at: Optional[float] = None
+) -> Dict[str, Any]:
+    now = time.time()
+    gen = float(generated_at if generated_at is not None else now)
+    fresh_until = gen + max(0, ttl_sec)
+    with _ML_CACHE_LOCK:
+        _ML_CACHE["payload"] = payload
+        _ML_CACHE["generated_at"] = gen
+        _ML_CACHE["fresh_until"] = fresh_until
+    return _cache_entry(payload, gen, fresh_until)
+
+
+def _persist_ml_index(payload: Dict[str, Any], generated_at: float, ttl_sec: int) -> None:
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    if not bucket:
+        return
+    try:
+        body = {
+            "generated_at": generated_at,
+            "generated_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(generated_at)),
+            "ttl_sec": ttl_sec,
+            "data": payload,
+        }
+        _s3_client().put_object(
+            Bucket=bucket,
+            Key=_ML_INDEX_KEY,
+            Body=json.dumps(body).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to persist collar-log index: %s", exc)
+
+
+def _load_ml_index(ttl_sec: int) -> Optional[Dict[str, Any]]:
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    if not bucket:
+        return None
+    try:
+        raw = _s3_client().get_object(Bucket=bucket, Key=_ML_INDEX_KEY)["Body"].read()
+        body = json.loads(raw.decode("utf-8"))
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            return None
+        generated_at = float(body.get("generated_at") or 0)
+        if generated_at <= 0 and body.get("generated_at_iso"):
+            try:
+                generated_at = datetime.strptime(
+                    body["generated_at_iso"], "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc).timestamp()
+            except Exception:  # noqa: BLE001
+                generated_at = time.time()
+        return _ml_cache_set(body["data"], ttl_sec, generated_at=generated_at)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _compute_ml_index(ttl_sec: int) -> Dict[str, Any]:
+    data = MlProcessedInventory().build()
+    entry = _ml_cache_set(data, ttl_sec)
+    _persist_ml_index(data, entry["generated_at"], ttl_sec)
+    logger.info(
+        "Collar-log index built: %s sessions, %s collars",
+        (data.get("totals") or {}).get("sessions"),
+        (data.get("totals") or {}).get("collars"),
+    )
+    return entry
+
+
+def _maybe_refresh_ml_index(ttl_sec: int) -> None:
+    global _ML_BG_RUNNING
+    with _ML_BG_LOCK:
+        if _ML_BG_RUNNING:
+            return
+        _ML_BG_RUNNING = True
+
+    def _worker():
+        global _ML_BG_RUNNING
+        try:
+            logger.info("Background collar-log index refresh started")
+            _compute_ml_index(ttl_sec)
+            logger.info("Background collar-log index refresh finished")
+        except Exception:  # noqa: BLE001
+            logger.exception("Background collar-log index refresh failed")
+        finally:
+            with _ML_BG_LOCK:
+                _ML_BG_RUNNING = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+@labeling_bp.route("/ml-processed", methods=["GET"])
+@require_admin_auth
+def labeling_ml_processed():
+    """
+    Inventory collar logs under ml-processed/.
+
+    Serves the last index immediately when one exists (memory, then S3).
+    A stale index is returned while a background rescan runs. A synchronous
+    rescan happens when no cache exists or refresh=1.
+
+    Query params:
+      refresh=1  — force synchronous rescan
+      ttl=900    — freshness window seconds
+    """
+    try:
+        refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        try:
+            ttl = int(request.args.get("ttl", _DEFAULT_CACHE_TTL_SEC))
+        except ValueError:
+            ttl = _DEFAULT_CACHE_TTL_SEC
+        ttl = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+
+        if not refresh:
+            entry = _ml_cache_get()
+            if entry is None:
+                entry = _load_ml_index(ttl)
+            if entry is not None:
+                if entry.get("stale"):
+                    _maybe_refresh_ml_index(ttl)
+                return jsonify(
+                    {
+                        "success": True,
+                        "cached": True,
+                        "stale": bool(entry.get("stale")),
+                        "generated_at": entry.get("generated_at_iso"),
+                        "data": entry["data"],
+                    }
+                )
+
+        entry = _compute_ml_index(ttl)
+        return jsonify(
+            {
+                "success": True,
+                "cached": False,
+                "stale": False,
+                "generated_at": entry.get("generated_at_iso"),
+                "data": entry["data"],
+            }
+        )
+    except ValueError as exc:
+        logger.warning("Collar-log index misconfigured: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to build collar-log index")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@labeling_bp.route("/ml-processed/download", methods=["GET"])
+@require_admin_auth
+def labeling_ml_download():
+    """Return a short-lived URL for one object under the collar-log prefix."""
+    key = (request.args.get("key") or "").strip()
+    prefix = Config.LABELING_S3_ML_PREFIX or "ml-processed/"
+    if not ml_object_key_allowed(key, prefix):
+        return jsonify({"success": False, "error": "Key is outside the collar-log prefix"}), 400
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    if not bucket:
+        return jsonify({"success": False, "error": "LABELING_S3_BUCKET_NAME is not configured"}), 400
+    try:
+        url = _s3_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=300,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to sign collar-log download")
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({"success": True, "url": url, "key": key})

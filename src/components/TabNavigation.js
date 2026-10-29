@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Home,
   Tags,
+  FolderOpen,
   ChevronDown,
 } from 'lucide-react';
 import { getPathFromMode, isHomeTabMode, isProductResearchMode, isHardwareMode } from '../utils/routes';
@@ -150,6 +151,14 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
       icon: Tags,
       color: 'text-emerald-600',
       bgColor: 'bg-emerald-50',
+    },
+    {
+      id: 'collar-logs',
+      name: 'Collar Logs',
+      description: 'Collar logs copied into S3',
+      icon: FolderOpen,
+      color: 'text-sky-700',
+      bgColor: 'bg-sky-50',
     },
   ];
 

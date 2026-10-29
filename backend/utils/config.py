@@ -189,6 +189,8 @@ class Config:
     )
     LABELING_S3_PREFIX: str = os.getenv('LABELING_S3_PREFIX', 'extracted-txt/')
     LABELING_S3_STAGING_PREFIX: str = os.getenv('LABELING_S3_STAGING_PREFIX', 'staging/')
+    # Collar logs copied into the labeling bucket (CSV + JSON sidecar per session).
+    LABELING_S3_ML_PREFIX: str = os.getenv('LABELING_S3_ML_PREFIX', 'ml-processed/')
     
     # Snowflake (order reconciliation) — read-only analytics queries.
     # Auth is a Programmatic Access Token (PAT), not key-pair/password.
