@@ -5,7 +5,7 @@ Process labeling staging uploads into extracted-txt/<email>/<collar-sn>/.
 Usage:
   python process_labeling_staging.py --dry-run
   python process_labeling_staging.py
-  python process_labeling_staging.py --no-clear-output
+  python process_labeling_staging.py --clear-output
   python process_labeling_staging.py --status
   python process_labeling_staging.py --compact --dry-run
   python process_labeling_staging.py --compact
@@ -28,9 +28,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="Plan only; no S3 writes")
     parser.add_argument(
+        "--clear-output",
+        action="store_true",
+        help="Wipe extracted-txt/ before copying (full rebuild)",
+    )
+    parser.add_argument(
         "--no-clear-output",
         action="store_true",
-        help="Do not wipe extracted-txt/ before copying",
+        help="Ignored. Incremental copy is the default.",
     )
     parser.add_argument(
         "--status",
@@ -49,8 +54,8 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--workers",
         type=int,
-        default=16,
-        help="Parallel S3 workers for collar-SN reads and copies (default 16)",
+        default=None,
+        help="Parallel S3 workers (default 4, or LABELING_PROCESS_WORKERS)",
     )
     args = parser.parse_args(argv)
 
@@ -121,7 +126,7 @@ def main(argv=None) -> int:
 
     report = svc.process_staging(
         dry_run=args.dry_run,
-        clear_output=not args.no_clear_output,
+        clear_output=args.clear_output,
         workers=args.workers,
     )
 

@@ -15,10 +15,16 @@ from flask import Blueprint, jsonify, request
 
 from backend.api.middleware.auth import require_admin_auth
 from backend.services.labeling_data_analyzer import LabelingDataAnalyzer, format_ui_summary
+from backend.services.labeling_collar_sync_service import (
+    LabelingCollarSyncService,
+    azure_configured,
+    redact_secrets,
+)
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.services.ml_processed_inventory import MlProcessedInventory, ml_object_key_allowed
 from backend.utils.config import Config
 from backend.utils.logging import get_logger
+from backend.utils.runtime_stats import log_rss, snapshot as runtime_snapshot
 
 logger = get_logger("labeling_routes")
 
@@ -33,15 +39,15 @@ _CACHE: Dict[str, Any] = {
     "fresh_until": 0.0,
 }
 _DEFAULT_CACHE_TTL_SEC = 15 * 60  # treat as fresh for 15 minutes
-_SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v3.json"
-_SUMMARY_CACHE_MEM_KEY = "summary:v3"
+_SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v4.json"
+_SUMMARY_CACHE_MEM_KEY = "summary:v4"
 _BG_REFRESH_LOCK = threading.Lock()
 _BG_REFRESH_RUNNING = False
 
 _PROCESS_LOCK = threading.Lock()
 _PROCESS_STATE: Dict[str, Any] = {
     "running": False,
-    "job": None,  # "process" | "promote-forwards" | "compact-staging"
+    "job": None,  # "process" | "promote-forwards" | "compact-staging" | "sync-collar"
     "started_at": None,
     "finished_at": None,
     "last_report": None,
@@ -51,6 +57,11 @@ _PROCESS_STATE: Dict[str, Any] = {
 }
 _STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
+# Status polls every few seconds. Re-listing the whole staging tree that often
+# competes with the job that is copying those same objects.
+_INVENTORY_LOCK = threading.Lock()
+_INVENTORY_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+_INVENTORY_TTL_SEC = 15
 
 
 def _s3_client():
@@ -160,56 +171,121 @@ def _cache_clear() -> None:
         logger.warning("Failed to clear labeling summary cache: %s", exc)
 
 
+def _cache_mark_stale() -> None:
+    """Keep the last summary so the page can paint, and mark it ready to refresh."""
+    with _CACHE_LOCK:
+        payload = _CACHE["payload"] if _CACHE["key"] == _SUMMARY_CACHE_MEM_KEY else None
+    if payload is None:
+        loaded = _load_summary_cache_s3(_DEFAULT_CACHE_TTL_SEC)
+        payload = loaded["data"] if loaded else None
+    if not payload:
+        return
+    generated_at = time.time() - _DEFAULT_CACHE_TTL_SEC - 1
+    _cache_set_memory(
+        _SUMMARY_CACHE_MEM_KEY, payload, _DEFAULT_CACHE_TTL_SEC, generated_at=generated_at
+    )
+    _persist_summary_cache(payload, generated_at, _DEFAULT_CACHE_TTL_SEC)
+
+
+def _refresh_summary_after_process(report: Dict[str, Any], clear_output: bool, dry_run: bool) -> None:
+    """Drop a blocking rescan when the process did not change extracted-txt."""
+    if dry_run:
+        return
+    if clear_output or int(report.get("copied") or 0) > 0:
+        _cache_mark_stale()
+
+
+def _attach_collar_coverage(data: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Join mirrored collar-raw/ AI dumps onto the UI summary."""
+    try:
+        coverage = LabelingCollarSyncService().build_coverage(summary=raw)
+        data["collar_coverage"] = coverage
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Collar coverage attach failed: %s", redact_secrets(str(exc)))
+        data["collar_coverage"] = {
+            "azure_configured": azure_configured(),
+            "error": redact_secrets(str(exc)),
+            "totals": {},
+            "by_user": [],
+            "unmatched_samples": [],
+        }
+    return data
+
+
 def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     analyzer = LabelingDataAnalyzer()
     raw = analyzer.analyze(include_content=True)
-    data = format_ui_summary(raw)
+    data = _attach_collar_coverage(format_ui_summary(raw), raw)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     return entry
 
 
-def _maybe_start_background_refresh(ttl_sec: int) -> None:
+def _maybe_start_background_refresh(ttl_sec: int) -> bool:
+    """Start one summary scan off the request thread. False when a job is busy."""
     global _BG_REFRESH_RUNNING
+    if _is_process_busy():
+        logger.info("Deferring labeling summary refresh until the current job finishes")
+        return False
     with _BG_REFRESH_LOCK:
         if _BG_REFRESH_RUNNING:
-            return
+            return True
         _BG_REFRESH_RUNNING = True
 
     def _worker():
         global _BG_REFRESH_RUNNING
         try:
-            logger.info("Background labeling summary refresh started")
+            log_rss(logger, "labeling summary refresh start")
             _compute_summary(ttl_sec)
-            logger.info("Background labeling summary refresh finished")
+            log_rss(logger, "labeling summary refresh finish")
         except Exception:  # noqa: BLE001
+            log_rss(logger, "labeling summary refresh failed")
             logger.exception("Background labeling summary refresh failed")
         finally:
             with _BG_REFRESH_LOCK:
                 _BG_REFRESH_RUNNING = False
 
     threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
-def _public_process_fields(state: Dict[str, Any]) -> Dict[str, Any]:
-    progress = state.get("progress")
-    if progress is not None and not isinstance(progress, dict):
-        progress = None
+def _annotate_runtime(snap: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(snap)
+    out["runtime"] = runtime_snapshot()
+    return out
+
+
+def _progress_value(value: Any) -> Optional[Dict[str, Any]]:
+    return value if isinstance(value, dict) else None
+
+
+def _process_fields() -> Dict[str, Any]:
     return {
-        "running": bool(state.get("running")),
-        "job": state.get("job"),
-        "started_at": state.get("started_at"),
-        "finished_at": state.get("finished_at"),
-        "last_error": state.get("last_error"),
-        "last_report": state.get("last_report"),
-        "message": state.get("message"),
-        "progress": progress,
+        "running": bool(_PROCESS_STATE["running"]),
+        "job": _PROCESS_STATE.get("job"),
+        "started_at": _PROCESS_STATE["started_at"],
+        "finished_at": _PROCESS_STATE["finished_at"],
+        "last_error": _PROCESS_STATE["last_error"],
+        "last_report": _PROCESS_STATE["last_report"],
+        "message": _PROCESS_STATE["message"],
+        "progress": _progress_value(_PROCESS_STATE.get("progress")),
     }
+
+
+def process_liveness() -> Dict[str, Any]:
+    """In-memory job flag for /health. Does not read S3."""
+    with _PROCESS_LOCK:
+        return {
+            "running": bool(_PROCESS_STATE["running"]),
+            "job": _PROCESS_STATE.get("job"),
+            "message": _PROCESS_STATE["message"],
+        }
 
 
 def _process_snapshot() -> Dict[str, Any]:
     with _PROCESS_LOCK:
-        return _public_process_fields(_PROCESS_STATE)
+        snap = _process_fields()
+    return _annotate_runtime(snap)
 
 
 def _persist_process_state(state: Dict[str, Any]) -> None:
@@ -274,15 +350,84 @@ def _merge_process_state() -> Dict[str, Any]:
     # Keep last_report from whichever is newer
     if not persisted.get("last_report") and mem.get("last_report"):
         persisted["last_report"] = mem["last_report"]
-    return _public_process_fields(persisted)
+    return _annotate_runtime(
+        {
+            "running": bool(persisted.get("running")),
+            "job": persisted.get("job"),
+            "started_at": persisted.get("started_at"),
+            "finished_at": persisted.get("finished_at"),
+            "last_error": persisted.get("last_error"),
+            "last_report": persisted.get("last_report"),
+            "message": persisted.get("message"),
+            "progress": _progress_value(persisted.get("progress")),
+        }
+    )
 
 
 def _set_process_state(**kwargs: Any) -> Dict[str, Any]:
     with _PROCESS_LOCK:
         _PROCESS_STATE.update(kwargs)
-        snap = _public_process_fields(_PROCESS_STATE)
+        snap = _process_fields()
     _persist_process_state(snap)
-    return snap
+    return _annotate_runtime(snap)
+
+
+def _progress_callback(job: str):
+    def _on_progress(payload: Dict[str, Any]) -> None:
+        _set_process_state(
+            running=True,
+            job=job,
+            message=payload.get("message"),
+            progress={
+                "phase": payload.get("phase"),
+                "done": int(payload.get("done") or 0),
+                "total": int(payload.get("total") or 0),
+            },
+        )
+
+    return _on_progress
+
+
+def _process_done_message(report: Dict[str, Any]) -> str:
+    health = report.get("health") or {}
+    unique = health.get("unique_files_after_dedupe")
+    incomplete = int(report.get("incomplete_sessions") or 0)
+    unique_bit = (
+        f" About {unique} unique files after dedupe." if unique is not None else ""
+    )
+    incomplete_bit = (
+        f" {incomplete} incomplete sessions were kept as-is." if incomplete else ""
+    )
+    skipped = int(report.get("skipped_unchanged") or 0)
+    skipped_bit = f" Skipped {skipped} already in output." if skipped else ""
+    return (
+        f"Done — copied {report.get('copied', 0)} files across "
+        f"{report.get('sessions', 0)} sessions.{skipped_bit}{unique_bit}{incomplete_bit} "
+        "Charts match that deduped set."
+    )
+
+
+def _compact_done_message(report: Dict[str, Any]) -> str:
+    if report.get("dry_run"):
+        return (
+            f"Dry run — would remove {report.get('extracted_duplicates_planned', 0)} "
+            f"duplicate extracted files and {report.get('raw_objects_planned', 0)} raw objects."
+        )
+    extracted = int(report.get("extracted_duplicates_removed") or 0)
+    raw = int(report.get("raw_objects_removed") or 0)
+    kept = int(report.get("unique_filenames") or 0)
+    mismatch = int(report.get("size_mismatch_copies_kept") or 0)
+    raw_bit = (
+        f" and {raw} raw objects from batches that added nothing new" if raw else ""
+    )
+    mismatch_bit = (
+        f" {mismatch} size-mismatch copies were left in place." if mismatch else ""
+    )
+    return (
+        f"Removed {extracted} duplicate extracted files{raw_bit}. "
+        f"{kept} filenames kept.{mismatch_bit} "
+        "Charts stay unchanged until you Process staging."
+    )
 
 
 def _progress_callback(job: str):
@@ -346,13 +491,45 @@ def _is_process_busy() -> bool:
     return bool(state.get("running"))
 
 
+def _staging_inventory() -> Dict[str, Any]:
+    now = time.time()
+    with _INVENTORY_LOCK:
+        cached = _INVENTORY_CACHE["data"]
+        if isinstance(cached, dict) and (now - float(_INVENTORY_CACHE["at"])) < _INVENTORY_TTL_SEC:
+            return dict(cached)
+    fresh = LabelingIngestService().staging_status()
+    with _INVENTORY_LOCK:
+        _INVENTORY_CACHE["data"] = fresh
+        _INVENTORY_CACHE["at"] = time.time()
+    return dict(fresh)
+
+
 @labeling_bp.route("/status", methods=["GET"])
 @require_admin_auth
 def labeling_status():
     """Staging vs processed output inventory + process job state."""
     try:
-        status = LabelingIngestService().staging_status()
+        status = _staging_inventory()
         status["process"] = _merge_process_state()
+        collar: Dict[str, Any] = {
+            "azure_configured": azure_configured(),
+            "s3_prefix": (Config.LABELING_COLLAR_S3_PREFIX or "collar-raw/").rstrip("/")
+            + "/",
+        }
+        try:
+            index = LabelingCollarSyncService().load_index()
+            if index:
+                collar["last_index_at"] = index.get("generated_at")
+                totals = (index.get("coverage") or {}).get("totals") or {}
+                collar["last_matched"] = totals.get("matched")
+                collar["last_missing"] = totals.get("missing")
+                collar["last_ai_files"] = totals.get("ai_files")
+                clone = index.get("clone")
+                if isinstance(clone, dict) and clone.get("generated_at"):
+                    collar["clone"] = clone
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Collar sync status failed: %s", redact_secrets(str(exc)))
+        status["collar_sync"] = collar
         return jsonify({"success": True, "data": status})
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get labeling status")
@@ -404,6 +581,7 @@ def labeling_promote_forwards():
             )
 
             def _worker():
+                log_rss(logger, "labeling promote start")
                 try:
                     report = _run()
                     promoted = len(report.get("promoted") or [])
@@ -428,6 +606,8 @@ def labeling_promote_forwards():
                         last_error=str(exc),
                         message="Promote forwards failed",
                     )
+                finally:
+                    log_rss(logger, "labeling promote end")
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -476,6 +656,162 @@ def labeling_promote_forwards():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to promote labeling forwards")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@labeling_bp.route("/sync-collar", methods=["POST"])
+@require_admin_auth
+def labeling_sync_collar():
+    """
+    Copy Azure <sn>/ai/* for labeled collar SNs into collar-raw/, then join.
+
+    JSON body (optional):
+      dry_run: bool (default false)
+      inventory_only: bool (default false)
+      async: bool (default true)
+    """
+    try:
+        if not azure_configured():
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Azure collar blob is not configured. Set LABELING_AZURE_SAS_URL "
+                    "or LABELING_AZURE_BLOB_URL + LABELING_AZURE_SAS_TOKEN on the server."
+                ),
+            }), 400
+
+        body = request.get_json(silent=True) or {}
+        dry_run = bool(body.get("dry_run", False))
+        inventory_only = bool(body.get("inventory_only", False))
+        run_async = bool(body.get("async", True))
+
+        if _is_process_busy():
+            state = _merge_process_state()
+            return jsonify({
+                "success": False,
+                "error": "A labeling process job is already running",
+                "data": state,
+            }), 409
+
+        start_message = (
+            "Listing Azure collar ai/ dumps for labeled collars…"
+            if inventory_only
+            else "Syncing Azure collar ai/ dumps into collar-raw/…"
+        )
+        if run_async:
+            _set_process_state(
+                running=True,
+                job="sync-collar",
+                started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                finished_at=None,
+                last_error=None,
+                last_report=None,
+                message=start_message,
+            )
+
+            def _worker():
+                log_rss(logger, "labeling collar sync start")
+                try:
+                    report = LabelingCollarSyncService().sync(
+                        dry_run=dry_run,
+                        inventory_only=inventory_only,
+                    )
+                    _cache_clear()
+                    matched = ((report.get("coverage") or {}).get("totals") or {}).get(
+                        "matched", 0
+                    )
+                    missing = ((report.get("coverage") or {}).get("totals") or {}).get(
+                        "missing", 0
+                    )
+                    clone = report.get("clone") or {}
+                    if inventory_only:
+                        done_message = (
+                            f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
+                            f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
+                        )
+                    else:
+                        done_message = (
+                            f"Collar sync done — copied {report.get('copied', 0)} files, "
+                            f"{matched} sessions matched, {missing} missing"
+                        )
+                    _set_process_state(
+                        running=False,
+                        job="sync-collar",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_report=report,
+                        last_error=None,
+                        message=done_message,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Async collar sync failed")
+                    _set_process_state(
+                        running=False,
+                        job="sync-collar",
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        last_error=redact_secrets(str(exc)),
+                        message="Collar sync failed",
+                    )
+                finally:
+                    log_rss(logger, "labeling collar sync end")
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return jsonify({
+                "success": True,
+                "async": True,
+                "message": "Collar sync started in background. Safe to leave this page.",
+                "data": _merge_process_state(),
+            })
+
+        _set_process_state(
+            running=True,
+            job="sync-collar",
+            started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            finished_at=None,
+            last_error=None,
+            message=start_message,
+        )
+        try:
+            report = LabelingCollarSyncService().sync(
+                dry_run=dry_run,
+                inventory_only=inventory_only,
+            )
+            _cache_clear()
+            clone = report.get("clone") or {}
+            if inventory_only:
+                done_message = (
+                    f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
+                    f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
+                )
+            else:
+                done_message = f"Done — copied {report.get('copied', 0)} files"
+            state = _set_process_state(
+                running=False,
+                job="sync-collar",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_report=report,
+                last_error=None,
+                message=done_message,
+            )
+            return jsonify({
+                "success": True,
+                "async": False,
+                "data": report,
+                "process": state,
+            })
+        except Exception as exc:  # noqa: BLE001
+            _set_process_state(
+                running=False,
+                job="sync-collar",
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                last_error=redact_secrets(str(exc)),
+                message="Collar sync failed",
+            )
+            raise
+    except ValueError as exc:
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to sync labeling collar data")
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 500
+
 
 
 @labeling_bp.route("/compact", methods=["POST"])
@@ -596,6 +932,7 @@ def labeling_compact():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+
 @labeling_bp.route("/process", methods=["POST"])
 @require_admin_auth
 def labeling_process():
@@ -604,13 +941,13 @@ def labeling_process():
 
     JSON body (optional):
       dry_run: bool (default false)
-      clear_output: bool (default true) — wipe extracted-txt before copy
+      clear_output: bool (default false) — wipe extracted-txt before copy
       async: bool (default true) — run in background; poll GET /status
     """
     try:
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
-        clear_output = bool(body.get("clear_output", True))
+        clear_output = bool(body.get("clear_output", False))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
 
@@ -631,17 +968,22 @@ def labeling_process():
                 last_error=None,
                 last_report=None,
                 progress={"phase": "listing", "done": 0, "total": 0},
-                message="Listing staging files…",
+                message=(
+                    "Rebuilding extracted-txt from staging…"
+                    if clear_output
+                    else "Adding new staging files into extracted-txt…"
+                ),
             )
 
             def _worker():
+                log_rss(logger, "labeling process start")
                 try:
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
                         clear_output=clear_output,
                         on_progress=_progress_callback("process"),
                     )
-                    _cache_clear()
+                    _refresh_summary_after_process(report, clear_output, dry_run)
                     _set_process_state(
                         running=False,
                         job="process",
@@ -661,6 +1003,8 @@ def labeling_process():
                         progress=None,
                         message="Process failed",
                     )
+                finally:
+                    log_rss(logger, "labeling process end")
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -677,7 +1021,11 @@ def labeling_process():
             finished_at=None,
             last_error=None,
             progress={"phase": "listing", "done": 0, "total": 0},
-            message="Listing staging files…",
+            message=(
+                "Rebuilding extracted-txt from staging…"
+                if clear_output
+                else "Adding new staging files into extracted-txt…"
+            ),
         )
         try:
             report = LabelingIngestService().process_staging(
@@ -685,7 +1033,7 @@ def labeling_process():
                 clear_output=clear_output,
                 on_progress=_progress_callback("process"),
             )
-            _cache_clear()
+            _refresh_summary_after_process(report, clear_output, dry_run)
             state = _set_process_state(
                 running=False,
                 job="process",
@@ -720,12 +1068,11 @@ def labeling_summary():
     Summarize processed labeling exports under extracted-txt/.
 
     Serves the last computed summary immediately when available (memory, then S3).
-    If that snapshot is older than ttl, it is still returned and a background
-    rescan is kicked off. Full synchronous rescan only when no cache exists or
-    refresh=1.
+    A cold cache or refresh=1 starts a background rescan and returns pending.
+    The scan never runs on this request, so a health check can still get through.
 
     Query params:
-      refresh=1  — force synchronous rescan
+      refresh=1  — start a background rescan (last summary is still returned)
       ttl=900    — freshness window seconds (stale after this; 0 = always stale)
     """
     try:
@@ -735,33 +1082,42 @@ def labeling_summary():
         except ValueError:
             ttl = _DEFAULT_CACHE_TTL_SEC
 
-        if not refresh:
-            entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY)
-            if entry is None:
-                entry = _load_summary_cache_s3(ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC)
-            if entry is not None:
-                if entry.get("stale"):
-                    _maybe_start_background_refresh(
-                        ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
-                    )
-                return jsonify(
-                    {
-                        "success": True,
-                        "cached": True,
-                        "stale": bool(entry.get("stale")),
-                        "generated_at": entry.get("generated_at_iso"),
-                        "data": entry["data"],
-                    }
-                )
+        ttl_sec = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+        entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY)
+        if entry is None:
+            entry = _load_summary_cache_s3(ttl_sec)
+        if entry is not None and not refresh:
+            if entry.get("stale"):
+                _maybe_start_background_refresh(ttl_sec)
+            return jsonify(
+                {
+                    "success": True,
+                    "pending": False,
+                    "cached": True,
+                    "stale": bool(entry.get("stale")),
+                    "generated_at": entry.get("generated_at_iso"),
+                    "data": entry["data"],
+                }
+            )
 
-        entry = _compute_summary(ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC)
+        # A full scan downloads every labeling file. Doing that inside the
+        # request is what stalls health checks. Always scan in the background.
+        started = _maybe_start_background_refresh(ttl_sec)
+        if not started:
+            message = "Summary refresh waits until the current labeling job finishes."
+        elif entry is not None:
+            message = "Refreshing the summary in the background."
+        else:
+            message = "Building the summary in the background."
         return jsonify(
             {
                 "success": True,
-                "cached": False,
-                "stale": False,
-                "generated_at": entry.get("generated_at_iso"),
-                "data": entry["data"],
+                "pending": True,
+                "cached": entry is not None,
+                "stale": True,
+                "generated_at": entry.get("generated_at_iso") if entry else None,
+                "data": entry["data"] if entry else None,
+                "message": message,
             }
         )
     except ValueError as exc:

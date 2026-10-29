@@ -4,16 +4,23 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, Clock, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
+const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
+const DOG_CHART_LIMIT = 15;
+const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
+const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
+const COLLAR_SYNC_PROGRESS = 'Copying Azure <sn>/ai/* into collar-raw/…';
 
 const PHASE_LABELS = {
   listing: 'Listing staging files',
@@ -29,10 +36,9 @@ function phaseLabel(progress, job) {
   if (progress?.phase && PHASE_LABELS[progress.phase]) return PHASE_LABELS[progress.phase];
   if (job === 'compact-staging') return 'Removing duplicate copies';
   if (job === 'promote-forwards') return 'Promoting forwards';
+  if (job === 'sync-collar') return 'Syncing collar dumps';
   return 'Processing staging';
 }
-
-const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v3';
 
 const COLORS = [
   '#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#9334E6',
@@ -60,6 +66,8 @@ function buildDateLabelerStack(byDate, labelerKeys) {
       date: d.date,
       label: (d.date || '').length >= 10 ? d.date.slice(5) : d.date,
       total: Number(d.duration_seconds) || 0,
+      dogs: Number(d.dogs) || 0,
+      owners: Number(d.users) || 0,
     };
     const byUser = {};
     (d.by_user || []).forEach((u) => {
@@ -79,6 +87,8 @@ function buildActivityLabelerStack(activities, users, labelerKeys) {
       label: a.label,
       name: displayLabel(a.label),
       total: Number(a.seconds) || 0,
+      dogs: Number(a.dogs) || 0,
+      owners: Number(a.owners) || 0,
     };
     (labelerKeys || []).forEach((email) => {
       const user = (users || []).find((u) => u.email === email);
@@ -87,6 +97,25 @@ function buildActivityLabelerStack(activities, users, labelerKeys) {
     });
     return row;
   });
+}
+
+function VarietyTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload || {};
+  const durations = payload.filter((item) => item.dataKey !== 'dogs' && Number(item.value));
+  return (
+    <div className="bg-white border border-gray-200 rounded-md px-3 py-2 text-xs shadow-sm">
+      <div className="font-medium text-gray-900 mb-1">{label}</div>
+      {durations.map((item) => (
+        <div key={String(item.dataKey)} className="text-gray-700">
+          {shortLabeler(item.name || item.dataKey)} {formatSecondsShort(item.value)}
+        </div>
+      ))}
+      <div className="text-gray-500 mt-1">
+        {Number(row.dogs) || 0} dogs · {Number(row.owners) || 0} owners
+      </div>
+    </div>
+  );
 }
 
 function StackedDurationChart({
@@ -103,34 +132,133 @@ function StackedDurationChart({
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis dataKey={xKey} tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatSecondsShort(v)} />
-          <Tooltip
-            formatter={(value, name) => [
-              formatSecondsShort(value),
-              shortLabeler(name),
-            ]}
-            labelFormatter={(label) => String(label)}
+          <YAxis
+            yAxisId="duration"
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v) => formatSecondsShort(v)}
           />
+          <YAxis
+            yAxisId="dogs"
+            orientation="right"
+            tick={{ fontSize: 12 }}
+            allowDecimals={false}
+            width={36}
+          />
+          <Tooltip content={<VarietyTooltip />} />
           <Legend
-            formatter={(value) => shortLabeler(value)}
+            formatter={(value) => (value === 'Dogs' ? 'Dogs' : shortLabeler(value))}
             wrapperStyle={{ fontSize: 12 }}
           />
           {seriesKeys.map((key, index) => (
             <Bar
               key={key}
+              yAxisId="duration"
               dataKey={key}
+              name={key}
               stackId="stack"
               fill={colorMap[key] || COLORS[index % COLORS.length]}
               radius={index === seriesKeys.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
             />
           ))}
+          <Line
+            yAxisId="dogs"
+            type="monotone"
+            dataKey="dogs"
+            name="Dogs"
+            stroke="#111827"
+            strokeWidth={2}
+            dot={{ r: 3, fill: '#111827' }}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function LabelerVarietyChart({ data, height, colorMap, emptyText }) {
+  if (!data?.length) {
+    return <p className="text-sm text-gray-500">{emptyText}</p>;
+  }
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ top: 20, right: 24, left: 8, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis
+            xAxisId="duration"
+            type="number"
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v) => formatSecondsShort(v)}
+          />
+          <XAxis
+            xAxisId="dogs"
+            type="number"
+            orientation="top"
+            allowDecimals={false}
+            tick={{ fontSize: 12 }}
+          />
+          <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+          <Tooltip
+            formatter={(value, name, props) => {
+              if (name === 'Dogs') return [value, 'Dogs'];
+              return [
+                `${formatSecondsShort(value)} · ${props.payload.dogs} dogs · ${props.payload.sessions} sessions`,
+                props.payload.email,
+              ];
+            }}
+          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar
+            xAxisId="duration"
+            dataKey="seconds"
+            name="Duration"
+            barSize={10}
+            radius={[0, 4, 4, 0]}
+          >
+            {data.map((entry, index) => (
+              <Cell
+                key={entry.email}
+                fill={(colorMap && colorMap[entry.email]) || COLORS[index % COLORS.length]}
+              />
+            ))}
+          </Bar>
+          <Bar
+            xAxisId="dogs"
+            dataKey="dogs"
+            name="Dogs"
+            fill="#111827"
+            barSize={8}
+            radius={[0, 4, 4, 0]}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>
   );
+}
+
+function missingReasonText(row) {
+  const parts = [];
+  if (row?.no_blobs_for_sn) parts.push(`${row.no_blobs_for_sn} not in S3`);
+  if (row?.time_gap) parts.push(`${row.time_gap} time gap`);
+  if (row?.unknown_sn) parts.push(`${row.unknown_sn} unknown serial`);
+  if (row?.bad_timestamp) parts.push(`${row.bad_timestamp} bad timestamp`);
+  if (!parts.length && row?.missing) return `${row.missing} missing`;
+  return parts.join(' · ') || '—';
+}
+
+function dogAxisLabel(dog) {
+  const name = (dog?.name || '').trim() || 'Unnamed';
+  const sn = dog?.collar_sn;
+  if (!sn || sn === '_unknown') return `${name} · unknown`;
+  const short = sn.length > 8 ? sn.slice(-6) : sn;
+  return `${name} · ${short}`;
 }
 
 const GPS_LABEL_DISPLAY = {
@@ -182,8 +310,9 @@ function DateVolumeTable({ rows }) {
           <tr className="text-left text-gray-500 border-b">
             <th className="py-2 pr-4 font-medium">Date</th>
             <th className="py-2 pr-4 font-medium">Duration</th>
+            <th className="py-2 pr-4 font-medium">Dogs</th>
             <th className="py-2 pr-4 font-medium">Sessions</th>
-            <th className="py-2 pr-4 font-medium">Users</th>
+            <th className="py-2 pr-4 font-medium">Owners</th>
             <th className="py-2 font-medium">Files</th>
           </tr>
         </thead>
@@ -192,6 +321,7 @@ function DateVolumeTable({ rows }) {
             <tr key={d.date} className="border-b border-gray-100">
               <td className="py-2 pr-4 text-gray-900 font-mono text-xs">{d.date}</td>
               <td className="py-2 pr-4 text-gray-700">{d.human}</td>
+              <td className="py-2 pr-4 text-gray-500">{d.dogs}</td>
               <td className="py-2 pr-4 text-gray-500">{d.sessions}</td>
               <td className="py-2 pr-4 text-gray-500">{d.users}</td>
               <td className="py-2 text-gray-500">{d.files}</td>
@@ -213,7 +343,9 @@ function ActivityDurationTable({ rows, labelHeader, formatName }) {
           <tr className="text-left text-gray-500 border-b">
             <th className="py-2 pr-4 font-medium">{labelHeader}</th>
             <th className="py-2 pr-4 font-medium">Duration</th>
-            <th className="py-2 font-medium">Seconds</th>
+            <th className="py-2 pr-4 font-medium">Seconds</th>
+            <th className="py-2 pr-4 font-medium">Dogs</th>
+            <th className="py-2 font-medium">Owners</th>
           </tr>
         </thead>
         <tbody>
@@ -221,51 +353,14 @@ function ActivityDurationTable({ rows, labelHeader, formatName }) {
             <tr key={row.label} className="border-b border-gray-100">
               <td className="py-2 pr-4 text-gray-900">{nameOf(row)}</td>
               <td className="py-2 pr-4 text-gray-700">{row.human}</td>
-              <td className="py-2 text-gray-500">{Number(row.seconds).toFixed(1)}</td>
+              <td className="py-2 pr-4 text-gray-500">{Number(row.seconds).toFixed(1)}</td>
+              <td className="py-2 pr-4 text-gray-500">{row.dogs ?? 0}</td>
+              <td className="py-2 text-gray-500">{row.owners ?? 0}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </CollapsibleTable>
-  );
-}
-
-function LabelerContributionChart({ data, height, colorMap, emptyText }) {
-  if (!data?.length) {
-    return <p className="text-sm text-gray-500">{emptyText}</p>;
-  }
-  return (
-    <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart
-          data={data}
-          layout="vertical"
-          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-        >
-          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis
-            type="number"
-            tick={{ fontSize: 12 }}
-            tickFormatter={(v) => formatSecondsShort(v)}
-          />
-          <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
-          <Tooltip
-            formatter={(value, _name, props) => [
-              `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.files} files`,
-              props.payload.email,
-            ]}
-          />
-          <Bar dataKey="seconds" radius={[0, 4, 4, 0]}>
-            {data.map((entry, index) => (
-              <Cell
-                key={entry.email}
-                fill={(colorMap && colorMap[entry.email]) || COLORS[index % COLORS.length]}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
   );
 }
 
@@ -279,6 +374,7 @@ function LabelerTable({ rows }) {
             <th className="py-2 pr-4 font-medium">Rank</th>
             <th className="py-2 pr-4 font-medium">Labeler</th>
             <th className="py-2 pr-4 font-medium">Duration</th>
+            <th className="py-2 pr-4 font-medium">Dogs</th>
             <th className="py-2 pr-4 font-medium">Sessions</th>
             <th className="py-2 font-medium">Files</th>
           </tr>
@@ -289,6 +385,7 @@ function LabelerTable({ rows }) {
               <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
               <td className="py-2 pr-4 text-gray-900">{u.email}</td>
               <td className="py-2 pr-4 text-gray-700">{u.human}</td>
+              <td className="py-2 pr-4 text-gray-500">{u.dogs}</td>
               <td className="py-2 pr-4 text-gray-500">{u.sessions}</td>
               <td className="py-2 text-gray-500">{u.files}</td>
             </tr>
@@ -360,10 +457,14 @@ const LabelingDataDashboard = () => {
   const [processing, setProcessing] = useState(false);
   const [processNotice, setProcessNotice] = useState(null); // success | error banner after job
   const [promoting, setPromoting] = useState(false);
+  const [syncingCollar, setSyncingCollar] = useState(false);
+  const [collarMode, setCollarMode] = useState(null);
   const [error, setError] = useState(null);
   const [cached, setCached] = useState(Boolean(stored?.cached));
   const [stale, setStale] = useState(Boolean(stored?.stale));
   const [generatedAt, setGeneratedAt] = useState(stored?.generatedAt || null);
+  const [summaryPending, setSummaryPending] = useState(false);
+  const [summaryMessage, setSummaryMessage] = useState(null);
   const [expandedUser, setExpandedUser] = useState(null);
   const wasProcessingRef = useRef(false);
   const autoPromoteAttemptedRef = useRef(false);
@@ -382,6 +483,7 @@ const LabelingDataDashboard = () => {
         const running = Boolean(proc?.running);
         setProcessing(running);
         setPromoting(running && proc?.job === 'promote-forwards');
+        setSyncingCollar(running && proc?.job === 'sync-collar');
         return next;
       }
     } catch (err) {
@@ -400,20 +502,25 @@ const LabelingDataDashboard = () => {
         params: refresh ? { refresh: 1 } : undefined,
       });
       if (response.data.success) {
+        const pending = Boolean(response.data.pending);
         const nextData = response.data.data;
         const nextGenerated = response.data.generated_at || null;
         const nextCached = Boolean(response.data.cached);
-        const nextStale = Boolean(response.data.stale);
-        setData(nextData);
+        const nextStale = Boolean(response.data.stale) || pending;
+        setSummaryPending(pending);
+        setSummaryMessage(response.data.message || null);
         setCached(nextCached);
         setStale(nextStale);
-        setGeneratedAt(nextGenerated);
-        writeStoredSummary({
-          data: nextData,
-          generatedAt: nextGenerated,
-          cached: nextCached,
-          stale: nextStale,
-        });
+        if (nextGenerated) setGeneratedAt(nextGenerated);
+        if (nextData) {
+          setData(nextData);
+          writeStoredSummary({
+            data: nextData,
+            generatedAt: nextGenerated,
+            cached: nextCached,
+            stale: nextStale,
+          });
+        }
       } else {
         setError(response.data.error || 'Failed to load labeling data');
         return false;
@@ -438,7 +545,7 @@ const LabelingDataDashboard = () => {
     try {
       const response = await axios.post('/api/labeling/process', {
         dry_run: false,
-        clear_output: true,
+        clear_output: false,
         async: true,
       });
       if (!response.data.success) {
@@ -451,9 +558,13 @@ const LabelingDataDashboard = () => {
           running: true,
           job: 'process',
           progress: { phase: 'listing', done: 0, total: 0 },
-          message: 'Listing staging files…',
+          message: 'Adding new staging files into extracted-txt…',
         }
       );
+      setProcessNotice({
+        type: 'info',
+        text: 'Adding new staging files in the background. Files already in extracted-txt stay put.',
+      });
       await fetchStatus();
     } catch (err) {
       if (err.response?.status === 409) {
@@ -584,6 +695,63 @@ const LabelingDataDashboard = () => {
     [fetchStatus]
   );
 
+  const runCollarJob = useCallback(async (inventoryOnly) => {
+    setError(null);
+    setProcessNotice(null);
+    setCollarMode(inventoryOnly ? 'check' : 'sync');
+    try {
+      const response = await axios.post('/api/labeling/sync-collar', {
+        dry_run: false,
+        async: true,
+        inventory_only: Boolean(inventoryOnly),
+      });
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Collar sync failed');
+      }
+      wasProcessingRef.current = true;
+      setProcessing(true);
+      setSyncingCollar(true);
+      setProcessInfo(
+        response.data.data || {
+          running: true,
+          job: 'sync-collar',
+          message: response.data.message,
+        }
+      );
+      setProcessNotice({
+        type: 'info',
+        text: inventoryOnly
+          ? 'Checking Azure for labeled collars. This lists ai/ logs and does not copy them.'
+          : 'Collar sync started in the background. Copying Azure ai/ dumps into S3 — safe to leave this tab.',
+      });
+      await fetchStatus();
+    } catch (err) {
+      if (err.response?.status === 409) {
+        wasProcessingRef.current = true;
+        setProcessing(true);
+        setProcessInfo(err.response.data?.data || { running: true });
+        setProcessNotice({
+          type: 'info',
+          text: 'A labeling job is already running. Waiting for it to finish…',
+        });
+        await fetchStatus();
+        return;
+      }
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        err.message ||
+        'Failed to sync collar data';
+      setError(errorMsg);
+      setProcessing(false);
+      setSyncingCollar(false);
+      setCollarMode(null);
+    }
+  }, [fetchStatus]);
+
+  const syncCollar = useCallback(() => runCollarJob(false), [runCollarJob]);
+  const checkAzure = useCallback(() => runCollarJob(true), [runCollarJob]);
+
   useEffect(() => {
     fetchStatus();
     // Prefer cached/last results; only full-screen wait when nothing is stored yet
@@ -602,19 +770,22 @@ const LabelingDataDashboard = () => {
 
   // If server returned a stale snapshot, poll briefly so background rescan can land
   useEffect(() => {
-    if (!stale) return undefined;
+    if (!stale && !summaryPending) return undefined;
     let cancelled = false;
     let attempts = 0;
     const id = setInterval(async () => {
       attempts += 1;
-      if (cancelled || attempts > 6) {
+      // A full scan can take several minutes. Keep the last charts up meanwhile.
+      if (cancelled || attempts > 60) {
         clearInterval(id);
         return;
       }
       try {
         const response = await axios.get('/api/labeling/summary');
         if (!response.data?.success || cancelled) return;
-        if (!response.data.stale) {
+        const pending = Boolean(response.data.pending);
+        setSummaryPending(pending);
+        if (response.data.data && !pending && !response.data.stale) {
           setData(response.data.data);
           setCached(Boolean(response.data.cached));
           setStale(false);
@@ -635,7 +806,7 @@ const LabelingDataDashboard = () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [stale]);
+  }, [stale, summaryPending]);
 
   // Poll while a background process is running (also resumes after page reload)
   useEffect(() => {
@@ -650,10 +821,20 @@ const LabelingDataDashboard = () => {
         wasProcessingRef.current = false;
         const proc = next?.process;
         if (proc?.last_error) {
+          const jobLabel =
+            proc?.job === 'promote-forwards'
+              ? 'Promote'
+              : proc?.job === 'sync-collar'
+                ? 'Collar sync'
+                : proc?.job === 'compact-staging'
+                  ? 'Remove copies'
+                  : 'Process';
           setProcessNotice({
             type: 'error',
-            text: `${proc?.job === 'promote-forwards' ? 'Promote' : 'Process'} failed: ${proc.last_error}`,
+            text: `${jobLabel} failed: ${proc.last_error}`,
           });
+          setSyncingCollar(false);
+          setCollarMode(null);
         } else if (proc?.job === 'promote-forwards') {
           setProcessNotice({
             type: 'success',
@@ -662,6 +843,14 @@ const LabelingDataDashboard = () => {
               'Forwards promoted into staging. Click Process staging to include them in charts.',
           });
           setPromoting(false);
+        } else if (proc?.job === 'sync-collar') {
+          setProcessNotice({
+            type: 'success',
+            text: proc?.message || 'Collar sync finished. Refreshing coverage…',
+          });
+          setSyncingCollar(false);
+          setCollarMode(null);
+          await fetchSummary({ refresh: true });
         } else if (proc?.job === 'compact-staging') {
           setProcessNotice({
             type: 'success',
@@ -728,6 +917,7 @@ const LabelingDataDashboard = () => {
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
+        dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
     [users]
@@ -743,6 +933,7 @@ const LabelingDataDashboard = () => {
         sessions: d.sessions || 0,
         files: d.files || 0,
         users: d.users || 0,
+        dogs: d.dogs || 0,
         human: d.duration_human || formatSecondsShort(d.duration_seconds),
       })),
     [byDate]
@@ -781,6 +972,7 @@ const LabelingDataDashboard = () => {
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
+        dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
     [gpsUsers]
@@ -794,6 +986,7 @@ const LabelingDataDashboard = () => {
         sessions: d.sessions || 0,
         files: d.files || 0,
         users: d.users || 0,
+        dogs: d.dogs || 0,
         human: d.duration_human || formatSecondsShort(d.duration_seconds),
       })),
     [gps?.by_date]
@@ -840,14 +1033,123 @@ const LabelingDataDashboard = () => {
   ]
     .filter(Boolean)
     .join(' · ');
+  const dogRows = useMemo(() => {
+    const list = data?.dogs || [];
+    return [...list].sort(
+      (a, b) => (b.total_duration_seconds || 0) - (a.total_duration_seconds || 0)
+    );
+  }, [data?.dogs]);
+  const dogChartData = useMemo(
+    () =>
+      dogRows.slice(0, DOG_CHART_LIMIT).map((dog) => ({
+        label: dogAxisLabel(dog),
+        name: (dog.name || '').trim() || 'Unnamed',
+        breed: dog.breed || '',
+        collar_sn: dog.collar_sn,
+        seconds: dog.total_duration_seconds || 0,
+        sessions: dog.sessions || 0,
+        owners: (dog.owners || dog.users || []).join(', '),
+        human: dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds),
+      })),
+    [dogRows]
+  );
+  const dogChartHeight = Math.max(220, dogChartData.length * 36 + 48);
+  const collarCoverage = data?.collar_coverage || null;
+  const collarTotals = collarCoverage?.totals || {};
+  const azureConfigured = Boolean(status?.collar_sync?.azure_configured);
+  const collarUserChart = useMemo(
+    () =>
+      (collarCoverage?.by_user || []).map((u) => ({
+        email: u.email,
+        label: shortLabeler(u.email),
+        matched: Number(u.matched_seconds) || 0,
+        missing: Number(u.missing_seconds) || 0,
+        matchedSessions: u.matched_sessions || 0,
+        missingSessions: u.missing_sessions || 0,
+      })),
+    [collarCoverage]
+  );
+  const collarUserChartHeight = Math.max(180, collarUserChart.length * 48 + 48);
+  const clone = status?.collar_sync?.clone || null;
+  const azureCheckRunning =
+    collarMode === 'check' ||
+    (Boolean(syncingCollar) && /Listing Azure/i.test(processInfo?.message || ''));
+  const cloneBySn = useMemo(() => {
+    const map = {};
+    (clone?.by_sn || []).forEach((row) => {
+      if (row?.collar_sn) map[row.collar_sn] = row;
+    });
+    return map;
+  }, [clone]);
+  const collarPipelineRows = useMemo(() => {
+    const rows = [];
+    const seen = new Set();
+    const inventoryOnly = Boolean(clone?.inventory_only);
+    const add = (sn, base) => {
+      if (!sn || seen.has(sn)) return;
+      seen.add(sn);
+      const snap = cloneBySn[sn] || null;
+      const azureFiles = snap ? Number(snap.azure_files) || 0 : null;
+      const s3Files = Number(base?.s3_files ?? snap?.s3_files) || 0;
+      const notCloned = snap
+        ? inventoryOnly
+          ? (Number(snap.copied) || 0) + (Number(snap.errors) || 0)
+          : Number(snap.errors) || 0
+        : 0;
+      const missing = Number(base?.missing) || 0;
+      const behind =
+        sn !== '_unknown' &&
+        (missing > 0 ||
+          notCloned > 0 ||
+          (azureFiles != null && azureFiles > s3Files));
+      rows.push({
+        collar_sn: sn,
+        sessions: Number(base?.sessions) || 0,
+        matched: Number(base?.matched) || 0,
+        missing,
+        s3_files: s3Files,
+        azure_files: azureFiles,
+        no_blobs_for_sn: Number(base?.no_blobs_for_sn) || 0,
+        time_gap: Number(base?.time_gap) || 0,
+        unknown_sn: Number(base?.unknown_sn) || 0,
+        bad_timestamp: Number(base?.bad_timestamp) || 0,
+        behind,
+      });
+    };
+    (collarCoverage?.by_sn || []).forEach((row) => add(row.collar_sn, row));
+    Object.keys(cloneBySn).forEach((sn) => {
+      if (!seen.has(sn)) add(sn, {});
+    });
+    rows.sort(
+      (a, b) =>
+        b.missing - a.missing ||
+        b.sessions - a.sessions ||
+        String(a.collar_sn).localeCompare(String(b.collar_sn))
+    );
+    return rows;
+  }, [collarCoverage, clone, cloneBySn]);
+  const behindCollarRows = useMemo(
+    () => collarPipelineRows.filter((row) => row.behind),
+    [collarPipelineRows]
+  );
+  const behindChartRows = behindCollarRows.slice(0, 15);
+  const behindChartHeight = Math.max(180, behindChartRows.length * 36 + 48);
+  const missingReasons = collarCoverage?.missing_reasons || {};
 
-  if (loading && !data) {
+  if ((loading || summaryPending) && !data) {
     return (
       <div className="flex items-center justify-center h-full p-8">
         <div className="text-center">
           <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading labeling data from S3...</p>
-          <p className="text-xs text-gray-400 mt-2">Scanning extracted-txt and summing durations</p>
+          <p className="text-gray-600">
+            {summaryPending ? 'Building the summary in the background…' : 'Loading labeling data from S3...'}
+          </p>
+          <p className="text-xs text-gray-400 mt-2">
+            {summaryMessage ||
+              (summaryPending
+                ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
+                : 'Scanning extracted-txt and summing durations')}
+          </p>
         </div>
       </div>
     );
@@ -879,12 +1181,25 @@ const LabelingDataDashboard = () => {
           <h2 className="text-2xl font-bold text-gray-900">Labeling Data</h2>
           <p className="text-sm text-gray-500 mt-1">
             {generatedAt ? `Updated ${formatUpdatedAt(generatedAt)}` : 'Activity labeling totals'}
+            {processInfo?.runtime?.rss_mb != null ? (
+              <span
+                className={`ml-2 text-xs ${
+                  processInfo.runtime.rss_mb >= 2200 ? 'text-amber-700 font-medium' : 'text-gray-400'
+                }`}
+                title="Resident memory of the web process. A sustained climb during a job is the usual cause of a 503."
+              >
+                Server {processInfo.runtime.rss_mb} MB
+                {processInfo.runtime.peak_rss_mb
+                  ? ` · peak ${processInfo.runtime.peak_rss_mb} MB`
+                  : ''}
+              </span>
+            ) : null}
             {loading && data ? (
               <span className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600">
                 <RefreshCw className="h-3 w-3 animate-spin" />
                 Checking…
               </span>
-            ) : stale ? (
+            ) : summaryPending || stale ? (
               <span className="ml-2 text-xs text-gray-400">Refreshing in background…</span>
             ) : null}
           </p>
@@ -895,20 +1210,38 @@ const LabelingDataDashboard = () => {
             onClick={processStaging}
             disabled={processing}
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50"
-            title="Starts a background job: staging → extracted-txt/<email>/<collar-sn>/"
+            title="Adds staging files that are not already in extracted-txt. Does not delete existing output."
           >
-            {processing ? (
+            {processing && !syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
             ) : (
               <Play className="h-4 w-4" />
             )}
-            {processing
+            {processing && !syncingCollar
               ? processInfo?.job === 'compact-staging'
                 ? 'Removing copies…'
                 : promoting || processInfo?.job === 'promote-forwards'
                   ? 'Promoting…'
                   : 'Processing…'
               : 'Process staging'}
+          </button>
+          <button
+            type="button"
+            onClick={syncCollar}
+            disabled={processing || !azureConfigured}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-sky-700 text-white rounded-lg text-sm hover:bg-sky-800 disabled:opacity-50"
+            title={
+              azureConfigured
+                ? COLLAR_SYNC_HINT
+                : 'Set LABELING_AZURE_SAS_URL (or BLOB_URL + SAS_TOKEN) on the server'
+            }
+          >
+            {syncingCollar ? (
+              <RefreshCw className="h-4 w-4 animate-spin" />
+            ) : (
+              <DownloadCloud className="h-4 w-4" />
+            )}
+            {syncingCollar ? 'Syncing…' : 'Sync collar data'}
           </button>
           <button
             type="button"
@@ -1042,17 +1375,38 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
+      {status?.collar_sync && !azureConfigured ? (
+        <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800">
+          Collar dump sync is off until the server has{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_SAS_URL</span> (or{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_BLOB_URL</span> +{' '}
+          <span className="font-mono text-xs">LABELING_AZURE_SAS_TOKEN</span>) in{' '}
+          <span className="font-mono text-xs">.env</span>. Coverage below still reflects whatever
+          is already in <span className="font-mono text-xs">collar-raw/</span>.
+        </div>
+      ) : null}
+
       {processing ? (
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900 flex items-start gap-3">
           <RefreshCw className="h-5 w-5 animate-spin flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <div className="font-medium">{phaseLabel(processInfo?.progress, processInfo?.job)}</div>
+            <div className="font-medium">
+              {syncingCollar || processInfo?.job === 'sync-collar'
+                ? azureCheckRunning
+                  ? 'Checking Azure'
+                  : 'Syncing collar dumps'
+                : phaseLabel(processInfo?.progress, processInfo?.job)}
+            </div>
             <div className="mt-0.5">
               {processInfo?.progress?.message ||
                 processInfo?.message ||
                 (promoting
-                  ? 'Copying quarantine batches into staging/<labeler>/…'
-                  : 'Working…')}
+                  ? PROMOTE_PROGRESS
+                  : syncingCollar
+                    ? azureCheckRunning
+                      ? 'Listing Azure ai/ logs for labeled collars…'
+                      : COLLAR_SYNC_PROGRESS
+                    : 'Copying new staging files into extracted-txt. Existing files stay put.')}
             </div>
             {progressPct != null ? (
               <div className="mt-2">
@@ -1071,10 +1425,17 @@ const LabelingDataDashboard = () => {
               {processInfo?.job === 'compact-staging'
                 ? 'Staging shrinks in place. Charts stay as they are until you Process staging. '
                 : processInfo?.job === 'process'
-                  ? 'This rebuilds extracted-txt from scratch. Charts update when the job finishes. '
+                  ? 'New files are copied into extracted-txt. Files already there stay put. '
                   : null}
               Safe to close or leave this tab. Started{' '}
               {processInfo?.started_at ? processInfo.started_at.replace('T', ' ').replace('Z', ' UTC') : 'just now'}.
+              {processInfo?.runtime?.rss_mb != null
+                ? ` Memory ${processInfo.runtime.rss_mb} MB${
+                    processInfo.runtime.peak_rss_mb
+                      ? ` (peak ${processInfo.runtime.peak_rss_mb} MB)`
+                      : ''
+                  }.`
+                : ''}
             </div>
           </div>
         </div>
@@ -1099,17 +1460,29 @@ const LabelingDataDashboard = () => {
           )}
           <div className="flex-1">
             <div>{processNotice.text}</div>
-            {processReport && processNotice.type === 'success' && processReport.copied != null ? (
+            {processReport &&
+            processNotice.type === 'success' &&
+            processReport.copied != null &&
+            processReport.extracted_duplicates_planned == null ? (
               <div className="mt-1 text-xs opacity-80">
-                Copied {processReport.copied} files · {processReport.sessions} sessions
-                {processReport.health?.unique_files_after_dedupe != null
-                  ? ` · ~${processReport.health.unique_files_after_dedupe} unique after dedupe`
-                  : ''}
-                {processReport.incomplete_sessions
-                  ? ` · ${processReport.incomplete_sessions} incomplete kept`
-                  : ''}
-                {' · '}
-                {(processReport.errors || []).length} errors. Charts match that deduped set.
+                {processReport.collar_prefix
+                  ? `Copied ${processReport.copied || 0} files · listed ${processReport.listed || 0} · ${(processReport.errors || []).length} errors`
+                  : (
+                    <>
+                      Copied {processReport.copied} files · {processReport.sessions} sessions
+                      {processReport.skipped_unchanged
+                        ? ` · ${processReport.skipped_unchanged} already present`
+                        : ''}
+                      {processReport.health?.unique_files_after_dedupe != null
+                        ? ` · ~${processReport.health.unique_files_after_dedupe} unique after dedupe`
+                        : ''}
+                      {processReport.incomplete_sessions
+                        ? ` · ${processReport.incomplete_sessions} incomplete kept`
+                        : ''}
+                      {' · '}
+                      {(processReport.errors || []).length} errors. Charts match that deduped set.
+                    </>
+                  )}
               </div>
             ) : null}
             {processReport &&
@@ -1139,6 +1512,305 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
+      <div className="mb-2">
+        <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
+        <p className="text-sm text-gray-500">
+          App labels in staging, whether they are summarized, and whether Azure collar logs for
+          those collars are cloned into S3.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+        <PipelineCard
+          label="App data"
+          value={status?.staging_extracted_files ?? 0}
+          detail={`${status?.staging_batches ?? 0} batches${
+            pendingForwards?.pending_count
+              ? ` · ${pendingForwards.pending_count} forwards waiting`
+              : ''
+          }`}
+          state={
+            unprocessedEmails.length
+              ? 'Ready to summarize'
+              : pendingForwards?.pending_count
+                ? 'Forwards waiting to promote'
+                : 'No new labelers waiting'
+          }
+          tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
+        />
+        <PipelineCard
+          label="Summarized"
+          value={status?.output_files ?? totals.files ?? 0}
+          detail={
+            generatedAt ? `Summary ${formatUpdatedAt(generatedAt)}` : 'Summary not loaded yet'
+          }
+          state={
+            unprocessedEmails.length ? 'Staging not in the summary' : 'Current'
+          }
+          tone={unprocessedEmails.length ? 'attention' : 'ok'}
+        />
+        <PipelineCard
+          label="Azure"
+          value={clone ? clone.azure_files ?? 0 : '—'}
+          detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
+          state={
+            clone?.generated_at
+              ? `Checked ${formatUpdatedAt(clone.generated_at)}`
+              : 'Not checked yet'
+          }
+          tone={clone ? 'ok' : 'attention'}
+          action={
+            <button
+              type="button"
+              onClick={checkAzure}
+              disabled={processing || !azureConfigured}
+              className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+              title={
+                azureConfigured
+                  ? 'List Azure ai/ logs for labeled collars without copying'
+                  : 'Set LABELING_AZURE_SAS_URL on the server'
+              }
+            >
+              {azureCheckRunning ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <DownloadCloud className="h-3.5 w-3.5" />
+              )}
+              {azureCheckRunning ? 'Checking…' : 'Check Azure'}
+            </button>
+          }
+        />
+        <PipelineCard
+          label="Cloned to S3"
+          value={collarTotals.ai_files ?? 0}
+          detail={
+            !clone
+              ? 'Sync or check Azure to compare'
+              : clone.inventory_only
+                ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
+                : `Copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
+          }
+          state={
+            !clone
+              ? 'Not compared to Azure yet'
+              : (clone.not_cloned || 0) === 0
+                ? 'Caught up'
+                : 'Azure has files not in S3'
+          }
+          tone={!clone || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
+        />
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          App sessions versus AI files already in S3. Showing collars that are behind
+          {behindCollarRows.length > behindChartRows.length
+            ? ` (top ${behindChartRows.length} of ${behindCollarRows.length})`
+            : ''}
+          .
+        </p>
+        {behindChartRows.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            {collarPipelineRows.length === 0
+              ? 'No labeled collars in the summary yet.'
+              : 'No collars are behind. Azure is not ahead of S3, and every session with a serial has a dump.'}
+          </p>
+        ) : (
+          <div style={{ height: behindChartHeight }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={behindChartRows}
+                layout="vertical"
+                margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis type="number" tick={{ fontSize: 12 }} allowDecimals={false} />
+                <YAxis type="category" dataKey="collar_sn" width={120} tick={{ fontSize: 11 }} />
+                <Tooltip
+                  formatter={(value, name, props) => {
+                    const azure = props.payload.azure_files;
+                    if (name === 'App sessions') {
+                      const extra =
+                        azure == null ? '' : ` · ${azure} in Azure`;
+                      return [`${value}${extra}`, name];
+                    }
+                    return [value, name];
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="sessions" name="App sessions" fill="#4285F4" barSize={8} />
+                <Bar dataKey="s3_files" name="S3 files" fill="#111827" barSize={8} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        <CollapsibleTable label="Show collar table">
+          {collarPipelineRows.length === 0 ? (
+            <p className="text-sm text-gray-500">No collar rows yet.</p>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="py-2 pr-4 font-medium">Serial</th>
+                  <th className="py-2 pr-4 font-medium">App sessions</th>
+                  <th className="py-2 pr-4 font-medium">Azure files</th>
+                  <th className="py-2 pr-4 font-medium">S3 files</th>
+                  <th className="py-2 pr-4 font-medium">Matched</th>
+                  <th className="py-2 font-medium">Missing</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collarPipelineRows.map((row) => (
+                  <tr key={row.collar_sn} className="border-b border-gray-100">
+                    <td className="py-2 pr-4 font-mono text-xs text-gray-900">{row.collar_sn}</td>
+                    <td className="py-2 pr-4 text-gray-700">{row.sessions}</td>
+                    <td className="py-2 pr-4 text-gray-700">
+                      {row.azure_files == null ? '—' : row.azure_files}
+                    </td>
+                    <td className="py-2 pr-4 text-gray-700">{row.s3_files}</td>
+                    <td className="py-2 pr-4 text-gray-700">{row.matched}</td>
+                    <td className="py-2 text-gray-500">{missingReasonText(row)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CollapsibleTable>
+      </div>
+
+      <div className="mb-2">
+        <h2 className="text-xl font-semibold text-gray-900">Collar dumps</h2>
+        <p className="text-sm text-gray-500">
+          Binary <span className="font-mono text-xs">&lt;sn&gt;/ai/*.log</span> from Azure, joined
+          to labeled sessions by collar SN + timestamp
+          {status?.collar_sync?.last_index_at
+            ? ` · last sync ${formatUpdatedAt(status.collar_sync.last_index_at)}`
+            : ''}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <SummaryCard
+          icon={CheckCircle2}
+          label="Sessions with collar data"
+          value={collarTotals.matched ?? 0}
+          hint={
+            collarTotals.sessions
+              ? `${collarTotals.sessions} labeled sessions`
+              : 'Run Sync collar data'
+          }
+        />
+        <SummaryCard
+          icon={AlertCircle}
+          label="Missing dumps"
+          value={collarTotals.missing ?? 0}
+          hint={
+            collarTotals.unknown_sn
+              ? `${collarTotals.unknown_sn} with no SN`
+              : null
+          }
+        />
+        <SummaryCard
+          icon={FolderOpen}
+          label="AI files in S3"
+          value={collarTotals.ai_files ?? 0}
+          hint={collarTotals.sns ? `${collarTotals.sns} collars` : null}
+        />
+        <SummaryCard
+          icon={Clock}
+          label="Matched duration"
+          value={formatSecondsShort(collarTotals.matched_seconds)}
+          hint={
+            collarTotals.missing_seconds
+              ? `${formatSecondsShort(collarTotals.missing_seconds)} unmatched`
+              : null
+          }
+        />
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">
+          Joined to collar dumps in S3
+        </h3>
+        <p className="text-sm text-gray-500 mb-3">
+          Labeled minutes that already have a matching file in{' '}
+          <span className="font-mono text-xs">collar-raw/</span> (green) versus minutes with no
+          matching S3 file (red).
+        </p>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mb-4">
+          <span>Not in S3: {missingReasons.no_blobs_for_sn || 0}</span>
+          <span>Time gap: {missingReasons.time_gap || 0}</span>
+          <span>Unknown serial: {missingReasons.unknown_sn || 0}</span>
+        </div>
+        {collarUserChart.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            No labeled sessions to join yet. Process staging, then Sync collar data.
+          </p>
+        ) : (
+          <>
+            <div style={{ height: collarUserChartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={collarUserChart}
+                  layout="vertical"
+                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(v) => formatSecondsShort(v)}
+                  />
+                  <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(value, name, props) => [
+                      `${formatSecondsShort(value)} · ${
+                        name === 'matched'
+                          ? props.payload.matchedSessions
+                          : props.payload.missingSessions
+                      } sessions`,
+                      name === 'matched' ? 'Matched' : 'Missing',
+                    ]}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="matched" name="matched" stackId="cov" fill="#34A853" />
+                  <Bar dataKey="missing" name="missing" stackId="cov" fill="#EA4335" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <CollapsibleTable label="Show unmatched session samples">
+              {(collarCoverage?.unmatched_samples || []).length === 0 ? (
+                <p className="text-sm text-gray-500">All labeled sessions have a matching dump.</p>
+              ) : (
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="py-2 pr-4 font-medium">Labeler</th>
+                      <th className="py-2 pr-4 font-medium">Family</th>
+                      <th className="py-2 pr-4 font-medium">Session</th>
+                      <th className="py-2 pr-4 font-medium">Collar SN</th>
+                      <th className="py-2 font-medium">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(collarCoverage?.unmatched_samples || []).map((row, i) => (
+                      <tr key={`${row.email}-${row.timestamp}-${i}`} className="border-b border-gray-100">
+                        <td className="py-2 pr-4 text-gray-900">{row.email}</td>
+                        <td className="py-2 pr-4 text-gray-700">{row.family}</td>
+                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.timestamp}</td>
+                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.collar_sn}</td>
+                        <td className="py-2 text-gray-500">{row.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CollapsibleTable>
+          </>
+        )}
+      </div>
+
       <div className={hasGps ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8' : 'mb-8'}>
         <div>
           <div className="text-base font-semibold text-gray-900">Posture</div>
@@ -1156,8 +1828,9 @@ const LabelingDataDashboard = () => {
                   : null
               }
             />
+            <SummaryCard icon={Dog} label="Unique dogs" value={totals.dogs ?? 0} />
             <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
-            <SummaryCard icon={Dog} label="Files" value={totals.files ?? 0} />
+            <SummaryCard icon={FolderOpen} label="Files" value={totals.files ?? 0} />
             <SummaryCard
               icon={Clock}
               label="Labeled duration"
@@ -1173,8 +1846,9 @@ const LabelingDataDashboard = () => {
             </p>
             <div className="grid grid-cols-2 gap-3">
               <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
+              <SummaryCard icon={Dog} label="GPS dogs" value={gpsTotals.dogs ?? 0} />
               <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
-              <SummaryCard icon={Dog} label="GPS files" value={gpsTotals.files ?? 0} />
+              <SummaryCard icon={FolderOpen} label="GPS files" value={gpsTotals.files ?? 0} />
               <SummaryCard
                 icon={Clock}
                 label="GPS duration"
@@ -1228,9 +1902,9 @@ const LabelingDataDashboard = () => {
           <ChartCard
             kicker="Posture"
             title="By labeler"
-            description="Ranked by labeled duration"
+            description="Ranked by labeled duration. Dark bars are distinct dogs (top axis)."
           >
-            <LabelerContributionChart
+            <LabelerVarietyChart
               data={userContributionData}
               height={userChartHeight}
               colorMap={labelerColors}
@@ -1242,9 +1916,9 @@ const LabelingDataDashboard = () => {
             <ChartCard
               kicker="Indoor / outdoor"
               title="By labeler"
-              description="Ranked by GPS labeled duration"
+              description="Ranked by GPS labeled duration. Dark bars are distinct dogs (top axis)."
             >
-              <LabelerContributionChart
+              <LabelerVarietyChart
                 data={gpsUserContributionData}
                 height={gpsUserChartHeight}
                 colorMap={gpsLabelerColors}
@@ -1299,7 +1973,82 @@ const LabelingDataDashboard = () => {
             </ChartCard>
           ) : null}
         </div>
+        <div className="mt-4">
+          <ChartCard
+            kicker="Dogs"
+            title="Minutes by dog"
+            description={`Labeled duration per collar. A few long bars mean minutes are concentrated on those dogs.${
+              dogRows.length > DOG_CHART_LIMIT
+                ? ` Chart shows the top ${DOG_CHART_LIMIT} of ${dogRows.length}.`
+                : ''
+            }`}
+          >
+            {dogChartData.length === 0 ? (
+              <p className="text-sm text-gray-500">No dogs found in processed sessions.</p>
+            ) : (
+              <>
+                <div style={{ height: dogChartHeight }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={dogChartData}
+                      layout="vertical"
+                      margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis
+                        type="number"
+                        tick={{ fontSize: 12 }}
+                        tickFormatter={(v) => formatSecondsShort(v)}
+                      />
+                      <YAxis type="category" dataKey="label" width={140} tick={{ fontSize: 12 }} />
+                      <Tooltip
+                        formatter={(value, _name, props) => [
+                          `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.owners || 'no owner'}`,
+                          props.payload.breed
+                            ? `${props.payload.name} · ${props.payload.breed}`
+                            : props.payload.name,
+                        ]}
+                      />
+                      <Bar dataKey="seconds" fill="#4285F4" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <CollapsibleTable label="Show dog table">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b">
+                        <th className="py-2 pr-4 font-medium">Dog</th>
+                        <th className="py-2 pr-4 font-medium">Collar SN</th>
+                        <th className="py-2 pr-4 font-medium">Breed</th>
+                        <th className="py-2 pr-4 font-medium">Owners</th>
+                        <th className="py-2 pr-4 font-medium">Sessions</th>
+                        <th className="py-2 font-medium">Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dogRows.map((dog) => (
+                        <tr key={dog.collar_sn || dog.name} className="border-b border-gray-100">
+                          <td className="py-2 pr-4 text-gray-900">{(dog.name || '').trim() || 'Unnamed'}</td>
+                          <td className="py-2 pr-4 font-mono text-xs text-gray-700">{dog.collar_sn}</td>
+                          <td className="py-2 pr-4 text-gray-500">{dog.breed || '—'}</td>
+                          <td className="py-2 pr-4 text-gray-500">
+                            {(dog.owners || dog.users || []).join(', ') || '—'}
+                          </td>
+                          <td className="py-2 pr-4 text-gray-500">{dog.sessions ?? 0}</td>
+                          <td className="py-2 text-gray-700">
+                            {dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </CollapsibleTable>
+              </>
+            )}
+          </ChartCard>
+        </div>
       </section>
+
 
       <section>
         <div className="mb-4">
@@ -1517,6 +2266,19 @@ const LabelingDataDashboard = () => {
     </div>
   );
 };
+
+function PipelineCard({ label, value, detail, state, tone = 'ok', action }) {
+  const stateClass = tone === 'attention' ? 'text-amber-800' : 'text-emerald-800';
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col">
+      <div className="text-gray-500 text-xs uppercase tracking-wide mb-2">{label}</div>
+      <div className="text-2xl font-semibold text-gray-900">{value}</div>
+      {detail ? <div className="text-xs text-gray-500 mt-1">{detail}</div> : null}
+      {state ? <div className={`text-xs mt-1 ${stateClass}`}>{state}</div> : null}
+      {action || null}
+    </div>
+  );
+}
 
 function SummaryCard({ icon: Icon, label, value, hint }) {
   return (

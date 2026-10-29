@@ -13,15 +13,16 @@ import {
   ClipboardList,
   Home,
   Tags,
-  FolderOpen,
   ChevronDown,
+  MoreHorizontal,
 } from 'lucide-react';
 import { getPathFromMode, isHomeTabMode, isProductResearchMode, isHardwareMode } from '../utils/routes';
+import { prefetchMode } from './modePrefetch';
 
 const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [openMenu, setOpenMenu] = useState(null); // 'research' | 'gladly' | 'hardware' | null
+  const [openMenu, setOpenMenu] = useState(null); // 'research' | 'more' | null
   const closeTimerRef = useRef(null);
   const navRef = useRef(null);
 
@@ -41,9 +42,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
   };
 
   const resolveActiveTab = (mode, admin) => {
+    if (mode === 'labeling-data' || mode === 'collar-logs') return 'labeling';
     if (mode === 'bug-triage') return 'bug-triage';
     if (isHardwareMode(mode)) return 'hardware';
-    if (['conversations', 'ask', 'conversation-trends'].includes(mode)) return 'gladly';
+    if (['conversations', 'ask', 'conversation-trends'].includes(mode)) return 'more';
     if (isProductResearchMode(mode)) return 'research';
     if (isHomeTabMode(mode, admin)) return 'home';
     return 'home';
@@ -135,33 +137,6 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
     },
   ];
 
-  const hardwareModes = [
-    {
-      id: 'neck-fit-modeler',
-      name: 'Neck Fit Modeler',
-      description: 'Hardware fit modeling tools',
-      icon: Cpu,
-      color: 'text-slate-700',
-      bgColor: 'bg-slate-50',
-    },
-    {
-      id: 'labeling-data',
-      name: 'Labeling Data',
-      description: 'Activity labeling inventory and durations',
-      icon: Tags,
-      color: 'text-emerald-600',
-      bgColor: 'bg-emerald-50',
-    },
-    {
-      id: 'collar-logs',
-      name: 'Collar Logs',
-      description: 'Collar logs copied into S3',
-      icon: FolderOpen,
-      color: 'text-sky-700',
-      bgColor: 'bg-sky-50',
-    },
-  ];
-
   const menus = {
     research: {
       label: 'Product Research',
@@ -171,21 +146,15 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
       items: productResearchModes,
       isActive: () => isProductResearchMode(currentMode),
     },
-    gladly: {
-      label: 'Gladly Conversations',
-      shortLabel: 'Gladly',
-      icon: null,
+    more: {
+      label: 'Gladly conversations',
+      shortLabel: 'More',
+      icon: MoreHorizontal,
       defaultMode: 'conversation-trends',
       items: gladlyModes,
+      quiet: true,
+      openOnly: true,
       isActive: () => ['conversations', 'ask', 'conversation-trends'].includes(currentMode),
-    },
-    hardware: {
-      label: 'Hardware',
-      shortLabel: 'Hardware',
-      icon: Cpu,
-      defaultMode: 'neck-fit-modeler',
-      items: hardwareModes,
-      isActive: () => isHardwareMode(currentMode),
     },
   };
 
@@ -204,6 +173,10 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
   const openMenuFor = (key) => {
     clearCloseTimer();
     setOpenMenu(key);
+    const menu = menus[key];
+    if (!menu) return;
+    prefetchMode(menu.defaultMode);
+    menu.items.forEach((item) => prefetchMode(item.id));
   };
 
   const selectMode = (modeId) => {
@@ -211,37 +184,54 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
     setOpenMenu(null);
   };
 
-  const tabBtn = (active) =>
-    `shrink-0 md:flex-1 md:min-w-0 px-3 sm:px-4 py-2.5 text-sm font-medium rounded-md transition-colors min-h-[44px] flex items-center justify-center gap-1.5 ${
-      active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
-    }`;
+  const tabBtn = (active, tone = 'default') => {
+    const toneClass =
+      tone === 'featured'
+        ? active
+          ? 'bg-white text-emerald-800 shadow-sm font-semibold'
+          : 'text-emerald-800 hover:text-emerald-900 font-semibold'
+        : tone === 'quiet'
+          ? active
+            ? 'bg-white text-gray-700 shadow-sm'
+            : 'text-gray-500 hover:text-gray-700'
+          : active
+            ? 'bg-white text-gray-900 shadow-sm'
+            : 'text-gray-600 hover:text-gray-900';
+    const widthClass = tone === 'quiet' ? 'shrink-0' : 'shrink-0 md:flex-1 md:min-w-0';
+    return `${widthClass} px-3 sm:px-4 py-2.5 text-sm font-medium rounded-md transition-colors min-h-[44px] flex items-center justify-center gap-1.5 ${toneClass}`;
+  };
 
   const renderMenuTab = (key) => {
     const menu = menus[key];
     const Icon = menu.icon;
     const isActive = activeTab === key;
     const isOpen = openMenu === key;
+    const tone = menu.quiet ? 'quiet' : 'default';
 
     return (
       <div
         key={key}
-        className="relative shrink-0 md:flex-1 md:min-w-0"
+        className={menu.quiet ? 'relative shrink-0' : 'relative shrink-0 md:flex-1 md:min-w-0'}
         onMouseEnter={() => openMenuFor(key)}
         onMouseLeave={scheduleClose}
       >
         <button
           type="button"
+          onPointerDown={() => {
+            prefetchMode(menu.defaultMode);
+            menu.items.forEach((item) => prefetchMode(item.id));
+          }}
           onClick={() => {
             if (isOpen) {
               setOpenMenu(null);
               return;
             }
             openMenuFor(key);
-            if (!menu.isActive()) {
+            if (!menu.openOnly && !menu.isActive()) {
               setModeAndUrl(menu.defaultMode, null);
             }
           }}
-          className={`${tabBtn(isActive)} w-full`}
+          className={`${tabBtn(isActive, tone)} w-full`}
           aria-expanded={isOpen}
           aria-haspopup="menu"
         >
@@ -257,7 +247,9 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
         {isOpen ? (
           <div
             role="menu"
-            className="absolute left-0 top-full z-50 mt-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-gray-200 bg-white p-1.5 shadow-lg"
+            className={`absolute top-full z-50 mt-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-gray-200 bg-white p-1.5 shadow-lg ${
+              menu.quiet ? 'right-0' : 'left-0'
+            }`}
             onMouseEnter={clearCloseTimer}
             onMouseLeave={scheduleClose}
           >
@@ -311,6 +303,22 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
         <div className="flex gap-1 bg-gray-100 p-1 rounded-lg flex-nowrap w-max min-w-full md:w-full md:min-w-0">
           <button
             type="button"
+            onPointerDown={() => prefetchMode('labeling-data')}
+            onMouseEnter={() => prefetchMode('labeling-data')}
+            onClick={() => {
+              setOpenMenu(null);
+              if (currentMode !== 'labeling-data') {
+                setModeAndUrl('labeling-data', null);
+              }
+            }}
+            className={tabBtn(activeTab === 'labeling', 'featured')}
+          >
+            <Tags className="h-4 w-4 shrink-0" />
+            <span className="whitespace-nowrap">Labeling</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               setOpenMenu(null);
               setModeAndUrl('tools', null);
@@ -322,11 +330,27 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
           </button>
 
           {renderMenuTab('research')}
-          {renderMenuTab('gladly')}
-          {renderMenuTab('hardware')}
 
           <button
             type="button"
+            onPointerDown={() => prefetchMode('neck-fit-modeler')}
+            onMouseEnter={() => prefetchMode('neck-fit-modeler')}
+            onClick={() => {
+              setOpenMenu(null);
+              if (currentMode !== 'neck-fit-modeler') {
+                setModeAndUrl('neck-fit-modeler', null);
+              }
+            }}
+            className={tabBtn(activeTab === 'hardware')}
+          >
+            <Cpu className="h-4 w-4 shrink-0 hidden sm:block" />
+            <span className="whitespace-nowrap">Hardware</span>
+          </button>
+
+          <button
+            type="button"
+            onPointerDown={() => prefetchMode('bug-triage')}
+            onMouseEnter={() => prefetchMode('bug-triage')}
             onClick={() => {
               setOpenMenu(null);
               if (currentMode !== 'bug-triage') {
@@ -338,6 +362,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
             <Bug className="h-4 w-4 shrink-0" />
             <span className="whitespace-nowrap">Triage</span>
           </button>
+
+          {renderMenuTab('more')}
         </div>
       </div>
     </div>

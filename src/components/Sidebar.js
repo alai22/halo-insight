@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { memo, useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { getSurvicateDataSource } from '../utils/constants';
 
@@ -844,4 +844,4 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
   );
 };
 
-export default Sidebar;
+export default memo(Sidebar);

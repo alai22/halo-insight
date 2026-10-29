@@ -324,6 +324,33 @@ def analyze_staging_health(files: List[StagingFile]) -> Dict[str, Any]:
     }
 
 
+def index_output_by_email_filename(
+    keys: Set[str], output_prefix: str
+) -> Dict[Tuple[str, str], str]:
+    """Map (labeler email, filename) to an existing extracted-txt object key."""
+    prefix = output_prefix or ""
+    index: Dict[Tuple[str, str], str] = {}
+    for key in keys:
+        if prefix and not key.startswith(prefix):
+            continue
+        rel = key[len(prefix) :] if key.startswith(prefix) else key
+        parts = [part for part in rel.split("/") if part]
+        if len(parts) < 3:
+            continue
+        index[(parts[0], parts[-1])] = key
+    return index
+
+
+def collar_sn_from_output_key(key: str, output_prefix: str) -> Optional[str]:
+    """Read the collar SN folder from extracted-txt/<email>/<sn>/<filename>."""
+    prefix = output_prefix or ""
+    rel = key[len(prefix) :] if key.startswith(prefix) else key
+    parts = [part for part in rel.split("/") if part]
+    if len(parts) < 3:
+        return None
+    return parts[1]
+
+
 @dataclass
 class ProcessReport:
     bucket: str
@@ -1120,15 +1147,18 @@ class LabelingIngestService:
     def process_staging(
         self,
         dry_run: bool = False,
-        clear_output: bool = True,
-        workers: int = 16,
+        clear_output: bool = False,
+        workers: Optional[int] = None,
         on_progress: ProgressFn = None,
     ) -> Dict[str, Any]:
         """
         Process all staging extracted files into extracted-txt/<email>/<collar-sn>/.
 
         Dedupes identical sessions across message_ids (keeps latest message_id).
-        Skips dest keys that already exist (no per-file MD5) unless clear_output.
+        Incremental by default: a file already stored for that labeler is left
+        in place, and its collar SN is not re-read. Pass clear_output to wipe
+        extracted-txt/ and rebuild, which is how a corrected SN or replaced
+        file content gets rewritten.
 
         Args:
             dry_run: Plan only; do not copy/delete.
@@ -1142,6 +1172,10 @@ class LabelingIngestService:
             output_prefix=self.output_prefix,
             dry_run=dry_run,
         )
+        if workers is None:
+            from ..utils.runtime_stats import env_int
+
+            workers = env_int("LABELING_PROCESS_WORKERS", 4)
         workers = max(1, int(workers or 1))
 
         _emit_progress(on_progress, "listing", "Listing staging files…")
@@ -1193,8 +1227,12 @@ class LabelingIngestService:
         )
 
         existing_dest: Set[str] = set()
-        if not clear_output and not dry_run:
+        existing_by_name: Dict[Tuple[str, str], str] = {}
+        if not clear_output:
             existing_dest = self._list_output_keys()
+            existing_by_name = index_output_by_email_filename(
+                existing_dest, self.output_prefix
+            )
             logger.info("Existing output keys: %s", len(existing_dest))
 
         # Resolve chosen files + collar keys first (CPU / local), then fetch SNs in parallel.
@@ -1205,12 +1243,23 @@ class LabelingIngestService:
                 by_kind[m.kind] = m
             chosen = list(by_kind.values())
             collar = by_kind.get("collar_collected")
+            already = bool(chosen) and all(
+                (email, m.filename) in existing_by_name for m in chosen
+            )
+            known_sn = None
+            if already:
+                known_sn = collar_sn_from_output_key(
+                    existing_by_name[(email, chosen[0].filename)],
+                    self.output_prefix,
+                )
             planned.append(
                 {
                     "email": email,
                     "chosen": chosen,
-                    "collar_key": collar.key if collar else None,
+                    "collar_key": None if already else (collar.key if collar else None),
                     "message_ids": {m.message_id for m in chosen},
+                    "already": already,
+                    "known_sn": known_sn,
                 }
             )
 
@@ -1261,10 +1310,14 @@ class LabelingIngestService:
         for item in planned:
             email = item["email"]
             collar_key = item["collar_key"]
-            sn = sn_by_collar.get(collar_key) if collar_key else None
-            if not sn:
-                sn = UNKNOWN_COLLAR_SN
-                report.unknown_sn_sessions += 1
+            if item["already"]:
+                sn = item["known_sn"] or UNKNOWN_COLLAR_SN
+            else:
+                sn = sn_by_collar.get(collar_key) if collar_key else None
+            if not sn or sn == UNKNOWN_COLLAR_SN:
+                if not item["already"]:
+                    report.unknown_sn_sessions += 1
+                sn = sn or UNKNOWN_COLLAR_SN
 
             sn_seen.add(sn)
             by_email[email]["email"] = email
@@ -1274,12 +1327,12 @@ class LabelingIngestService:
 
             for m in item["chosen"]:
                 dest = f"{self.output_prefix}{email}/{sn}/{m.filename}"
+                if (email, m.filename) in existing_by_name or dest in existing_dest:
+                    report.skipped_unchanged += 1
+                    continue
                 if dry_run:
                     report.copied += 1
                     by_email[email]["files_copied"] += 1
-                    continue
-                if dest in existing_dest:
-                    report.skipped_unchanged += 1
                     continue
                 copies.append((m.key, dest, email))
 

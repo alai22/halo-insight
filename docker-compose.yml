@@ -42,6 +42,11 @@ services:
       - ${CONVERSATION_DATA_PATH:-./conversation_items.jsonl}:/app/conversation_items.jsonl:ro
     
     restart: unless-stopped
+
+    # Leave ~1 GiB on a 4 GiB instance for the OS. No swap so memory pressure
+    # restarts this container instead of stalling the host.
+    mem_limit: 2800m
+    memswap_limit: 2800m
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

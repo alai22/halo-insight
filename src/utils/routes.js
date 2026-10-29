@@ -10,7 +10,8 @@ export const LEGACY_PATH_REDIRECTS = {
   '/tools': '/',
   '/platform': '/',
   '/engineering': '/hardware',
-  '/platform/labeling': '/hardware/labeling',
+  '/platform/labeling': '/labeling',
+  '/hardware/labeling': '/labeling',
 };
 
 export const PATH_TO_ROUTE = {
@@ -31,8 +32,8 @@ export const PATH_TO_ROUTE = {
   '/surveys': { mode: 'halo-surveys', adminMode: null },
   '/hardware': { mode: 'neck-fit-modeler', adminMode: null },
   '/hardware/neck-fit': { mode: 'neck-fit-modeler', adminMode: null },
-  '/hardware/labeling': { mode: 'labeling-data', adminMode: null },
-  '/hardware/collar-logs': { mode: 'collar-logs', adminMode: null },
+  '/labeling': { mode: 'labeling-data', adminMode: null },
+  '/labeling/collar-logs': { mode: 'collar-logs', adminMode: null },
 };
 
 /** @type {Record<string, string>} */
@@ -47,8 +48,8 @@ export const MODE_TO_CANONICAL_PATH = {
   'api-data-manager': '/platform/survicate-download',
   'zoom': '/platform/zoom',
   'analytics': '/platform/analytics',
-  'labeling-data': '/hardware/labeling',
-  'collar-logs': '/hardware/collar-logs',
+  'labeling-data': '/labeling',
+  'collar-logs': '/labeling/collar-logs',
   'jira-status': '/platform/jira',
   'bug-triage': '/jira',
   'neck-fit-modeler': '/hardware/neck-fit',
@@ -76,7 +77,7 @@ export const HOME_TAB_MODES = [
 export const PLATFORM_MODES = HOME_TAB_MODES;
 
 /** Modes that belong to the Hardware top-level tab */
-export const HARDWARE_MODES = ['neck-fit-modeler', 'labeling-data', 'collar-logs'];
+export const HARDWARE_MODES = ['neck-fit-modeler'];
 
 /** Paths that have a canonical route (for redirects and path-first logic) */
 export const PATH_BASED_PATHS = Object.keys(PATH_TO_ROUTE);

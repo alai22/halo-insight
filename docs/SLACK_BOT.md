@@ -11,6 +11,7 @@ Internal Slack bot that answers `@`-mentions using **read-only Notion search** a
    - Optionally enforces `SLACK_ALLOWED_CHANNEL_IDS`
    - Searches Notion for the question (token scope + optional page/database filters)
    - Asks Claude to answer **only** from that context
+   - Converts the reply to Slack mrkdwn (`*bold*`, no `#` headers)
    - Posts the reply with `chat.postMessage` in-thread
 
 If Notion returns no useful context, the bot replies that it could not find an answer (no Claude hallucination from empty context).

@@ -123,6 +123,26 @@ def sanitize_collar_sn(sn: Optional[str]) -> str:
     return cleaned or UNKNOWN_COLLAR_SN
 
 
+def _known_collar_count(collars) -> int:
+    """Distinct collar SNs, omitting the unknown placeholder."""
+    return sum(1 for sn in collars if sn and sn != UNKNOWN_COLLAR_SN)
+
+
+def _ensure_dog(dogs: Dict[str, Dict[str, Any]], collar_sn: str) -> Dict[str, Any]:
+    return dogs.setdefault(
+        collar_sn,
+        {
+            "name": None,
+            "breed": None,
+            "weight": None,
+            "collar_sn": collar_sn,
+            "owners": set(),
+            "sessions": set(),
+            "duration_seconds": 0.0,
+        },
+    )
+
+
 def parse_rel_path(rel: str) -> Optional[Dict[str, Any]]:
     """
     Parse extracted-txt-relative path into user / optional collar_sn / filename.
@@ -370,8 +390,13 @@ class LabelingDataAnalyzer:
         activity_collar_events: Dict[str, int] = defaultdict(int)
         activity_user_reported_events: Dict[str, int] = defaultdict(int)
         sessions_seen: Dict[str, set] = defaultdict(set)
+        session_duration: Dict[Tuple[str, str], float] = defaultdict(float)
+        session_timestamp: Dict[Tuple[str, str], str] = {}
+        session_index: Dict[Tuple[str, str], int] = {}
         by_date: Dict[str, Dict[str, Any]] = {}
         dogs: Dict[str, Dict[str, Any]] = {}
+        activity_collars: Dict[str, set] = defaultdict(set)
+        activity_owners: Dict[str, set] = defaultdict(set)
         parse_errors: List[Dict[str, str]] = []
 
         # Resolve collar SN per session: path folder first, then collar_collected body
@@ -428,6 +453,8 @@ class LabelingDataAnalyzer:
 
             session_id = f"{ref.timestamp}_{ref.index}"
             sessions_seen[ref.user].add(session_id)
+            session_timestamp[(ref.user, session_id)] = ref.timestamp
+            session_index[(ref.user, session_id)] = ref.index
             day = (ref.timestamp or "")[:10] or "unknown"
             day_stats = by_date.setdefault(
                 day,
@@ -437,11 +464,13 @@ class LabelingDataAnalyzer:
                     "sessions": set(),
                     "files": 0,
                     "users": set(),
+                    "collars": set(),
                     "by_user": defaultdict(
                         lambda: {
                             "duration_seconds": 0.0,
                             "sessions": set(),
                             "files": 0,
+                            "collars": set(),
                         }
                     ),
                 },
@@ -459,6 +488,11 @@ class LabelingDataAnalyzer:
             collar_stats["collar_sn"] = collar_sn
             collar_stats["files"] += 1
             collar_stats["sessions"].add(session_id)
+            day_stats["collars"].add(collar_sn)
+            day_user["collars"].add(collar_sn)
+            dog = _ensure_dog(dogs, collar_sn)
+            dog["owners"].add(ref.user)
+            dog["sessions"].add((ref.user, session_id))
 
             if not include_content:
                 continue
@@ -479,19 +513,19 @@ class LabelingDataAnalyzer:
                         collar_stats["activity_duration_seconds"][key] += seconds
                         day_stats["duration_seconds"] += seconds
                         day_user["duration_seconds"] += seconds
+                        session_duration[(ref.user, session_id)] += seconds
+                        dog["duration_seconds"] += seconds
+                        if seconds > 0:
+                            activity_collars[key].add(collar_sn)
+                            activity_owners[key].add(ref.user)
                 elif ref.kind == "collar_collected":
                     parsed = parse_collar_collected(text)
-                    if parsed.dog_name or parsed.collar_sn:
-                        dog_key = parsed.collar_sn or parsed.dog_name or "unknown"
-                        dogs[dog_key] = {
-                            "name": parsed.dog_name,
-                            "breed": parsed.dog_breed,
-                            "weight": parsed.dog_weight,
-                            "collar_sn": parsed.collar_sn,
-                            "users": sorted(
-                                set(dogs.get(dog_key, {}).get("users", []) + [ref.user])
-                            ),
-                        }
+                    if parsed.dog_name:
+                        dog["name"] = parsed.dog_name
+                    if parsed.dog_breed:
+                        dog["breed"] = parsed.dog_breed
+                    if parsed.dog_weight is not None:
+                        dog["weight"] = parsed.dog_weight
                     for event in parsed.activity_events:
                         key = canonicalize_activity_label(event["label"])
                         activity_collar_events[key] += 1
@@ -532,6 +566,22 @@ class LabelingDataAnalyzer:
                 collars_out, key=lambda c: (-c["sessions"], c["collar_sn"])
             )
 
+        sessions_out: List[Dict[str, Any]] = []
+        for user, sids in sessions_seen.items():
+            for sid in sorted(sids):
+                key = (user, sid)
+                sessions_out.append(
+                    {
+                        "user": user,
+                        "session_id": sid,
+                        "timestamp": session_timestamp.get(key, ""),
+                        "index": session_index.get(key, 0),
+                        "collar_sn": session_collar.get(key) or UNKNOWN_COLLAR_SN,
+                        "duration_seconds": round(float(session_duration.get(key, 0.0)), 3),
+                    }
+                )
+        sessions_out.sort(key=lambda s: (s["user"], s["timestamp"], s["index"]))
+
         by_date_out: List[Dict[str, Any]] = []
         for day in sorted(by_date.keys()):
             dstats = by_date[day]
@@ -544,6 +594,7 @@ class LabelingDataAnalyzer:
                         "duration_human": format_seconds(float(ustats["duration_seconds"])),
                         "sessions": len(ustats["sessions"]),
                         "files": ustats["files"],
+                        "dogs": _known_collar_count(ustats["collars"]),
                     }
                 )
             users_day.sort(key=lambda u: (-u["duration_seconds"], u["user"]))
@@ -555,18 +606,40 @@ class LabelingDataAnalyzer:
                     "sessions": len(dstats["sessions"]),
                     "files": dstats["files"],
                     "users": len(dstats["users"]),
+                    "dogs": _known_collar_count(dstats["collars"]),
                     "by_user": users_day,
                 }
             )
 
+        dogs_out: List[Dict[str, Any]] = []
+        for sn, dog in dogs.items():
+            seconds = float(dog["duration_seconds"])
+            owners = sorted(dog["owners"])
+            dogs_out.append(
+                {
+                    "name": dog.get("name"),
+                    "breed": dog.get("breed"),
+                    "weight": dog.get("weight"),
+                    "collar_sn": sn,
+                    "owners": owners,
+                    "users": owners,
+                    "sessions": len(dog["sessions"]),
+                    "total_duration_seconds": round(seconds, 3),
+                    "total_duration_human": format_seconds(seconds),
+                }
+            )
+        dogs_out.sort(key=lambda d: (-d["total_duration_seconds"], d["collar_sn"] or ""))
+
         return {
             "total_files": len(files),
             "total_users": len(by_user),
+            "total_dogs": _known_collar_count(dogs),
             "total_sessions": sum(len(s) for s in sessions_seen.values()),
             "files_by_kind": {
                 kind: sum(1 for f in files if f.kind == kind) for kind in FILE_KINDS
             },
             "users": sorted(by_user.values(), key=lambda u: (-u["total_files"], u["user"])),
+            "sessions": sessions_out,
             "by_date": by_date_out,
             "activity_duration_seconds": dict(
                 sorted(activity_duration_seconds.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -583,7 +656,14 @@ class LabelingDataAnalyzer:
             "user_reported_events": dict(
                 sorted(activity_user_reported_events.items(), key=lambda kv: (-kv[1], kv[0]))
             ),
-            "dogs": list(dogs.values()),
+            "activity_dog_counts": {
+                label: _known_collar_count(collars)
+                for label, collars in activity_collars.items()
+            },
+            "activity_owner_counts": {
+                label: len(owners) for label, owners in activity_owners.items()
+            },
+            "dogs": dogs_out,
             "parse_errors": parse_errors,
         }
 
@@ -644,22 +724,30 @@ class LabelingDataAnalyzer:
         return analyzer.analyze(include_content=True)
 
 
-def _activity_rows(duration_map: Dict[str, float], include_zero: bool = False) -> List[Dict[str, Any]]:
+def _activity_rows(
+    duration_map: Dict[str, float],
+    include_zero: bool = False,
+    dog_counts: Optional[Dict[str, int]] = None,
+    owner_counts: Optional[Dict[str, int]] = None,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for label, seconds in sorted(duration_map.items(), key=lambda kv: (-kv[1], kv[0])):
         if not include_zero and seconds <= 0:
             continue
         name = canonicalize_activity_label(label)
         parsed = parse_activity_label(label)
-        rows.append(
-            {
-                "label": name,
-                "name": name,
-                "activity_id": parsed[1] if parsed else None,
-                "seconds": round(float(seconds), 3),
-                "human": format_seconds(float(seconds)),
-            }
-        )
+        row: Dict[str, Any] = {
+            "label": name,
+            "name": name,
+            "activity_id": parsed[1] if parsed else None,
+            "seconds": round(float(seconds), 3),
+            "human": format_seconds(float(seconds)),
+        }
+        if dog_counts is not None:
+            row["dogs"] = int(dog_counts.get(name, 0))
+        if owner_counts is not None:
+            row["owners"] = int(owner_counts.get(name, 0))
+        rows.append(row)
     return rows
 
 
@@ -667,8 +755,20 @@ def _format_family_ui(family_summary: Dict[str, Any]) -> Dict[str, Any]:
     """Shape one session-family summary for the frontend."""
     duration_map = family_summary.get("activity_duration_seconds") or {}
     total_duration = float(sum(duration_map.values()))
-    activity_rows = _activity_rows(duration_map, include_zero=False)
-    all_activity_rows = _activity_rows(duration_map, include_zero=True)
+    dog_counts = family_summary.get("activity_dog_counts") or {}
+    owner_counts = family_summary.get("activity_owner_counts") or {}
+    activity_rows = _activity_rows(
+        duration_map,
+        include_zero=False,
+        dog_counts=dog_counts,
+        owner_counts=owner_counts,
+    )
+    all_activity_rows = _activity_rows(
+        duration_map,
+        include_zero=True,
+        dog_counts=dog_counts,
+        owner_counts=owner_counts,
+    )
 
     users_out: List[Dict[str, Any]] = []
     for user in family_summary.get("users") or []:
@@ -696,6 +796,7 @@ def _format_family_ui(family_summary: Dict[str, Any]) -> Dict[str, Any]:
                 "bytes": user.get("bytes", 0),
                 "by_kind": user.get("by_kind") or {},
                 "collar_sns": user.get("collar_sns") or [],
+                "dogs": _known_collar_count(user.get("collar_sns") or []),
                 "collars": collars,
                 "total_duration_seconds": round(user_total, 3),
                 "total_duration_human": format_seconds(user_total),
@@ -709,6 +810,7 @@ def _format_family_ui(family_summary: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "totals": {
             "users": family_summary.get("total_users", 0),
+            "dogs": family_summary.get("total_dogs", 0),
             "sessions": family_summary.get("total_sessions", 0),
             "files": family_summary.get("total_files", 0),
             "files_by_kind": family_summary.get("files_by_kind") or {},
@@ -796,10 +898,13 @@ def print_report(summary: Dict[str, Any]) -> None:
         print("Dogs seen")
         print("-" * 72)
         for dog in dogs:
+            owners = dog.get("owners") or dog.get("users") or []
             print(
                 f"  {dog.get('name')} | breed={dog.get('breed')} "
                 f"weight={dog.get('weight')} sn={dog.get('collar_sn')} "
-                f"users={', '.join(dog.get('users') or [])}"
+                f"sessions={dog.get('sessions', 0)} "
+                f"duration={dog.get('total_duration_human', '')} "
+                f"owners={', '.join(owners)}"
             )
 
     errors = summary.get("parse_errors") or []

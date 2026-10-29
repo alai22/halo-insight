@@ -191,6 +191,13 @@ class Config:
     LABELING_S3_STAGING_PREFIX: str = os.getenv('LABELING_S3_STAGING_PREFIX', 'staging/')
     # Collar logs copied into the labeling bucket (CSV + JSON sidecar per session).
     LABELING_S3_ML_PREFIX: str = os.getenv('LABELING_S3_ML_PREFIX', 'ml-processed/')
+    # Azure collar dumps (binary ai/*.log) mirrored beside app labels.
+    # Prefer LABELING_AZURE_SAS_URL (container URL + SAS). URL+TOKEN split also works.
+    LABELING_AZURE_SAS_URL: Optional[str] = os.getenv('LABELING_AZURE_SAS_URL')
+    LABELING_AZURE_BLOB_URL: Optional[str] = os.getenv('LABELING_AZURE_BLOB_URL')
+    LABELING_AZURE_SAS_TOKEN: Optional[str] = os.getenv('LABELING_AZURE_SAS_TOKEN')
+    LABELING_COLLAR_S3_PREFIX: str = os.getenv('LABELING_COLLAR_S3_PREFIX', 'collar-raw/')
+    LABELING_COLLAR_MATCH_PAD_SEC: int = int(os.getenv('LABELING_COLLAR_MATCH_PAD_SEC', '300'))
     
     # Snowflake (order reconciliation) — read-only analytics queries.
     # Auth is a Programmatic Access Token (PAT), not key-pair/password.
