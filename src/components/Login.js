@@ -115,8 +115,8 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
         
         {!requireAdmin && (
           <div className="text-sm text-gray-600 text-center mb-6 space-y-2">
-            <p>Customer support conversation analysis and churn insights.</p>
-            <p>Analyze Gladly conversations, survey responses, and identify trends.</p>
+            <p>Labeling Data is the main workspace.</p>
+            <p>Research, hardware, triage, and support tools stay available too.</p>
           </div>
         )}
         

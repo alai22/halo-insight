@@ -10,11 +10,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, Clock, CloudDownload, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v4';
+const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
+const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
+const COLLAR_SYNC_PROGRESS = 'Copying Azure <sn>/ai/* into collar-raw/…';
 
 const COLORS = [
   '#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#9334E6',
@@ -741,14 +744,14 @@ const LabelingDataDashboard = () => {
             className="inline-flex items-center gap-2 px-4 py-2 bg-sky-700 text-white rounded-lg text-sm hover:bg-sky-800 disabled:opacity-50"
             title={
               azureConfigured
-                ? 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars'
+                ? COLLAR_SYNC_HINT
                 : 'Set LABELING_AZURE_SAS_URL (or BLOB_URL + SAS_TOKEN) on the server'
             }
           >
             {syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
             ) : (
-              <CloudDownload className="h-4 w-4" />
+              <DownloadCloud className="h-4 w-4" />
             )}
             {syncingCollar ? 'Syncing…' : 'Sync collar data'}
           </button>
@@ -865,10 +868,10 @@ const LabelingDataDashboard = () => {
             <div className="mt-0.5">
               {processInfo?.message ||
                 (promoting
-                  ? 'Copying quarantine batches into staging/<labeler>/…'
+                  ? PROMOTE_PROGRESS
                   : syncingCollar
-                    ? 'Copying Azure <sn>/ai/* into collar-raw/…'
-                    : 'Copying new staging files into extracted-txt. Existing files stay put.')
+                    ? COLLAR_SYNC_PROGRESS
+                    : 'Copying new staging files into extracted-txt. Existing files stay put.')}
             </div>
             <div className="mt-1 text-xs text-blue-800">
               Safe to close or leave this tab. Started{' '}

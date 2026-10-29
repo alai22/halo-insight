@@ -29,8 +29,8 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
   const sections = [
     {
       id: 'hardware',
-      title: 'Hardware & ML',
-      description: 'Device modeling and labeling pipelines',
+      title: 'Hardware',
+      description: 'Device fit modeling',
       tools: [
         {
           id: 'neck-fit-modeler',
@@ -41,16 +41,6 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
           bgColor: 'bg-slate-50',
           borderColor: 'border-slate-200',
           action: () => openTool('neck-fit-modeler'),
-        },
-        {
-          id: 'labeling-data',
-          name: 'Labeling Data',
-          description: 'Activity labeling inventory, collar dump sync, duration totals',
-          icon: Tags,
-          color: 'text-emerald-600',
-          bgColor: 'bg-emerald-50',
-          borderColor: 'border-emerald-200',
-          action: () => openTool('labeling-data'),
         },
       ],
     },
@@ -108,43 +98,6 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
           bgColor: 'bg-violet-50',
           borderColor: 'border-violet-200',
           action: () => openTool('text-interview'),
-        },
-      ],
-    },
-    {
-      id: 'gladly',
-      title: 'Gladly Conversations',
-      description: 'Search and analyze support conversations',
-      tools: [
-        {
-          id: 'conversation-trends',
-          name: 'Conversation Trends',
-          description: 'Visualize conversation topic trends',
-          icon: TrendingUp,
-          color: 'text-blue-600',
-          bgColor: 'bg-blue-50',
-          borderColor: 'border-blue-200',
-          action: () => openTool('conversation-trends'),
-        },
-        {
-          id: 'conversations',
-          name: 'Search Conversations',
-          description: 'Search Gladly conversation data',
-          icon: Search,
-          color: 'text-green-600',
-          bgColor: 'bg-green-50',
-          borderColor: 'border-green-200',
-          action: () => openTool('conversations'),
-        },
-        {
-          id: 'ask',
-          name: 'Ask About Conversations',
-          description: 'AI analysis of conversation data',
-          icon: MessageSquare,
-          color: 'text-purple-600',
-          bgColor: 'bg-purple-50',
-          borderColor: 'border-purple-200',
-          action: () => openTool('ask'),
         },
       ],
     },
@@ -232,6 +185,44 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
         },
       ],
     },
+    {
+      id: 'gladly',
+      title: 'Gladly conversations',
+      description: 'Support conversation search, kept here for when you need it',
+      quiet: true,
+      tools: [
+        {
+          id: 'conversation-trends',
+          name: 'Conversation Trends',
+          description: 'Visualize conversation topic trends',
+          icon: TrendingUp,
+          color: 'text-blue-600',
+          bgColor: 'bg-blue-50',
+          borderColor: 'border-blue-200',
+          action: () => openTool('conversation-trends'),
+        },
+        {
+          id: 'conversations',
+          name: 'Search Conversations',
+          description: 'Search Gladly conversation data',
+          icon: Search,
+          color: 'text-green-600',
+          bgColor: 'bg-green-50',
+          borderColor: 'border-green-200',
+          action: () => openTool('conversations'),
+        },
+        {
+          id: 'ask',
+          name: 'Ask About Conversations',
+          description: 'AI analysis of conversation data',
+          icon: MessageSquare,
+          color: 'text-purple-600',
+          bgColor: 'bg-purple-50',
+          borderColor: 'border-purple-200',
+          action: () => openTool('ask'),
+        },
+      ],
+    },
   ];
 
   const isToolActive = (tool) => {
@@ -251,15 +242,43 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
           <h1 className="text-2xl font-bold text-gray-900">Halo Insight</h1>
         </div>
         <p className="text-gray-600">
-          Pick a tool to get started. Use the top tabs as shortcuts into each area.
+          Labeling Data is the main workspace. Research, hardware, triage, and the rest of the toolkit stay available below.
         </p>
       </div>
 
+      <button
+        type="button"
+        onClick={() => openTool('labeling-data')}
+        onPointerEnter={() => prefetchMode('labeling-data')}
+        onFocus={() => prefetchMode('labeling-data')}
+        className={`mb-10 w-full rounded-xl border-2 p-6 text-left transition-all hover:shadow-md ${
+          currentMode === 'labeling-data' && !adminMode
+            ? 'border-emerald-400 bg-emerald-50'
+            : 'border-emerald-200 bg-emerald-50/70 hover:border-emerald-300'
+        }`}
+      >
+        <div className="flex items-start gap-4">
+          <div className="rounded-lg bg-emerald-100 p-3">
+            <Tags className="h-6 w-6 text-emerald-700" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Featured</p>
+            <h2 className="mt-1 text-xl font-semibold text-gray-900">Labeling Data</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Activity labeling inventory, collar dump coverage, and duration totals.
+            </p>
+            <span className="mt-3 inline-flex text-sm font-medium text-emerald-800">Open labeling</span>
+          </div>
+        </div>
+      </button>
+
       <div className="space-y-10">
         {sections.map((section) => (
-          <section key={section.id}>
+          <section key={section.id} className={section.quiet ? 'border-t border-gray-200 pt-8' : undefined}>
             <div className="mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">{section.title}</h2>
+              <h2 className={section.quiet ? 'text-base font-medium text-gray-600' : 'text-lg font-semibold text-gray-900'}>
+                {section.title}
+              </h2>
               <p className="text-sm text-gray-500">{section.description}</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -274,10 +293,12 @@ const Tools = ({ currentMode, setCurrentMode, adminMode, setAdminMode }) => {
                     onClick={tool.action}
                     onPointerEnter={() => prefetchMode(tool.id)}
                     onFocus={() => prefetchMode(tool.id)}
-                    className={`p-5 border-2 rounded-lg text-left transition-all hover:shadow-md ${
+                    className={`${section.quiet ? 'p-4' : 'p-5'} border-2 rounded-lg text-left transition-all hover:shadow-md ${
                       isActive
                         ? `${tool.bgColor} ${tool.borderColor}`
-                        : 'bg-white border-gray-200 hover:border-gray-300'
+                        : section.quiet
+                          ? 'bg-white border-gray-100 hover:border-gray-200'
+                          : 'bg-white border-gray-200 hover:border-gray-300'
                     }`}
                   >
                     <div className="flex items-start space-x-4">
