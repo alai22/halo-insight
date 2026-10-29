@@ -39,7 +39,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parseaddr
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import boto3
 
@@ -193,6 +193,30 @@ DUPLICATE_RATIO_WARN = 3.0
 # already exist under the destination labeler.
 CUMULATIVE_OVERLAP_WARN = 0.85
 
+ProgressFn = Optional[Callable[[Dict[str, Any]], None]]
+
+
+def _emit_progress(
+    on_progress: ProgressFn,
+    phase: str,
+    message: str,
+    done: int = 0,
+    total: int = 0,
+) -> None:
+    if not on_progress:
+        return
+    try:
+        on_progress(
+            {
+                "phase": phase,
+                "done": int(done or 0),
+                "total": int(total or 0),
+                "message": message,
+            }
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Labeling progress callback failed")
+
 
 def analyze_staging_health(files: List[StagingFile]) -> Dict[str, Any]:
     """
@@ -270,19 +294,19 @@ def analyze_staging_health(files: List[StagingFile]) -> Dict[str, Any]:
     warnings: List[str] = []
     if ratio >= DUPLICATE_RATIO_WARN:
         warnings.append(
-            f"Staging has {raw_files} extracted files but only ~{unique_file_estimate} "
-            f"unique after session dedupe ({ratio:.1f}x). Make/quarantine is likely "
-            f"re-uploading cumulative extracted trees."
+            f"Make is re-uploading full extracted trees: {raw_files} files in staging, "
+            f"~{unique_file_estimate} unique ({ratio:.1f}x). "
+            f"Process staging dedupes into charts and does not stop the next upload."
         )
     if size_mismatch_sessions:
         warnings.append(
             f"{size_mismatch_sessions} session(s) have the same id in multiple emails "
-            f"with differing file sizes — dedupe kept the latest message_id; inspect samples."
+            f"with differing file sizes. Those copies are kept until inspected."
         )
     if incomplete_sessions:
         warnings.append(
-            f"{incomplete_sessions} session(s) missing collar_collected/durations/user_reported "
-            f"in the winning message batch."
+            f"{incomplete_sessions} session(s) are missing collar_collected, durations, "
+            f"or user_reported in the copy that would be kept."
         )
 
     return {
@@ -701,12 +725,23 @@ class LabelingIngestService:
                 (skipped_duplicate_extracted / extracted_seen) if extracted_seen else 0.0
             )
             cumulative = overlap >= CUMULATIVE_OVERLAP_WARN and extracted_seen > 0
+            skipped_raw_archives = 0
             if cumulative:
+                # The zip is the full tree. New txts are copied on their own.
+                kept_keys: List[Tuple[str, str]] = []
+                for src, dest in keys_to_copy:
+                    rel = src[len(prefix) :]
+                    if rel.startswith("raw/") or rel.lower().endswith(".zip"):
+                        skipped_raw_archives += 1
+                        continue
+                    kept_keys.append((src, dest))
+                keys_to_copy = kept_keys
                 warn = (
                     f"Forward {message_id} looks cumulative for {labeler}: "
                     f"{skipped_duplicate_extracted}/{extracted_seen} extracted files "
                     f"already in staging (overlap {overlap:.0%}). "
-                    f"Copied only {len(new_extracted_names)} new extracted file(s)."
+                    f"Copied only {len(new_extracted_names)} new extracted file(s); "
+                    f"skipped {skipped_raw_archives} raw archive(s)."
                 )
                 report["warnings"].append(warn)
                 logger.warning(warn)
@@ -730,6 +765,7 @@ class LabelingIngestService:
                 "forwarder": envelope_from or "alai@halocollar.com",
                 "promoted_at": promoted_at,
                 "skipped_duplicate_extracted": skipped_duplicate_extracted,
+                "skipped_raw_archives": skipped_raw_archives,
                 "new_extracted_files": len(new_extracted_names),
                 "likely_cumulative_extract": cumulative,
             }
@@ -762,6 +798,7 @@ class LabelingIngestService:
                         "prefix": dest_prefix,
                         "promoted_at": promoted_at,
                         "skipped_duplicate_extracted": skipped_duplicate_extracted,
+                        "skipped_raw_archives": skipped_raw_archives,
                         "new_extracted_files": len(new_extracted_names),
                     }
                     quarantine_meta["attribution"] = attribution
@@ -778,6 +815,7 @@ class LabelingIngestService:
                     "extracted_files": batch["extracted_files"],
                     "copied_keys": len(keys_to_copy) + 1,
                     "skipped_duplicate_extracted": skipped_duplicate_extracted,
+                    "skipped_raw_archives": skipped_raw_archives,
                     "new_extracted_files": len(new_extracted_names),
                     "likely_cumulative_extract": cumulative,
                     "dry_run": dry_run,
@@ -793,18 +831,20 @@ class LabelingIngestService:
                         "copied_keys": len(keys_to_copy) + 1,
                         "extracted_files": batch["extracted_files"],
                         "skipped_duplicate_extracted": skipped_duplicate_extracted,
+                        "skipped_raw_archives": skipped_raw_archives,
                         "new_extracted_files": len(new_extracted_names),
                         "likely_cumulative_extract": cumulative,
                     }
                 )
                 logger.info(
-                    "Promoted forward %s → %s (from=%s, keys=%s, new_extracted=%s, skipped_dup=%s)",
+                    "Promoted forward %s → %s (from=%s, keys=%s, new_extracted=%s, skipped_dup=%s, skipped_raw=%s)",
                     message_id,
                     labeler,
                     source,
                     len(keys_to_copy) + 1,
                     len(new_extracted_names),
                     skipped_duplicate_extracted,
+                    skipped_raw_archives,
                 )
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(
@@ -871,7 +911,7 @@ class LabelingIngestService:
             "output_emails": sorted(output_emails),
         }
 
-    def _clear_output_prefix(self, dry_run: bool) -> int:
+    def _clear_output_prefix(self, dry_run: bool, on_progress: ProgressFn = None) -> int:
         keys: List[str] = []
         paginator = self.s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.output_prefix):
@@ -880,13 +920,161 @@ class LabelingIngestService:
                     keys.append(obj["Key"])
         if dry_run or not keys:
             return len(keys)
-        for i in range(0, len(keys), 1000):
+        self._delete_keys(
+            keys,
+            on_progress=on_progress,
+            phase="clearing",
+            message_prefix="Clearing previous output",
+        )
+        return len(keys)
+
+    def _delete_keys(
+        self,
+        keys: List[str],
+        on_progress: ProgressFn = None,
+        phase: str = "deleting",
+        message_prefix: str = "Removing objects",
+    ) -> int:
+        deleted = 0
+        total = len(keys)
+        for i in range(0, total, 1000):
             batch = keys[i : i + 1000]
             self.s3_client.delete_objects(
                 Bucket=self.bucket_name,
                 Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
             )
-        return len(keys)
+            deleted += len(batch)
+            _emit_progress(
+                on_progress,
+                phase,
+                f"{message_prefix} ({deleted} / {total})…",
+                deleted,
+                total,
+            )
+        return deleted
+
+    def compact_staging(
+        self,
+        dry_run: bool = False,
+        on_progress: ProgressFn = None,
+    ) -> Dict[str, Any]:
+        """
+        Delete stacked extracted copies in staging.
+
+        For each labeler + filename, keep the lexicographically latest message_id
+        when every copy is the same size (the same rule process_staging uses).
+        Differing sizes are left in place. Message batches that kept no extracted
+        file also lose their raw zip; _meta.json stays.
+        """
+        _emit_progress(on_progress, "listing", "Listing staging files…")
+        files = self.list_staging_extracted()
+        _emit_progress(
+            on_progress,
+            "planning",
+            f"Planning dedupe of {len(files)} extracted files…",
+            0,
+            len(files),
+        )
+
+        by_name: Dict[Tuple[str, str], List[StagingFile]] = defaultdict(list)
+        for item in files:
+            by_name[(item.email, item.filename)].append(item)
+
+        delete_extracted: List[str] = []
+        kept_batches: Set[Tuple[str, str]] = set()
+        mismatch_kept = 0
+        mismatch_samples: List[Dict[str, Any]] = []
+
+        for (email, filename), members in by_name.items():
+            sizes = {int(m.size or 0) for m in members}
+            if len(sizes) > 1:
+                mismatch_kept += max(0, len(members) - 1)
+                for member in members:
+                    kept_batches.add((member.email, member.message_id))
+                if len(mismatch_samples) < 8:
+                    mismatch_samples.append(
+                        {
+                            "email": email,
+                            "filename": filename,
+                            "message_ids": sorted({m.message_id for m in members})[:6],
+                            "sizes": sorted(sizes),
+                        }
+                    )
+                continue
+            winner = max(members, key=lambda m: m.message_id)
+            kept_batches.add((winner.email, winner.message_id))
+            for member in members:
+                if member.key != winner.key:
+                    delete_extracted.append(member.key)
+
+        all_batches = {(item.email, item.message_id) for item in files}
+        empty_batches = all_batches - kept_batches
+        batch_prefix: Dict[Tuple[str, str], str] = {}
+        for item in files:
+            marker = f"/extracted/{item.filename}"
+            if item.key.endswith(marker):
+                batch_prefix[(item.email, item.message_id)] = item.key[: -len(marker)] + "/"
+        extracted_delete_set = set(delete_extracted)
+        raw_keys: List[str] = []
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for batch_id in sorted(empty_batches):
+            prefix = batch_prefix.get(batch_id)
+            if not prefix:
+                continue
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []) or []:
+                    key = obj["Key"]
+                    if key.endswith("/") or key in extracted_delete_set:
+                        continue
+                    rel = key[len(prefix) :]
+                    if rel == "_meta.json" or rel.endswith("/_meta.json"):
+                        continue
+                    raw_keys.append(key)
+
+        delete_keys = delete_extracted + raw_keys
+        deleted = 0
+        if delete_keys and not dry_run:
+            _emit_progress(
+                on_progress,
+                "deleting",
+                f"Removing duplicate copies (0 / {len(delete_keys)})…",
+                0,
+                len(delete_keys),
+            )
+            deleted = self._delete_keys(
+                delete_keys,
+                on_progress=on_progress,
+                phase="deleting",
+                message_prefix="Removing duplicate copies",
+            )
+        elif not delete_keys:
+            _emit_progress(on_progress, "deleting", "No duplicate copies to remove", 0, 0)
+
+        report = {
+            "bucket": self.bucket_name,
+            "staging_prefix": self.staging_prefix,
+            "dry_run": dry_run,
+            "raw_extracted_files": len(files),
+            "unique_filenames": len(by_name),
+            "extracted_duplicates_planned": len(delete_extracted),
+            "extracted_duplicates_removed": 0 if dry_run else len(delete_extracted),
+            "raw_objects_planned": len(raw_keys),
+            "raw_objects_removed": 0 if dry_run else len(raw_keys),
+            "empty_batches": len(empty_batches),
+            "size_mismatch_copies_kept": mismatch_kept,
+            "mismatch_samples": mismatch_samples,
+            "deleted": 0 if dry_run else deleted,
+            "errors": [],
+        }
+        logger.info(
+            "Compact staging dry_run=%s extracted_dupes=%s raw=%s mismatches_kept=%s unique=%s",
+            dry_run,
+            len(delete_extracted),
+            len(raw_keys),
+            mismatch_kept,
+            len(by_name),
+        )
+        return report
 
     def _get_text(self, key: str) -> str:
         body = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)["Body"].read()
@@ -934,6 +1122,7 @@ class LabelingIngestService:
         dry_run: bool = False,
         clear_output: bool = True,
         workers: int = 16,
+        on_progress: ProgressFn = None,
     ) -> Dict[str, Any]:
         """
         Process all staging extracted files into extracted-txt/<email>/<collar-sn>/.
@@ -945,6 +1134,7 @@ class LabelingIngestService:
             dry_run: Plan only; do not copy/delete.
             clear_output: Wipe extracted-txt/ before copying (clean reprocess).
             workers: Parallel S3 copy / SN-read threads.
+            on_progress: Optional callback for phase + counts.
         """
         report = ProcessReport(
             bucket=self.bucket_name,
@@ -954,8 +1144,20 @@ class LabelingIngestService:
         )
         workers = max(1, int(workers or 1))
 
+        _emit_progress(on_progress, "listing", "Listing staging files…")
         if clear_output:
-            report.cleared_output_keys = self._clear_output_prefix(dry_run=dry_run)
+            _emit_progress(on_progress, "clearing", "Clearing previous extracted-txt…")
+            report.cleared_output_keys = self._clear_output_prefix(
+                dry_run=dry_run,
+                on_progress=on_progress,
+            )
+            _emit_progress(
+                on_progress,
+                "clearing",
+                f"Cleared {report.cleared_output_keys} previous output files",
+                report.cleared_output_keys,
+                report.cleared_output_keys,
+            )
             logger.info(
                 "Cleared %s keys under %s (dry_run=%s)",
                 report.cleared_output_keys,
@@ -1015,6 +1217,13 @@ class LabelingIngestService:
         sn_by_collar: Dict[str, Optional[str]] = {}
         collar_keys = [p["collar_key"] for p in planned if p["collar_key"]]
         if collar_keys:
+            _emit_progress(
+                on_progress,
+                "resolving_sn",
+                f"Resolving collar serials (0 / {len(collar_keys)})…",
+                0,
+                len(collar_keys),
+            )
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(self._resolve_collar_sn, key): key for key in collar_keys
@@ -1029,6 +1238,13 @@ class LabelingIngestService:
                     done += 1
                     if done % 100 == 0 or done == len(futures):
                         logger.info("Resolved collar SN %s/%s", done, len(futures))
+                        _emit_progress(
+                            on_progress,
+                            "resolving_sn",
+                            f"Resolving collar serials ({done} / {len(futures)})…",
+                            done,
+                            len(futures),
+                        )
 
         sn_seen = set()
         by_email: Dict[str, Dict[str, Any]] = defaultdict(
@@ -1073,6 +1289,18 @@ class LabelingIngestService:
             report.skipped_unchanged,
             dry_run,
         )
+        copy_total = report.copied if dry_run else len(copies)
+        _emit_progress(
+            on_progress,
+            "copying",
+            (
+                f"Dry run — {copy_total} files would be copied"
+                if dry_run
+                else f"Copying files (0 / {copy_total})…"
+            ),
+            copy_total if dry_run else 0,
+            copy_total,
+        )
 
         if copies and not dry_run:
             def _copy_one(src_dest_email: Tuple[str, str, str]) -> Tuple[str, str, Optional[str]]:
@@ -1101,6 +1329,13 @@ class LabelingIngestService:
                         existing_dest.add(dest)
                     if done % 100 == 0 or done == len(futures):
                         logger.info("Copied %s/%s", done, len(futures))
+                        _emit_progress(
+                            on_progress,
+                            "copying",
+                            f"Copying files ({done} / {len(futures)})…",
+                            done,
+                            len(futures),
+                        )
 
         report.collar_sns = sorted(sn_seen)
         report.by_email = {

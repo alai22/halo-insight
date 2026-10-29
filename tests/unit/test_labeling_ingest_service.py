@@ -193,6 +193,13 @@ class _FakeS3:
         self.objects[Key] = self.objects[src]
         self.copies.append((src, Key))
 
+    def delete_objects(self, Bucket=None, Delete=None):  # noqa: N803
+        deleted = []
+        for item in (Delete or {}).get("Objects") or []:
+            self.objects.pop(item["Key"], None)
+            deleted.append({"Key": item["Key"]})
+        return {"Deleted": deleted}
+
     def head_object(self, Bucket=None, Key=None):  # noqa: N803
         import hashlib
 
@@ -315,8 +322,11 @@ def test_promote_skips_extracted_already_under_labeler():
     assert len(report["promoted"]) == 1
     item = report["promoted"][0]
     assert item["skipped_duplicate_extracted"] == 6
+    assert item["skipped_raw_archives"] == 1
     assert item["new_extracted_files"] == 1
     assert item["likely_cumulative_extract"] is True
+    assert "staging/lindseyw7485@gmail.com/fwd2/raw/logs.zip" not in s3.objects
+    assert "staging/_forwards/fwd2/logs.zip" in s3.objects
     assert (
         "staging/lindseyw7485@gmail.com/fwd2/extracted/"
         "activity_session_2026-05-01T15:00:55_0_collar_collected.txt"
@@ -328,3 +338,75 @@ def test_promote_skips_extracted_already_under_labeler():
         in s3.objects
     )
     assert report["warnings"]
+
+
+def test_compact_staging_keeps_latest_same_size_and_drops_empty_batch_zip():
+    email = "a@example.com"
+    name = "activity_session_2026-05-01T15:09:55_0_collar_collected.txt"
+    name2 = "activity_session_2026-05-02T10:00:00_0_durations.txt"
+    objects = {
+        f"staging/{email}/mid1/extracted/{name}": b"SAME",
+        f"staging/{email}/mid1/raw/logs.zip": b"ZIP1",
+        f"staging/{email}/mid1/_meta.json": b"{}",
+        f"staging/{email}/mid2/extracted/{name}": b"SAME",
+        f"staging/{email}/mid2/raw/logs.zip": b"ZIP2",
+        f"staging/{email}/mid2/_meta.json": b"{}",
+        f"staging/{email}/mida/extracted/{name2}": b"A",
+        f"staging/{email}/midb/extracted/{name2}": b"AB",
+    }
+    s3 = _FakeS3(objects)
+    svc = LabelingIngestService(
+        bucket_name="test-bucket",
+        staging_prefix="staging/",
+        output_prefix="extracted-txt/",
+        s3_client=s3,
+    )
+    events = []
+    report = svc.compact_staging(dry_run=False, on_progress=events.append)
+
+    assert f"staging/{email}/mid2/extracted/{name}" in s3.objects
+    assert f"staging/{email}/mid1/extracted/{name}" not in s3.objects
+    assert f"staging/{email}/mid1/raw/logs.zip" not in s3.objects
+    assert f"staging/{email}/mid1/_meta.json" in s3.objects
+    assert f"staging/{email}/mid2/raw/logs.zip" in s3.objects
+    assert f"staging/{email}/mida/extracted/{name2}" in s3.objects
+    assert f"staging/{email}/midb/extracted/{name2}" in s3.objects
+    assert report["extracted_duplicates_removed"] == 1
+    assert report["raw_objects_removed"] == 1
+    assert report["size_mismatch_copies_kept"] == 1
+    assert report["unique_filenames"] == 2
+    assert any(event["phase"] == "deleting" for event in events)
+
+    again = svc.compact_staging(dry_run=True)
+    assert again["extracted_duplicates_planned"] == 0
+    assert again["deleted"] == 0
+    assert f"staging/{email}/mid2/extracted/{name}" in s3.objects
+
+
+def test_process_staging_reports_progress_phases():
+    email = "a@example.com"
+    name = "activity_session_2026-05-01T15:09:55_0_collar_collected.txt"
+    s3 = _FakeS3(
+        {
+            f"staging/{email}/mid1/extracted/{name}": b"Collar SN: 24h4290093rt\n",
+        }
+    )
+    svc = LabelingIngestService(
+        bucket_name="test-bucket",
+        staging_prefix="staging/",
+        output_prefix="extracted-txt/",
+        s3_client=s3,
+    )
+    events = []
+    report = svc.process_staging(
+        dry_run=True,
+        clear_output=True,
+        on_progress=events.append,
+    )
+    phases = [event["phase"] for event in events]
+    assert "listing" in phases
+    assert "clearing" in phases
+    assert "resolving_sn" in phases
+    assert "copying" in phases
+    assert report["copied"] == 1
+    assert report["dry_run"] is True
