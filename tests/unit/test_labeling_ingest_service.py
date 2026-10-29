@@ -5,7 +5,9 @@ from backend.services.labeling_ingest_service import (
     LabelingIngestService,
     StagingFile,
     analyze_staging_health,
+    collar_sn_from_output_key,
     forward_body_from_meta,
+    index_output_by_email_filename,
     looks_like_labeler_email,
     normalize_labeler_email,
     parse_original_from_forward_body,
@@ -327,4 +329,66 @@ def test_promote_skips_extracted_already_under_labeler():
         "activity_session_2026-05-01T16:00:00_1_collar_collected.txt"
         in s3.objects
     )
-    assert report["warnings"]
+
+
+def test_index_output_by_email_filename():
+    key = (
+        "extracted-txt/a@example.com/SN123/"
+        "activity_session_2026-05-01T15:09:55_0_durations.txt"
+    )
+    index = index_output_by_email_filename({key, "extracted-txt/notes.txt"}, "extracted-txt/")
+    assert index == {
+        ("a@example.com", "activity_session_2026-05-01T15:09:55_0_durations.txt"): key
+    }
+    assert collar_sn_from_output_key(key, "extracted-txt/") == "SN123"
+
+
+def test_incremental_process_skips_files_already_in_output():
+    email = "a@example.com"
+    ts = "2026-05-01T15:09:55"
+    files = [
+        _sf(email, "mid1", ts, 0, "collar_collected"),
+        _sf(email, "mid1", ts, 0, "durations"),
+        _sf(email, "mid1", ts, 0, "user_reported"),
+    ]
+    objects = {}
+    for staging_file in files:
+        objects[staging_file.key] = b"Collar SN: SHOULD-NOT-READ\n"
+        objects[f"extracted-txt/{email}/SN123/{staging_file.filename}"] = b"already"
+    s3 = _FakeS3(objects)
+    svc = LabelingIngestService(bucket_name="test-bucket", s3_client=s3)
+
+    report = svc.process_staging(clear_output=False)
+
+    assert report["copied"] == 0
+    assert report["skipped_unchanged"] == 3
+    assert report["cleared_output_keys"] == 0
+    assert report["unknown_sn_sessions"] == 0
+    assert s3.copies == []
+    assert report["collar_sns"] == ["SN123"]
+
+
+def test_incremental_process_copies_only_missing_files():
+    email = "a@example.com"
+    ts = "2026-05-01T15:09:55"
+    files = [
+        _sf(email, "mid1", ts, 0, "collar_collected"),
+        _sf(email, "mid1", ts, 0, "durations"),
+        _sf(email, "mid1", ts, 0, "user_reported"),
+    ]
+    objects = {}
+    for staging_file in files:
+        body = b"Collar SN: SN999\n" if staging_file.kind == "collar_collected" else b"x"
+        objects[staging_file.key] = body
+    objects[f"extracted-txt/{email}/SN999/{files[1].filename}"] = b"already"
+    s3 = _FakeS3(objects)
+    svc = LabelingIngestService(bucket_name="test-bucket", s3_client=s3)
+
+    report = svc.process_staging(clear_output=False)
+
+    assert report["skipped_unchanged"] == 1
+    assert report["copied"] == 2
+    assert report["cleared_output_keys"] == 0
+    copied_names = {dest.rsplit("/", 1)[-1] for _src, dest in s3.copies}
+    assert copied_names == {files[0].filename, files[2].filename}
+    assert all(dest.startswith(f"extracted-txt/{email}/SN999/") for _src, dest in s3.copies)

@@ -278,7 +278,7 @@ const LabelingDataDashboard = () => {
     try {
       const response = await axios.post('/api/labeling/process', {
         dry_run: false,
-        clear_output: true,
+        clear_output: false,
         async: true,
       });
       if (!response.data.success) {
@@ -289,7 +289,7 @@ const LabelingDataDashboard = () => {
       setProcessInfo(response.data.data || { running: true, message: response.data.message });
       setProcessNotice({
         type: 'info',
-        text: 'Processing started in the background. Safe to leave this tab — it keeps running on the server.',
+        text: 'Adding new staging files in the background. Files already in extracted-txt stay put.',
       });
       await fetchStatus();
     } catch (err) {
@@ -520,7 +520,7 @@ const LabelingDataDashboard = () => {
             type: 'success',
             text: proc?.message || 'Processing finished. Refreshing summary…',
           });
-          await fetchSummary({ refresh: true });
+          await fetchSummary({ refresh: false });
         }
       }
     }, PROCESS_POLL_MS);
@@ -725,7 +725,7 @@ const LabelingDataDashboard = () => {
             onClick={processStaging}
             disabled={processing}
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50"
-            title="Starts a background job: staging → extracted-txt/<email>/<collar-sn>/"
+            title="Adds staging files that are not already in extracted-txt. Does not delete existing output."
           >
             {processing && !syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
@@ -868,7 +868,7 @@ const LabelingDataDashboard = () => {
                   ? 'Copying quarantine batches into staging/<labeler>/…'
                   : syncingCollar
                     ? 'Copying Azure <sn>/ai/* into collar-raw/…'
-                    : 'Copying staging files into extracted-txt by collar SN…')}
+                    : 'Copying new staging files into extracted-txt. Existing files stay put.')
             </div>
             <div className="mt-1 text-xs text-blue-800">
               Safe to close or leave this tab. Started{' '}

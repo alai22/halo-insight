@@ -163,6 +163,30 @@ def _cache_clear() -> None:
         logger.warning("Failed to clear labeling summary cache: %s", exc)
 
 
+def _cache_mark_stale() -> None:
+    """Keep the last summary so the page can paint, and mark it ready to refresh."""
+    with _CACHE_LOCK:
+        payload = _CACHE["payload"] if _CACHE["key"] == _SUMMARY_CACHE_MEM_KEY else None
+    if payload is None:
+        loaded = _load_summary_cache_s3(_DEFAULT_CACHE_TTL_SEC)
+        payload = loaded["data"] if loaded else None
+    if not payload:
+        return
+    generated_at = time.time() - _DEFAULT_CACHE_TTL_SEC - 1
+    _cache_set_memory(
+        _SUMMARY_CACHE_MEM_KEY, payload, _DEFAULT_CACHE_TTL_SEC, generated_at=generated_at
+    )
+    _persist_summary_cache(payload, generated_at, _DEFAULT_CACHE_TTL_SEC)
+
+
+def _refresh_summary_after_process(report: Dict[str, Any], clear_output: bool, dry_run: bool) -> None:
+    """Drop a blocking rescan when the process did not change extracted-txt."""
+    if dry_run:
+        return
+    if clear_output or int(report.get("copied") or 0) > 0:
+        _cache_mark_stale()
+
+
 def _attach_collar_coverage(data: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
     """Join mirrored collar-raw/ AI dumps onto the UI summary."""
     try:
@@ -605,13 +629,13 @@ def labeling_process():
 
     JSON body (optional):
       dry_run: bool (default false)
-      clear_output: bool (default true) — wipe extracted-txt before copy
+      clear_output: bool (default false) — wipe extracted-txt before copy
       async: bool (default true) — run in background; poll GET /status
     """
     try:
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
-        clear_output = bool(body.get("clear_output", True))
+        clear_output = bool(body.get("clear_output", False))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
 
@@ -631,7 +655,11 @@ def labeling_process():
                 finished_at=None,
                 last_error=None,
                 last_report=None,
-                message="Processing staging → extracted-txt…",
+                message=(
+                    "Rebuilding extracted-txt from staging…"
+                    if clear_output
+                    else "Adding new staging files into extracted-txt…"
+                ),
             )
 
             def _worker():
@@ -640,7 +668,7 @@ def labeling_process():
                         dry_run=dry_run,
                         clear_output=clear_output,
                     )
-                    _cache_clear()
+                    _refresh_summary_after_process(report, clear_output, dry_run)
                     _set_process_state(
                         running=False,
                         job="process",
@@ -649,6 +677,7 @@ def labeling_process():
                         last_error=None,
                         message=(
                             f"Done — copied {report.get('copied', 0)} files, "
+                            f"skipped {report.get('skipped_unchanged', 0)} already present, "
                             f"{report.get('sessions', 0)} sessions"
                         ),
                     )
@@ -676,21 +705,28 @@ def labeling_process():
             started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             finished_at=None,
             last_error=None,
-            message="Processing staging → extracted-txt…",
+            message=(
+                "Rebuilding extracted-txt from staging…"
+                if clear_output
+                else "Adding new staging files into extracted-txt…"
+            ),
         )
         try:
             report = LabelingIngestService().process_staging(
                 dry_run=dry_run,
                 clear_output=clear_output,
             )
-            _cache_clear()
+            _refresh_summary_after_process(report, clear_output, dry_run)
             state = _set_process_state(
                 running=False,
                 job="process",
                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 last_report=report,
                 last_error=None,
-                message=f"Done — copied {report.get('copied', 0)} files",
+                message=(
+                    f"Done — copied {report.get('copied', 0)} files, "
+                    f"skipped {report.get('skipped_unchanged', 0)} already present"
+                ),
             )
             return jsonify({"success": True, "async": False, "data": report, "process": state})
         except Exception as exc:  # noqa: BLE001
