@@ -22,6 +22,24 @@ const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for lab
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
 const COLLAR_SYNC_PROGRESS = 'Copying Azure <sn>/ai/* into collar-raw/…';
 
+const PHASE_LABELS = {
+  listing: 'Listing staging files',
+  clearing: 'Clearing previous extracted-txt',
+  resolving_sn: 'Resolving collar serials',
+  copying: 'Copying files into extracted-txt',
+  planning: 'Planning which copies to remove',
+  deleting: 'Removing duplicate copies',
+  refreshing: 'Refreshing charts',
+};
+
+function phaseLabel(progress, job) {
+  if (progress?.phase && PHASE_LABELS[progress.phase]) return PHASE_LABELS[progress.phase];
+  if (job === 'compact-staging') return 'Removing duplicate copies';
+  if (job === 'promote-forwards') return 'Promoting forwards';
+  if (job === 'sync-collar') return 'Syncing collar dumps';
+  return 'Processing staging';
+}
+
 const COLORS = [
   '#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#9334E6',
   '#00ACC1', '#64B5F6', '#F28B82', '#81C784', '#FFB74D', '#BA68C8',
@@ -389,6 +407,7 @@ const LabelingDataDashboard = () => {
         }
       } else {
         setError(response.data.error || 'Failed to load labeling data');
+        return false;
       }
     } catch (err) {
       const errorMsg =
@@ -397,9 +416,11 @@ const LabelingDataDashboard = () => {
         err.message ||
         'Failed to load labeling data';
       setError(errorMsg);
+      return false;
     } finally {
       setLoading(false);
     }
+    return true;
   }, []);
 
   const processStaging = useCallback(async () => {
@@ -416,7 +437,14 @@ const LabelingDataDashboard = () => {
       }
       wasProcessingRef.current = true;
       setProcessing(true);
-      setProcessInfo(response.data.data || { running: true, message: response.data.message });
+      setProcessInfo(
+        response.data.data || {
+          running: true,
+          job: 'process',
+          progress: { phase: 'listing', done: 0, total: 0 },
+          message: 'Adding new staging files into extracted-txt…',
+        }
+      );
       setProcessNotice({
         type: 'info',
         text: 'Adding new staging files in the background. Files already in extracted-txt stay put.',
@@ -443,6 +471,53 @@ const LabelingDataDashboard = () => {
       setProcessing(false);
     }
   }, [fetchStatus]);
+
+  const compactStaging = useCallback(async () => {
+    const health = status?.staging_health || {};
+    const dup = health.duplicate_file_refs ?? 0;
+    const ok = window.confirm(
+      `Remove duplicate copies from staging?\n\nAbout ${dup} extra extracted files will be deleted when a newer email already has the same file at the same size. Raw zips are deleted only for batches that added nothing new. The latest copy stays. Charts do not change until you Process staging.`
+    );
+    if (!ok) return;
+    setError(null);
+    setProcessNotice(null);
+    try {
+      const response = await axios.post('/api/labeling/compact', { async: true });
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Compact failed');
+      }
+      wasProcessingRef.current = true;
+      setProcessing(true);
+      setProcessInfo(
+        response.data.data || {
+          running: true,
+          job: 'compact-staging',
+          progress: { phase: 'listing', done: 0, total: 0 },
+          message: 'Listing staging files…',
+        }
+      );
+      await fetchStatus();
+    } catch (err) {
+      if (err.response?.status === 409) {
+        wasProcessingRef.current = true;
+        setProcessing(true);
+        setProcessInfo(err.response.data?.data || { running: true });
+        setProcessNotice({
+          type: 'info',
+          text: 'A labeling job is already running. Waiting for it to finish…',
+        });
+        await fetchStatus();
+        return;
+      }
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        err.message ||
+        'Failed to remove duplicate copies';
+      setError(errorMsg);
+      setProcessing(false);
+    }
+  }, [fetchStatus, status]);
 
   const promoteForwards = useCallback(
     async ({ silent = false } = {}) => {
@@ -635,7 +710,9 @@ const LabelingDataDashboard = () => {
               ? 'Promote'
               : proc?.job === 'sync-collar'
                 ? 'Collar sync'
-                : 'Process';
+                : proc?.job === 'compact-staging'
+                  ? 'Remove copies'
+                  : 'Process';
           setProcessNotice({
             type: 'error',
             text: `${jobLabel} failed: ${proc.last_error}`,
@@ -658,12 +735,26 @@ const LabelingDataDashboard = () => {
           setSyncingCollar(false);
           setCollarMode(null);
           await fetchSummary({ refresh: true });
-        } else {
+        } else if (proc?.job === 'compact-staging') {
           setProcessNotice({
             type: 'success',
-            text: proc?.message || 'Processing finished. Refreshing summary…',
+            text:
+              proc?.message ||
+              'Duplicate copies removed. Charts stay unchanged until you Process staging.',
           });
-          await fetchSummary({ refresh: false });
+          setPromoting(false);
+        } else {
+          setProcessNotice({
+            type: 'info',
+            text: 'Processing finished. Refreshing charts…',
+          });
+          const refreshed = await fetchSummary({ refresh: true });
+          setProcessNotice({
+            type: refreshed ? 'success' : 'error',
+            text: refreshed
+              ? proc?.message || 'Processing finished. Charts match the deduped set.'
+              : 'Processing finished, but the charts could not be refreshed. Use Refresh.',
+          });
         }
       }
     }, PROCESS_POLL_MS);
@@ -675,7 +766,24 @@ const LabelingDataDashboard = () => {
   const activities = data?.activities || [];
   const pendingForwards = status?.pending_forwards || null;
   const stagingHealth = status?.staging_health || null;
-  const stagingHealthWarnings = stagingHealth?.warnings || [];
+  const uniqueFiles = stagingHealth?.unique_files_after_dedupe ?? 0;
+  const duplicateRefs = stagingHealth?.duplicate_file_refs ?? 0;
+  const incompleteSessions = stagingHealth?.incomplete_sessions ?? 0;
+  const sizeMismatchSessions = stagingHealth?.size_mismatch_sessions ?? 0;
+  const outputFiles = status?.output_files ?? 0;
+  const stackedTrees = Boolean(
+    stagingHealth &&
+      ((stagingHealth.duplicate_ratio || 0) >= 3 || duplicateRefs > 0)
+  );
+  const chartsBehind = uniqueFiles > 0 && outputFiles < uniqueFiles;
+  const showStagingHealth = Boolean(
+    stagingHealth &&
+      (stackedTrees || chartsBehind || incompleteSessions > 0 || sizeMismatchSessions > 0)
+  );
+  const progressTotal = Number(processInfo?.progress?.total) || 0;
+  const progressDone = Number(processInfo?.progress?.done) || 0;
+  const progressPct =
+    progressTotal > 0 ? Math.min(100, Math.round((progressDone / progressTotal) * 100)) : null;
   const users = useMemo(() => {
     const list = data?.users || [];
     return [...list].sort(
@@ -989,7 +1097,13 @@ const LabelingDataDashboard = () => {
             ) : (
               <Play className="h-4 w-4" />
             )}
-            {processing && !syncingCollar ? 'Processing…' : 'Process staging'}
+            {processing && !syncingCollar
+              ? processInfo?.job === 'compact-staging'
+                ? 'Removing copies…'
+                : promoting || processInfo?.job === 'promote-forwards'
+                  ? 'Promoting…'
+                  : 'Processing…'
+              : 'Process staging'}
           </button>
           <button
             type="button"
@@ -1030,27 +1144,71 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      {stagingHealthWarnings.length > 0 ? (
+      {showStagingHealth ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-950">
           <div className="font-medium">Staging health</div>
-          <div className="mt-1 text-xs text-amber-900/90">
-            {stagingHealth.raw_extracted_files} files → ~{stagingHealth.unique_files_after_dedupe}{' '}
-            unique after dedupe ({stagingHealth.duplicate_ratio}x)
-            {stagingHealth.multi_message_sessions
-              ? ` · ${stagingHealth.multi_message_sessions} sessions in multiple emails`
-              : ''}
-            {stagingHealth.incomplete_sessions
-              ? ` · ${stagingHealth.incomplete_sessions} incomplete`
-              : ''}
-            {stagingHealth.size_mismatch_sessions
-              ? ` · ${stagingHealth.size_mismatch_sessions} size mismatches`
-              : ''}
-          </div>
-          <ul className="mt-2 list-disc pl-5 space-y-1">
-            {stagingHealthWarnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
+          {stackedTrees ? (
+            <p className="mt-1">
+              Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
+              {stagingHealth.raw_extracted_files} files and about{' '}
+              {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
+              Process staging folds those copies into the charts. It does not stop the next email
+              from stacking another tree.
+            </p>
+          ) : null}
+          {chartsBehind ? (
+            <p className="mt-2">
+              Charts are behind: output has {outputFiles} files and staging has about {uniqueFiles}{' '}
+              unique. Process staging to refresh them.
+            </p>
+          ) : null}
+          {incompleteSessions > 0 ? (
+            <div className="mt-2">
+              <p>
+                {incompleteSessions} sessions are missing collar_collected, durations, or
+                user_reported in the copy that would be kept. Processing leaves them incomplete.
+              </p>
+              {(stagingHealth.incomplete_samples || []).length > 0 ? (
+                <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
+                  {(stagingHealth.incomplete_samples || []).map((sample) => (
+                    <li key={`${sample.email}-${sample.timestamp}-${sample.index}-${sample.message_id}`}>
+                      {sample.email} · {sample.family} · {sample.timestamp} #{sample.index} · missing{' '}
+                      {(sample.missing || []).join(', ') || 'unknown'}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {incompleteSessions > (stagingHealth.incomplete_samples || []).length ? (
+                <p className="mt-1 text-xs text-amber-900/80">
+                  Showing {(stagingHealth.incomplete_samples || []).length} of {incompleteSessions}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {sizeMismatchSessions > 0 ? (
+            <p className="mt-2">
+              {sizeMismatchSessions} sessions have different file sizes across emails. Those copies
+              stay in staging until someone inspects them.
+            </p>
+          ) : null}
+          {duplicateRefs > 0 ? (
+            <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                type="button"
+                onClick={compactStaging}
+                disabled={processing}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 rounded-lg text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-50 shrink-0"
+              >
+                Remove duplicate copies
+              </button>
+              <p className="text-xs text-amber-900/80">
+                Deletes extra extracted files when a newer email already has the same file at the
+                same size, and deletes raw zips from batches that added nothing new. Promote already
+                skips filenames staging has seen. Make will keep stacking until it uploads only new
+                files.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1111,18 +1269,17 @@ const LabelingDataDashboard = () => {
       {processing ? (
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900 flex items-start gap-3">
           <RefreshCw className="h-5 w-5 animate-spin flex-shrink-0 mt-0.5" />
-          <div>
+          <div className="flex-1 min-w-0">
             <div className="font-medium">
-              {promoting || processInfo?.job === 'promote-forwards'
-                ? 'Promoting forwards'
-                : syncingCollar || processInfo?.job === 'sync-collar'
-                  ? azureCheckRunning
-                    ? 'Checking Azure'
-                    : 'Syncing collar dumps'
-                  : 'Processing in progress'}
+              {syncingCollar || processInfo?.job === 'sync-collar'
+                ? azureCheckRunning
+                  ? 'Checking Azure'
+                  : 'Syncing collar dumps'
+                : phaseLabel(processInfo?.progress, processInfo?.job)}
             </div>
             <div className="mt-0.5">
-              {processInfo?.message ||
+              {processInfo?.progress?.message ||
+                processInfo?.message ||
                 (promoting
                   ? PROMOTE_PROGRESS
                   : syncingCollar
@@ -1131,7 +1288,25 @@ const LabelingDataDashboard = () => {
                       : COLLAR_SYNC_PROGRESS
                     : 'Copying new staging files into extracted-txt. Existing files stay put.')}
             </div>
+            {progressPct != null ? (
+              <div className="mt-2">
+                <div className="h-1.5 bg-blue-100 rounded">
+                  <div
+                    className="h-1.5 bg-blue-600 rounded"
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-xs text-blue-800">
+                  {progressDone} / {progressTotal}
+                </div>
+              </div>
+            ) : null}
             <div className="mt-1 text-xs text-blue-800">
+              {processInfo?.job === 'compact-staging'
+                ? 'Staging shrinks in place. Charts stay as they are until you Process staging. '
+                : processInfo?.job === 'process'
+                  ? 'New files are copied into extracted-txt. Files already there stay put. '
+                  : null}
               Safe to close or leave this tab. Started{' '}
               {processInfo?.started_at ? processInfo.started_at.replace('T', ' ').replace('Z', ' UTC') : 'just now'}.
               {processInfo?.runtime?.rss_mb != null
@@ -1165,11 +1340,45 @@ const LabelingDataDashboard = () => {
           )}
           <div className="flex-1">
             <div>{processNotice.text}</div>
-            {processReport && processNotice.type === 'success' ? (
+            {processReport &&
+            processNotice.type === 'success' &&
+            processReport.copied != null &&
+            processReport.extracted_duplicates_planned == null ? (
               <div className="mt-1 text-xs opacity-80">
                 {processReport.collar_prefix
                   ? `Copied ${processReport.copied || 0} files · listed ${processReport.listed || 0} · ${(processReport.errors || []).length} errors`
-                  : `Copied ${processReport.copied} files · ${processReport.sessions} sessions · ${(processReport.errors || []).length} errors`}
+                  : (
+                    <>
+                      Copied {processReport.copied} files · {processReport.sessions} sessions
+                      {processReport.skipped_unchanged
+                        ? ` · ${processReport.skipped_unchanged} already present`
+                        : ''}
+                      {processReport.health?.unique_files_after_dedupe != null
+                        ? ` · ~${processReport.health.unique_files_after_dedupe} unique after dedupe`
+                        : ''}
+                      {processReport.incomplete_sessions
+                        ? ` · ${processReport.incomplete_sessions} incomplete kept`
+                        : ''}
+                      {' · '}
+                      {(processReport.errors || []).length} errors. Charts match that deduped set.
+                    </>
+                  )}
+              </div>
+            ) : null}
+            {processReport &&
+            processNotice.type === 'success' &&
+            processReport.extracted_duplicates_planned != null ? (
+              <div className="mt-1 text-xs opacity-80">
+                Removed {processReport.extracted_duplicates_removed ?? 0} extracted copies
+                {processReport.raw_objects_removed
+                  ? ` · ${processReport.raw_objects_removed} raw objects`
+                  : ''}
+                {' · '}
+                {processReport.unique_filenames ?? 0} filenames kept
+                {processReport.size_mismatch_copies_kept
+                  ? ` · ${processReport.size_mismatch_copies_kept} size mismatches left`
+                  : ''}
+                . Charts stay unchanged until you Process staging.
               </div>
             ) : null}
           </div>
@@ -2129,6 +2338,12 @@ const LabelingDataDashboard = () => {
                       Last promote: {processReport.promoted.length} batch(es), skipped{' '}
                       {(processReport.skipped || []).length}, errors{' '}
                       {(processReport.errors || []).length}
+                    </>
+                  ) : processReport.extracted_duplicates_planned != null ? (
+                    <>
+                      Last compact: removed {processReport.extracted_duplicates_removed ?? 0}{' '}
+                      extracted copies, raw objects {processReport.raw_objects_removed ?? 0}, kept{' '}
+                      {processReport.unique_filenames ?? 0} filenames
                     </>
                   ) : (
                     <>
