@@ -50,6 +50,11 @@ class _FakeS3:
         self.objects[Key] = bytes(data)
         self.puts.append(Key)
 
+    def upload_fileobj(self, Fileobj, Bucket=None, Key=None, ExtraArgs=None):  # noqa: N803
+        payload = Fileobj.read()
+        self.objects[Key] = payload if isinstance(payload, (bytes, bytearray)) else bytes(payload)
+        self.puts.append(Key)
+
     def head_object(self, Bucket=None, Key=None):  # noqa: N803
         if Key not in self.objects:
             raise KeyError(Key)
@@ -73,6 +78,10 @@ class _FakeAzure:
         class _Down:
             def readall(self):
                 return data
+
+            def readinto(self, stream):
+                stream.write(data)
+                return len(data)
 
         class _Client:
             def download_blob(self):

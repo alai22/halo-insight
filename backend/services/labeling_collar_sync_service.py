@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -587,13 +588,17 @@ class LabelingCollarSyncService:
         if dry_run:
             return "copied"
         client = self.azure_client()
-        data = client.get_blob_client(blob_name).download_blob().readall()
-        self.s3_client.put_object(
-            Bucket=self.bucket_name,
-            Key=dest_key,
-            Body=data,
-            ContentType="application/octet-stream",
-        )
+        downloader = client.get_blob_client(blob_name).download_blob()
+        # Spill to disk after 8 MiB so parallel copies cannot pin whole logs in RAM.
+        with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as tmp:
+            downloader.readinto(tmp)
+            tmp.seek(0)
+            self.s3_client.upload_fileobj(
+                tmp,
+                self.bucket_name,
+                dest_key,
+                ExtraArgs={"ContentType": "application/octet-stream"},
+            )
         return "copied"
 
     def sync(
@@ -601,7 +606,7 @@ class LabelingCollarSyncService:
         dry_run: bool = False,
         inventory_only: bool = False,
         sns: Optional[List[str]] = None,
-        workers: int = 8,
+        workers: Optional[int] = None,
         summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -687,6 +692,10 @@ class LabelingCollarSyncService:
                 if action == "skipped":
                     report.skipped_unchanged += 1
         else:
+            if workers is None:
+                from ..utils.runtime_stats import env_int
+
+                workers = env_int("LABELING_SYNC_WORKERS", 4)
             workers = max(1, int(workers or 1))
 
             def _one(item: Tuple[str, str, str, int]) -> Tuple[str, str, str, int, Optional[str]]:

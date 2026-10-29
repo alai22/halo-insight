@@ -43,7 +43,12 @@ def main(argv=None) -> int:
         default=None,
         help="Limit to this collar SN (repeatable)",
     )
-    parser.add_argument("--workers", type=int, default=8, help="Parallel copy workers")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel copy workers (default 4, or LABELING_SYNC_WORKERS)",
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON report")
     args = parser.parse_args(argv)
 

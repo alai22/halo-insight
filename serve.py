@@ -3,7 +3,7 @@
 import werkzeug.serving
 werkzeug.serving.WSGIRequestHandler.max_header_size = 32768  # 32KB (default is 8KB)
 
-from flask import Flask, send_from_directory, g
+from flask import Flask, jsonify, request, send_from_directory, g
 from flask_cors import CORS
 import os
 import secrets
@@ -40,13 +40,34 @@ CORS(app, supports_credentials=True)
 # Set up service container for each request (critical for dependency injection)
 @app.before_request
 def before_request():
-    """Initialize service container for each request"""
+    """Initialize service container for each request.
+
+    /health stays free of that work so a load balancer probe can succeed
+    while a labeling job is using the process.
+    """
+    if request.path == "/health":
+        return None
     try:
         g.service_container = get_service_container()
     except Exception as e:
         # Log error but don't crash - routes will handle None gracefully
         print(f"Warning: Failed to initialize service container: {str(e)}")
         g.service_container = None
+
+
+@app.route("/health")
+def liveness():
+    """ALB and Docker probe this path. Keep it local and always HTTP 200."""
+    from backend.utils.runtime_stats import build_liveness
+
+    job = None
+    try:
+        from backend.api.routes.labeling_routes import process_liveness
+
+        job = process_liveness()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: liveness job snapshot failed: {exc}")
+    return jsonify(build_liveness(job)), 200
 
 # Copy only the API routes from api_app, excluding built-in Flask routes and root route
 for rule in api_app.url_map.iter_rules():
@@ -73,4 +94,5 @@ if __name__ == "__main__":
     
     print(f"Starting Gladly Conversation Analyzer on {host}:{port}")
     print(f"Max header size: {werkzeug.serving.WSGIRequestHandler.max_header_size} bytes")
+    print("Liveness probe: GET /health (rss, uptime, labeling job)")
     app.run(host=host, port=port, debug=False)
