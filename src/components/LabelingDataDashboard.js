@@ -458,6 +458,8 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
     return <p className="text-sm text-gray-500">No labeled collars in the summary yet.</p>;
   }
   const visible = showAll ? rows : rows.filter((row) => row.behind).slice(0, COLLAR_LIST_LIMIT);
+  // Scale against every collar, not just the visible ones, so "Show all" keeps bar lengths.
+  const maxSessions = Math.max(1, ...rows.map((row) => row.sessions || 0));
   return (
     <div>
       {visible.length === 0 ? (
@@ -469,7 +471,7 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
         <>
           <div className="hidden sm:grid grid-cols-[9rem_1fr_7rem_9rem] gap-3 text-xs text-gray-500 border-b border-gray-100 pb-1.5">
             <span>Serial</span>
-            <span>Sessions with collar data</span>
+            <span>Sessions (bar length is the count)</span>
             <span className="text-right">Matched</span>
             <span className="text-right">Azure → S3 files</span>
           </div>
@@ -494,7 +496,7 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
                   <span className="font-mono text-xs text-gray-900 truncate" title={row.collar_sn}>
                     {row.collar_sn}
                   </span>
-                  <CollarSessionBar row={row} />
+                  <CollarSessionBar row={row} maxSessions={maxSessions} />
                   <span className="text-right tabular-nums text-gray-700 col-start-2 sm:col-start-auto">
                     {row.matched}
                     <span className="text-gray-400"> / {row.sessions}</span>
@@ -534,8 +536,8 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
   );
 }
 
-/** Sessions on one collar, as a full-width bar split by matched and each miss reason. */
-function CollarSessionBar({ row }) {
+/** Sessions on one collar, split by matched and each miss reason; length is sessions / maxSessions. */
+function CollarSessionBar({ row, maxSessions }) {
   const total = row.sessions || 0;
   const reason = missingReasonText(row);
   if (!total) {
@@ -543,7 +545,8 @@ function CollarSessionBar({ row }) {
   }
   return (
     <div
-      className="flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100"
+      className="flex h-2.5 overflow-hidden rounded-full"
+      style={{ width: `max(${(total / maxSessions) * 100}%, 4px)` }}
       title={`${row.matched} of ${total} matched${reason !== '—' ? ` · ${reason}` : ''}`}
     >
       {COVERAGE_SEGMENTS.filter((seg) => row[seg.key] > 0).map((seg) => (
