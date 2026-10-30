@@ -17,6 +17,7 @@ import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
+const STATUS_STORAGE_KEY = 'halo_labeling_status_v1';
 const DOG_CHART_LIMIT = 15;
 const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
@@ -851,10 +852,39 @@ function writeStoredSummary({ data, generatedAt, cached, stale }) {
   }
 }
 
+/** Last /status response, so collar and staging state render before the slow S3 listing returns. */
+function readStoredStatus() {
+  try {
+    const raw = localStorage.getItem(STATUS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.status ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredStatus(status) {
+  try {
+    // Job state and pending forwards are live only: a cached "running" would lock the
+    // buttons, and cached forwards could auto-promote batches that are already gone.
+    const { process, pending_forwards: pendingForwards, ...rest } = status || {};
+    localStorage.setItem(
+      STATUS_STORAGE_KEY,
+      JSON.stringify({ status: rest, savedAt: Date.now() })
+    );
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
 const LabelingDataDashboard = () => {
   const stored = useMemo(() => readStoredSummary(), []);
+  const storedStatus = useMemo(() => readStoredStatus(), []);
   const [data, setData] = useState(stored?.data || null);
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState(storedStatus?.status || null);
+  // True until the first live /status response replaces the cached one.
+  const [statusFromCache, setStatusFromCache] = useState(Boolean(storedStatus));
   const [statusError, setStatusError] = useState(null);
   const [showAllCollars, setShowAllCollars] = useState(false);
   const [processReport, setProcessReport] = useState(null);
@@ -882,6 +912,8 @@ const LabelingDataDashboard = () => {
         const next = response.data.data;
         setStatus(next);
         setStatusError(null);
+        setStatusFromCache(false);
+        writeStoredStatus(next);
         const proc = next?.process || null;
         setProcessInfo(proc);
         if (proc?.last_report) {
@@ -1174,12 +1206,12 @@ const LabelingDataDashboard = () => {
   // Auto-promote tiny quarantine batches on load; larger ones need a click.
   useEffect(() => {
     const pending = status?.pending_forwards;
-    if (!pending || autoPromoteAttemptedRef.current) return;
+    if (statusFromCache || !pending || autoPromoteAttemptedRef.current) return;
     if (processing || processInfo?.running) return;
     if (!pending.auto_promote || !(pending.pending_count > 0)) return;
     autoPromoteAttemptedRef.current = true;
     promoteForwards({ silent: true });
-  }, [status?.pending_forwards, processing, processInfo?.running, promoteForwards]);
+  }, [status?.pending_forwards, statusFromCache, processing, processInfo?.running, promoteForwards]);
 
   // If server returned a stale snapshot, poll briefly so background rescan can land
   useEffect(() => {
@@ -1968,7 +2000,29 @@ const LabelingDataDashboard = () => {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
         <section className="min-w-0">
-          <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
+            {statusFromCache ? (
+              <span
+                className={`inline-flex items-center gap-1.5 text-xs ${
+                  statusError ? 'text-amber-800' : 'text-gray-400'
+                }`}
+                title={statusError || undefined}
+              >
+                {statusError ? (
+                  <>
+                    <AlertCircle className="h-3 w-3" />
+                    Couldn’t refresh · showing last results
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Showing last results · refreshing
+                  </>
+                )}
+              </span>
+            ) : null}
+          </div>
           <p className="text-sm text-gray-500 mb-3">
             App labels in staging, whether they are summarized, and whether Azure collar logs for
             those collars are cloned into S3.
