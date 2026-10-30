@@ -263,9 +263,25 @@ const AZURE_ERROR_ADVICE = {
 };
 
 /** Decide the one thing to do next for collar data, from server state. */
-function collarNextStep({ azureConfigured, clone, totals, reasons }) {
+function collarNextStep({ statusLoaded, statusError, azureConfigured, clone, totals, reasons }) {
+  if (!statusLoaded) {
+    return statusError
+      ? {
+          tone: 'error',
+          title: 'Could not load collar sync status from the server',
+          body: 'The page could not tell whether Azure is set up. Click Refresh. If this stays, check the server logs for /api/labeling/status.',
+          error: statusError,
+          errorLabel: 'Server response',
+        }
+      : {
+          tone: 'info',
+          title: 'Loading collar sync status…',
+          body: 'Checking the server for Azure and S3 state.',
+        };
+  }
   if (!azureConfigured) {
     return {
+      kind: 'not_configured',
       tone: 'error',
       title: 'Azure is not configured on the server',
       body: 'Set LABELING_AZURE_BLOB_URL and LABELING_AZURE_SAS_TOKEN (or one LABELING_AZURE_SAS_URL) on the server, restart it, then click Check Azure.',
@@ -285,6 +301,7 @@ function collarNextStep({ azureConfigured, clone, totals, reasons }) {
   if (unreadable > 0) {
     const sample = (clone.error_samples || [])[0] || null;
     return {
+      kind: 'unreadable',
       tone: 'error',
       title:
         unreadable === collars
@@ -357,7 +374,8 @@ function CollarNextStep({ step }) {
           {step.error ? (
             <div className="mt-2 text-xs">
               <div className="opacity-70 mb-1">
-                Azure error{step.errorSn ? ` for ${step.errorSn}` : ''}:
+                {step.errorLabel || 'Azure error'}
+                {step.errorSn ? ` for ${step.errorSn}` : ''}:
               </div>
               <pre className="whitespace-pre-wrap break-all font-mono bg-white/70 border border-black/10 rounded p-2">
                 {step.error}
@@ -623,6 +641,7 @@ const LabelingDataDashboard = () => {
   const stored = useMemo(() => readStoredSummary(), []);
   const [data, setData] = useState(stored?.data || null);
   const [status, setStatus] = useState(null);
+  const [statusError, setStatusError] = useState(null);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -647,6 +666,7 @@ const LabelingDataDashboard = () => {
       if (response.data.success) {
         const next = response.data.data;
         setStatus(next);
+        setStatusError(null);
         const proc = next?.process || null;
         setProcessInfo(proc);
         if (proc?.last_report) {
@@ -658,9 +678,15 @@ const LabelingDataDashboard = () => {
         setSyncingCollar(running && proc?.job === 'sync-collar');
         return next;
       }
+      setStatusError(response.data.error || 'Status request was not successful');
     } catch (err) {
       // Non-fatal; summary can still load
       console.error('Failed to load labeling status', err);
+      setStatusError(
+        err?.response
+          ? `HTTP ${err.response.status}${err.response.data?.error ? ` · ${err.response.data.error}` : ''}`
+          : err?.message || 'Request failed'
+      );
     }
     return null;
   }, []);
@@ -1309,12 +1335,14 @@ const LabelingDataDashboard = () => {
   const behindChartHeight = Math.max(180, behindChartRows.length * 36 + 48);
   const missingReasons = collarCoverage?.missing_reasons || {};
   const nextStep = collarNextStep({
+    statusLoaded: Boolean(status?.collar_sync),
+    statusError,
     azureConfigured,
     clone,
     totals: collarTotals,
     reasons: missingReasons,
   });
-  const azureUnreadable = nextStep.tone === 'error';
+  const azureUnreadable = nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured';
 
   if ((loading || summaryPending) && !data) {
     return (
