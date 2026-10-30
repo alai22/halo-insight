@@ -8,6 +8,7 @@ import {
   Legend,
   Line,
   ResponsiveContainer,
+  ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
@@ -263,8 +264,45 @@ const AZURE_ERROR_ADVICE = {
   other: 'The error below is what Azure returned.',
 };
 
+/** "3h ago" style age of a server UTC timestamp. */
+function formatAge(iso) {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return 'at an unknown time';
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * Why an unmatched session may only be waiting on a sync: it started after Azure was last
+ * read, or its collar was labeled later and no sync has listed it. Session timestamps carry
+ * no zone, so they are read as UTC; near the sync time this can be off by the zone offset.
+ */
+function waitingOnSyncReason(row, lastAzureMs, syncedSns) {
+  if (!lastAzureMs || !row.collar_sn || row.collar_sn === '_unknown') return null;
+  if (!syncedSns.has(row.collar_sn)) return 'never_synced';
+  const ms = Date.parse(`${row.timestamp}Z`);
+  return !Number.isNaN(ms) && ms > lastAzureMs ? 'after_sync' : null;
+}
+
+const WAITING_ON_SYNC_LABELS = {
+  after_sync: 'After last sync',
+  never_synced: 'Collar never synced',
+};
+
 /** Decide the one thing to do next for collar data, from server state. */
-function collarNextStep({ statusLoaded, statusError, azureConfigured, clone, totals, reasons }) {
+function collarNextStep({
+  statusLoaded,
+  statusError,
+  azureConfigured,
+  clone,
+  totals,
+  reasons,
+  waitingOnSync,
+}) {
   if (!statusLoaded) {
     return statusError
       ? {
@@ -323,6 +361,22 @@ function collarNextStep({ statusLoaded, statusError, azureConfigured, clone, tot
       tone: 'attention',
       title: `${notCloned} collar log${notCloned === 1 ? '' : 's'} in Azure ${notCloned === 1 ? 'is' : 'are'} not in S3 yet`,
       body: 'Click Sync collar data to copy them. Sessions match once their collar log is in S3.',
+    };
+  }
+  const afterSync = waitingOnSync?.after_sync || 0;
+  const neverSynced = waitingOnSync?.never_synced || 0;
+  if (afterSync + neverSynced > 0) {
+    const parts = [];
+    if (afterSync) parts.push(`${afterSync} started after Azure was last read`);
+    if (neverSynced) {
+      parts.push(`${neverSynced} are on collars labeled since then, which no sync has listed yet`);
+    }
+    return {
+      tone: 'attention',
+      title: `Azure was last read ${formatAge(clone.generated_at)}. ${afterSync + neverSynced} unmatched session${
+        afterSync + neverSynced === 1 ? '' : 's'
+      } may only need a sync`,
+      body: `${parts.join('. ')}. Click Sync collar data to pull their logs, then check what is still missing.`,
     };
   }
   const missing = Number(totals.missing) || 0;
@@ -597,7 +651,7 @@ function dailySourceRows(byDate, days) {
 }
 
 /** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
-function DailySourcesChart({ byDate, selectedDay, onSelectDay }) {
+function DailySourcesChart({ byDate, selectedDay, onSelectDay, lastSyncDate }) {
   const [days, setDays] = useState(30);
   const rows = useMemo(() => dailySourceRows(byDate, days), [byDate, days]);
   if (!byDate) {
@@ -664,6 +718,14 @@ function DailySourcesChart({ byDate, selectedDay, onSelectDay }) {
               }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
+            {lastSyncDate && rows.some((row) => row.date === lastSyncDate) ? (
+              <ReferenceLine
+                x={lastSyncDate.slice(5)}
+                stroke="#6B7280"
+                strokeDasharray="4 3"
+                label={{ value: 'Last sync', position: 'insideTopRight', fontSize: 11, fill: '#6B7280' }}
+              />
+            ) : null}
             {DAILY_SOURCE_SERIES.map((series, index) => (
               <Bar
                 key={series.key}
@@ -749,7 +811,7 @@ function MismatchTopChips({ label, rows, field, onPick }) {
  * gap to the closest counterpart on the same collar. A steady gap across rows points to a
  * clock or timezone offset rather than missing uploads.
  */
-function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
+function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, syncedSns }) {
   const [tab, setTab] = useState('app');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('newest');
@@ -798,6 +860,9 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
   const gapField = isApp ? 'nearest_log_delta_sec' : 'nearest_session_delta_sec';
   const gaps = rows.map((row) => row[gapField]).filter((v) => v != null);
   const typicalGap = median(gaps);
+  const waitingRows = isApp
+    ? rows.filter((row) => waitingOnSyncReason(row, lastAzureMs, syncedSns)).length
+    : 0;
   const switchTab = (next) => {
     setTab(next);
     setLimit(MISMATCH_PAGE);
@@ -871,6 +936,12 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
               onPick={pick}
             />
             <MismatchTopChips label="Collars" rows={rows} field="collar_sn" onPick={pick} />
+            {waitingRows > 0 ? (
+              <p className="text-xs text-amber-800">
+                {waitingRows} of these came after the last Azure sync or are on a collar no sync has
+                listed. Sync collar data before debugging them.
+              </p>
+            ) : null}
             {typicalGap != null ? (
               <p className="text-xs text-gray-500">
                 Median gap to the closest {isApp ? 'collar log' : 'session'}:{' '}
@@ -924,6 +995,11 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
                     {isApp ? (
                       <td className="py-1.5 pr-4 text-gray-600">
                         {MISMATCH_REASON_LABELS[row.reason] || row.reason}
+                        {waitingOnSyncReason(row, lastAzureMs, syncedSns) ? (
+                          <span className="ml-1.5 inline-block px-1.5 rounded bg-amber-100 text-amber-900 text-xs">
+                            {WAITING_ON_SYNC_LABELS[waitingOnSyncReason(row, lastAzureMs, syncedSns)]}
+                          </span>
+                        ) : null}
                       </td>
                     ) : null}
                     <td
@@ -2041,6 +2117,18 @@ const LabelingDataDashboard = () => {
     });
     return map;
   }, [clone]);
+  const lastAzureAt = clone?.generated_at || null;
+  const lastAzureMs = lastAzureAt ? Date.parse(lastAzureAt) : null;
+  const syncedSns = useMemo(() => new Set(Object.keys(cloneBySn)), [cloneBySn]);
+  const waitingOnSync = useMemo(() => {
+    const counts = { after_sync: 0, never_synced: 0 };
+    (collarCoverage?.mismatched_sessions || []).forEach((row) => {
+      const reason = waitingOnSyncReason(row, lastAzureMs, syncedSns);
+      if (reason) counts[reason] += 1;
+    });
+    return counts;
+  }, [collarCoverage, lastAzureMs, syncedSns]);
+  const waitingOnSyncTotal = waitingOnSync.after_sync + waitingOnSync.never_synced;
   const collarPipelineRows = useMemo(() => {
     const rows = [];
     const seen = new Set();
@@ -2101,6 +2189,7 @@ const LabelingDataDashboard = () => {
     clone,
     totals: collarTotals,
     reasons: missingReasons,
+    waitingOnSync,
   });
   const azureUnreadable = nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured';
 
@@ -2596,20 +2685,48 @@ const LabelingDataDashboard = () => {
               detail={
                 !clone
                   ? 'Sync or check Azure to compare'
-                  : clone.inventory_only
-                    ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
-                    : `Copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
+                  : `Azure read ${formatAge(clone.generated_at)} · ${
+                      clone.inventory_only
+                        ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
+                        : `copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
+                    }`
               }
               state={
                 !clone
                   ? 'Not compared to Azure yet'
                   : azureUnreadable
                     ? 'Blocked until Azure can be read'
-                    : (clone.not_cloned || 0) === 0
-                      ? 'Caught up'
-                      : 'Azure has files not in S3'
+                    : (clone.not_cloned || 0) > 0
+                      ? 'Azure has files not in S3'
+                      : waitingOnSyncTotal > 0
+                        ? `${waitingOnSyncTotal} unmatched session${waitingOnSyncTotal === 1 ? '' : 's'} newer than this`
+                        : 'Caught up'
               }
-              tone={!clone || azureUnreadable || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
+              tone={
+                !clone || azureUnreadable || (clone.not_cloned || 0) > 0 || waitingOnSyncTotal > 0
+                  ? 'attention'
+                  : 'ok'
+              }
+              action={
+                <button
+                  type="button"
+                  onClick={syncCollar}
+                  disabled={processing || !azureConfigured}
+                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  title={
+                    azureConfigured
+                      ? COLLAR_SYNC_HINT
+                      : 'Set LABELING_AZURE_SAS_URL on the server'
+                  }
+                >
+                  {syncingCollar && !azureCheckRunning ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <DownloadCloud className="h-3 w-3" />
+                  )}
+                  {syncingCollar && !azureCheckRunning ? 'Syncing…' : 'Sync now'}
+                </button>
+              }
               onOpen={() => setFilesCollar('')}
               openLabel="Browse collar files in S3"
             />
@@ -2652,12 +2769,15 @@ const LabelingDataDashboard = () => {
             byDate={collarCoverage?.by_date}
             selectedDay={mismatchDay}
             onSelectDay={setMismatchDay}
+            lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
           />
           <div className="mt-6">
             <MismatchExplorer
               coverage={collarCoverage}
               selectedDay={mismatchDay}
               onClearDay={() => setMismatchDay(null)}
+              lastAzureMs={lastAzureMs}
+              syncedSns={syncedSns}
             />
           </div>
         </ChartCard>
