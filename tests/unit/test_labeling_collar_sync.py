@@ -179,3 +179,26 @@ def test_clone_snapshot_not_cloned_depends_on_check_vs_copy():
     )
     assert copied["inventory_only"] is False
     assert copied["not_cloned"] == 1
+
+
+def test_match_coverage_window_counts_only_files_inside_it():
+    files = [
+        _file("sn1", "activity", datetime(2026, 4, 21, 23, 59, 0)),
+        _file("sn1", "activity", datetime(2026, 4, 22, 0, 1, 0)),
+    ]
+    sessions = [
+        {
+            "user": "a@x.com",
+            "collar_sn": "sn1",
+            "family": "activity",
+            "timestamp": "2026-04-22T00:00:00",
+            "duration_seconds": 10,
+        }
+    ]
+    coverage = match_coverage(sessions, files, pad_sec=120, window=("2026-04-22", "2026-04-30"))
+    # The session matches both, including the 04-21 log just outside the window...
+    assert coverage["totals"]["matched"] == 1
+    # ...but only the 04-22 log is counted or listed.
+    assert coverage["totals"]["ai_files"] == 1
+    assert [f["timestamp"] for f in coverage["collar_files"]] == ["2026-04-22T00:01:00"]
+    assert coverage["collar_only_logs"] == []

@@ -1,5 +1,6 @@
 """Liveness, non-blocking summary, and bounded copy workers."""
 
+import pytest
 from flask import Flask
 
 from backend.api.routes import labeling_routes as routes
@@ -138,3 +139,89 @@ def test_root_health_returns_rss_without_service_container():
     assert "rss_mb" in body
     assert "job_running" in body
     assert response.headers["Content-Type"].startswith("application/json")
+
+
+def test_collar_sync_runs_after_process_only_when_files_changed(monkeypatch):
+    monkeypatch.setattr(routes, "azure_configured", lambda: True)
+    should = routes._should_sync_collar_after_process
+    assert should({"copied": 3}, clear_output=False, dry_run=False, requested=True)
+    assert should({"copied": 0}, clear_output=True, dry_run=False, requested=True)
+    assert not should({"copied": 0}, clear_output=False, dry_run=False, requested=True)
+    assert not should({"copied": 3}, clear_output=False, dry_run=True, requested=True)
+    assert not should({"copied": 3}, clear_output=False, dry_run=False, requested=False)
+    monkeypatch.setattr(routes, "azure_configured", lambda: False)
+    assert not should({"copied": 3}, clear_output=False, dry_run=False, requested=True)
+
+
+def test_collar_sync_after_process_keeps_both_messages(monkeypatch):
+    states = []
+    monkeypatch.setattr(routes, "_set_process_state", lambda **kw: states.append(kw) or kw)
+    monkeypatch.setattr(routes, "_cache_clear", lambda: None)
+
+    class _Service:
+        def sync(self, dry_run, inventory_only):
+            assert (dry_run, inventory_only) == (False, False)
+            return {"copied": 4}
+
+    monkeypatch.setattr(routes, "LabelingCollarSyncService", _Service)
+    monkeypatch.setattr(routes, "sync_done_message", lambda report, _inv: "Synced 4.")
+    routes._sync_collar_after_process("Processed 10.")
+
+    assert states[0]["running"] is True and states[0]["job"] == "sync-collar"
+    assert states[-1]["running"] is False
+    assert states[-1]["message"] == "Processed 10. Synced 4."
+    assert states[-1]["last_report"] == {"copied": 4}
+
+
+def test_collar_sync_after_process_reports_failure(monkeypatch):
+    states = []
+    monkeypatch.setattr(routes, "_set_process_state", lambda **kw: states.append(kw) or kw)
+
+    class _Service:
+        def sync(self, dry_run, inventory_only):
+            raise RuntimeError("azure down")
+
+    monkeypatch.setattr(routes, "LabelingCollarSyncService", _Service)
+    routes._sync_collar_after_process("Processed 10.")
+
+    assert states[-1]["running"] is False
+    assert states[-1]["job"] == "sync-collar"
+    assert "Processing finished" in states[-1]["last_error"]
+    assert "azure down" in states[-1]["last_error"]
+
+
+def test_parse_window_accepts_open_ends_and_rejects_bad_ranges():
+    assert routes._parse_window({}) is None
+    assert routes._parse_window({"start": "2026-08-01"}) == ("2026-08-01", "9999-12-31")
+    assert routes._parse_window({"end": "2026-10-30"}) == ("0000-01-01", "2026-10-30")
+    with pytest.raises(ValueError):
+        routes._parse_window({"start": "2026-10-30", "end": "2026-08-01"})
+    with pytest.raises(ValueError):
+        routes._parse_window({"start": "08/01/2026"})
+
+
+def test_summary_with_dates_builds_window_in_background(monkeypatch):
+    started = []
+    monkeypatch.setattr(routes, "_maybe_start_window_refresh", lambda w: started.append(w) or True)
+    monkeypatch.setattr(routes, "_compute_summary", lambda _ttl: (_ for _ in ()).throw(AssertionError))
+    routes._window_cache_clear()
+
+    response = _client().get(
+        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers={"X-Admin-Token": "t"}
+    )
+    body = response.get_json()
+    assert body["pending"] is True
+    assert body["data"] is None
+    assert started == [("2026-08-01", "2026-10-30")]
+
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_CACHE["2026-08-01..2026-10-30"] = {
+            "payload": {"window": {"start": "2026-08-01", "end": "2026-10-30"}},
+            "generated_at": routes.time.time(),
+        }
+    body = _client().get(
+        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers={"X-Admin-Token": "t"}
+    ).get_json()
+    assert body["pending"] is False
+    assert body["data"]["window"]["start"] == "2026-08-01"
+    routes._window_cache_clear()

@@ -29,7 +29,7 @@ import boto3
 
 from ..utils.config import Config
 from ..utils.logging import get_logger
-from .labeling_data_analyzer import UNKNOWN_COLLAR_SN, sanitize_collar_sn
+from .labeling_data_analyzer import UNKNOWN_COLLAR_SN, in_date_window, sanitize_collar_sn
 
 logger = get_logger("labeling_collar_sync")
 
@@ -233,8 +233,15 @@ def match_coverage(
     sessions: Iterable[Dict[str, Any]],
     ai_files: Iterable[CollarAiFile],
     pad_sec: int = 300,
+    window: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Join labeled sessions to mirrored AI dumps by SN + time window."""
+    """
+    Join labeled sessions to mirrored AI dumps by SN + time window.
+
+    window: inclusive (start, end) YYYY-MM-DD. Sessions should already be limited to it.
+    Every file can still match a session near the edge, but only files on window days
+    are counted or listed.
+    """
     pad = timedelta(seconds=max(0, int(pad_sec)))
     by_sn_family: Dict[Tuple[str, str], List[CollarAiFile]] = defaultdict(list)
     files_list = list(ai_files)
@@ -467,8 +474,9 @@ def match_coverage(
         ),
         key=lambda u: (-u["matched_seconds"], u["email"]),
     )
+    counted_files = [b for b in files_list if in_date_window(b.timestamp, window)]
     collar_only_logs: List[Dict[str, Any]] = []
-    for blob in files_list:
+    for blob in counted_files:
         _touch_sn(blob.collar_sn)["s3_files"] += 1
         if id(blob) not in used_files:
             by_date[blob.when.date().isoformat()]["collar_only"] += 1
@@ -501,9 +509,9 @@ def match_coverage(
             "unknown_sn": totals["unknown_sn"],
             "matched_seconds": round(totals["matched_seconds"], 3),
             "missing_seconds": round(totals["missing_seconds"], 3),
-            "ai_files": len(files_list),
-            "ai_bytes": int(sum(b.size for b in files_list)),
-            "sns": len({b.collar_sn for b in files_list}),
+            "ai_files": len(counted_files),
+            "ai_bytes": int(sum(b.size for b in counted_files)),
+            "sns": len({b.collar_sn for b in counted_files}),
         },
         "missing_reasons": missing_reasons,
         "by_user": users_out,
@@ -522,7 +530,7 @@ def match_coverage(
                 "size": blob.size,
                 "sessions": sessions_by_file.get(id(blob), []),
             }
-            for blob in sorted(files_list, key=lambda b: (b.collar_sn, b.when))
+            for blob in sorted(counted_files, key=lambda b: (b.collar_sn, b.when))
         ],
         "unmatched_samples": unmatched,
     }
@@ -736,7 +744,11 @@ class LabelingCollarSyncService:
                 )
         return out
 
-    def build_coverage(self, summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def build_coverage(
+        self,
+        summary: Optional[Dict[str, Any]] = None,
+        window: Optional[Tuple[str, str]] = None,
+    ) -> Dict[str, Any]:
         if summary is None:
             from .labeling_data_analyzer import LabelingDataAnalyzer
 
@@ -745,11 +757,12 @@ class LabelingCollarSyncService:
                 prefix=self.extracted_prefix,
                 region=self.region,
                 s3_client=self.s3_client,
-            ).analyze(include_content=True)
+            ).analyze(include_content=True, window=window)
         coverage = match_coverage(
             sessions_from_analyze(summary),
             self.list_collar_ai_files(),
             pad_sec=self.pad_sec,
+            window=window,
         )
         coverage["azure_configured"] = azure_configured() or self._azure_client is not None
         coverage["collar_prefix"] = self.collar_prefix

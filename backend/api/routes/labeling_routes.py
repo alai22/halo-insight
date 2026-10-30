@@ -8,7 +8,8 @@ import json
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple
 
 import boto3
 from flask import Blueprint, jsonify, request
@@ -158,6 +159,7 @@ def _load_summary_cache_s3(ttl_sec: int) -> Optional[Dict[str, Any]]:
 
 
 def _cache_clear() -> None:
+    _window_cache_clear()
     with _CACHE_LOCK:
         _CACHE["key"] = None
         _CACHE["payload"] = None
@@ -174,6 +176,7 @@ def _cache_clear() -> None:
 
 def _cache_mark_stale() -> None:
     """Keep the last summary so the page can paint, and mark it ready to refresh."""
+    _window_cache_clear()
     with _CACHE_LOCK:
         payload = _CACHE["payload"] if _CACHE["key"] == _SUMMARY_CACHE_MEM_KEY else None
     if payload is None:
@@ -196,10 +199,12 @@ def _refresh_summary_after_process(report: Dict[str, Any], clear_output: bool, d
         _cache_mark_stale()
 
 
-def _attach_collar_coverage(data: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+def _attach_collar_coverage(
+    data: Dict[str, Any], raw: Dict[str, Any], window: Optional[Tuple[str, str]] = None
+) -> Dict[str, Any]:
     """Join mirrored collar-raw/ AI dumps onto the UI summary."""
     try:
-        coverage = LabelingCollarSyncService().build_coverage(summary=raw)
+        coverage = LabelingCollarSyncService().build_coverage(summary=raw, window=window)
         data["collar_coverage"] = coverage
     except Exception as exc:  # noqa: BLE001
         logger.warning("Collar coverage attach failed: %s", redact_secrets(str(exc)))
@@ -220,6 +225,115 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     return entry
+
+
+# Date-range summaries, newest last. They come from the same files as the full summary,
+# so they are dropped whenever that one is cleared or marked stale.
+_WINDOW_CACHE_LOCK = threading.Lock()
+_WINDOW_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_WINDOW_RUNNING: set = set()
+_WINDOW_CACHE_MAX = 4
+_OPEN_START = "0000-01-01"
+_OPEN_END = "9999-12-31"
+
+
+def _parse_window(args: Any) -> Optional[Tuple[str, str]]:
+    """start/end query params (YYYY-MM-DD, either may be empty) as an inclusive day window."""
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+    if not start and not end:
+        return None
+    for value in (start, end):
+        if value:
+            datetime.strptime(value, "%Y-%m-%d")
+    window = (start or _OPEN_START, end or _OPEN_END)
+    if window[0] > window[1]:
+        raise ValueError("start date is after end date")
+    return window
+
+
+def _window_label(window: Tuple[str, str]) -> Dict[str, Optional[str]]:
+    return {
+        "start": None if window[0] == _OPEN_START else window[0],
+        "end": None if window[1] == _OPEN_END else window[1],
+    }
+
+
+def _window_cache_clear() -> None:
+    with _WINDOW_CACHE_LOCK:
+        _WINDOW_CACHE.clear()
+
+
+def _compute_window_summary(window: Tuple[str, str]) -> None:
+    raw = LabelingDataAnalyzer().analyze(include_content=True, window=window)
+    data = _attach_collar_coverage(format_ui_summary(raw), raw, window)
+    data["window"] = _window_label(window)
+    key = f"{window[0]}..{window[1]}"
+    with _WINDOW_CACHE_LOCK:
+        _WINDOW_CACHE.pop(key, None)
+        _WINDOW_CACHE[key] = {"payload": data, "generated_at": time.time()}
+        while len(_WINDOW_CACHE) > _WINDOW_CACHE_MAX:
+            _WINDOW_CACHE.popitem(last=False)
+
+
+def _maybe_start_window_refresh(window: Tuple[str, str]) -> bool:
+    """Start one date-range scan off the request thread. False when a job is busy."""
+    if _is_process_busy():
+        return False
+    key = f"{window[0]}..{window[1]}"
+    with _WINDOW_CACHE_LOCK:
+        if key in _WINDOW_RUNNING:
+            return True
+        _WINDOW_RUNNING.add(key)
+
+    def _worker():
+        try:
+            log_rss(logger, f"labeling window summary {key} start")
+            _compute_window_summary(window)
+            log_rss(logger, f"labeling window summary {key} finish")
+        except Exception:  # noqa: BLE001
+            logger.exception("Labeling window summary %s failed", key)
+        finally:
+            with _WINDOW_CACHE_LOCK:
+                _WINDOW_RUNNING.discard(key)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
+
+
+def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: int):
+    key = f"{window[0]}..{window[1]}"
+    with _WINDOW_CACHE_LOCK:
+        entry = _WINDOW_CACHE.get(key)
+    generated_iso = (
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry["generated_at"])) if entry else None
+    )
+    if entry is not None and not refresh:
+        stale = time.time() - entry["generated_at"] > ttl_sec
+        if stale:
+            _maybe_start_window_refresh(window)
+        return jsonify({
+            "success": True,
+            "pending": False,
+            "cached": True,
+            "stale": stale,
+            "generated_at": generated_iso,
+            "data": entry["payload"],
+        })
+    started = _maybe_start_window_refresh(window)
+    return jsonify({
+        "success": True,
+        "pending": True,
+        "cached": entry is not None,
+        "stale": True,
+        "generated_at": generated_iso,
+        "data": entry["payload"] if entry else None,
+        "message": (
+            "Building stats for this date range in the background."
+            if started
+            else "Date-range stats wait until the current labeling job finishes."
+        ),
+    })
 
 
 def _maybe_start_background_refresh(ttl_sec: int) -> bool:
@@ -911,6 +1025,51 @@ def labeling_compact():
 
 
 
+def _should_sync_collar_after_process(
+    report: Dict[str, Any], clear_output: bool, dry_run: bool, requested: bool
+) -> bool:
+    """New extracted files can bring new sessions and new collars, which only a sync lists."""
+    if dry_run or not requested or not azure_configured():
+        return False
+    return clear_output or int(report.get("copied") or 0) > 0
+
+
+def _sync_collar_after_process(process_message: str) -> None:
+    """Run a collar sync as the tail of a process job; keeps the job running until it ends."""
+    _set_process_state(
+        running=True,
+        job="sync-collar",
+        progress=None,
+        message=f"{process_message} Syncing collar logs from Azure for labeled collars…",
+    )
+    log_rss(logger, "labeling collar sync after process start")
+    try:
+        report = LabelingCollarSyncService().sync(dry_run=False, inventory_only=False)
+        _cache_clear()
+        _set_process_state(
+            running=False,
+            job="sync-collar",
+            finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            last_report=report,
+            last_error=None,
+            message=f"{process_message} {sync_done_message(report, False)}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Collar sync after process failed")
+        _set_process_state(
+            running=False,
+            job="sync-collar",
+            finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            last_error=(
+                "Processing finished, but the collar sync after it failed: "
+                + redact_secrets(str(exc))
+            ),
+            message="Collar sync after processing failed",
+        )
+    finally:
+        log_rss(logger, "labeling collar sync after process end")
+
+
 @labeling_bp.route("/process", methods=["POST"])
 @require_admin_auth
 def labeling_process():
@@ -921,11 +1080,14 @@ def labeling_process():
       dry_run: bool (default false)
       clear_output: bool (default false) — wipe extracted-txt before copy
       async: bool (default true) — run in background; poll GET /status
+      sync_collar: bool (default true) — async only: when new files were copied,
+        sync Azure collar logs afterwards so new sessions and collars can match
     """
     try:
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
         clear_output = bool(body.get("clear_output", False))
+        sync_collar = bool(body.get("sync_collar", True))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
 
@@ -962,6 +1124,12 @@ def labeling_process():
                         on_progress=_progress_callback("process"),
                     )
                     _refresh_summary_after_process(report, clear_output, dry_run)
+                    if _should_sync_collar_after_process(
+                        report, clear_output, dry_run, sync_collar
+                    ):
+                        _set_process_state(last_report=report)
+                        _sync_collar_after_process(_process_done_message(report))
+                        return
                     _set_process_state(
                         running=False,
                         job="process",
@@ -1052,6 +1220,8 @@ def labeling_summary():
     Query params:
       refresh=1  — start a background rescan (last summary is still returned)
       ttl=900    — freshness window seconds (stale after this; 0 = always stale)
+      start, end — optional YYYY-MM-DD; only sessions and collar logs on those days
+                   (inclusive) are counted. Built and cached apart from the full summary.
     """
     try:
         refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
@@ -1061,6 +1231,9 @@ def labeling_summary():
             ttl = _DEFAULT_CACHE_TTL_SEC
 
         ttl_sec = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+        window = _parse_window(request.args)
+        if window is not None:
+            return _window_summary_response(window, refresh, ttl_sec)
         entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY)
         if entry is None:
             entry = _load_summary_cache_s3(ttl_sec)

@@ -19,6 +19,7 @@ import axios from 'axios';
 const PROCESS_POLL_MS = 4000;
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
 const STATUS_STORAGE_KEY = 'halo_labeling_status_v1';
+const RANGE_STORAGE_KEY = 'halo_labeling_range_v1';
 const DOG_CHART_LIMIT = 15;
 const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
@@ -628,13 +629,16 @@ const DAILY_SOURCE_RANGES = [
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Fill coverage by_date into one row per calendar day, ending today, so quiet days show as gaps. */
-function dailySourceRows(byDate, days) {
+function dailySourceRows(byDate, days, dataWindow) {
   if (!byDate?.length) return [];
   const counts = new Map(byDate.map((row) => [row.date, row]));
   const now = new Date();
   const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const last = Math.max(today, Date.parse(`${byDate[byDate.length - 1].date}T00:00:00Z`));
-  const first = days ? last - (days - 1) * DAY_MS : Date.parse(`${byDate[0].date}T00:00:00Z`);
+  const last = dataWindow?.end
+    ? Date.parse(`${dataWindow.end}T00:00:00Z`)
+    : Math.max(today, Date.parse(`${byDate[byDate.length - 1].date}T00:00:00Z`));
+  let first = days ? last - (days - 1) * DAY_MS : Date.parse(`${byDate[0].date}T00:00:00Z`);
+  if (dataWindow?.start) first = Math.max(first, Date.parse(`${dataWindow.start}T00:00:00Z`));
   const rows = [];
   for (let t = first; t <= last; t += DAY_MS) {
     const date = new Date(t).toISOString().slice(0, 10);
@@ -651,9 +655,12 @@ function dailySourceRows(byDate, days) {
 }
 
 /** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
-function DailySourcesChart({ byDate, selectedDay, onSelectDay, lastSyncDate }) {
+function DailySourcesChart({ byDate, selectedDay, onSelectDay, lastSyncDate, dataWindow }) {
   const [days, setDays] = useState(30);
-  const rows = useMemo(() => dailySourceRows(byDate, days), [byDate, days]);
+  const rows = useMemo(
+    () => dailySourceRows(byDate, days, dataWindow),
+    [byDate, days, dataWindow]
+  );
   if (!byDate) {
     return <p className="text-sm text-gray-500">Refresh to load daily counts.</p>;
   }
@@ -1452,8 +1459,127 @@ function writeStoredStatus(status) {
   }
 }
 
+/** The viewer's date range, so a narrowed view survives reloads. Empty strings mean open. */
+function readStoredRange() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || 'null');
+    return { start: parsed?.start || '', end: parsed?.end || '' };
+  } catch {
+    return { start: '', end: '' };
+  }
+}
+
+function writeStoredRange(range) {
+  try {
+    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(range));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+/** YYYY-MM-DD for a local date, n days before today. */
+function localDayOffset(daysBack) {
+  const d = new Date();
+  d.setDate(d.getDate() - daysBack);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatDay(day) {
+  if (!day) return '';
+  const d = new Date(`${day}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? day
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function describeRange(range) {
+  if (range.start && range.end) return `${formatDay(range.start)} – ${formatDay(range.end)}`;
+  if (range.start) return `since ${formatDay(range.start)}`;
+  if (range.end) return `through ${formatDay(range.end)}`;
+  return 'all time';
+}
+
+/** Start and end date for every stat on the page, with quick presets. */
+function DateRangeBar({ range, onChange, building, ready }) {
+  const today = localDayOffset(0);
+  const presets = [
+    { label: 'All time', start: '', end: '' },
+    { label: 'Last 30 days', start: localDayOffset(29), end: '' },
+    { label: 'Last 90 days', start: localDayOffset(89), end: '' },
+    { label: 'This year', start: `${today.slice(0, 4)}-01-01`, end: '' },
+  ];
+  const active = presets.find((p) => p.start === range.start && p.end === range.end);
+  const inputClass = 'px-2 py-1 text-sm border border-gray-300 rounded-md bg-white';
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+      <span className="text-sm font-medium text-gray-700">Date range</span>
+      <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+        {presets.map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            onClick={() => onChange({ start: preset.start, end: preset.end })}
+            className={`px-2.5 py-1 ${
+              active === preset ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+        From
+        <input
+          type="date"
+          value={range.start}
+          max={range.end || undefined}
+          onChange={(e) => onChange({ ...range, start: e.target.value })}
+          className={inputClass}
+        />
+      </label>
+      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+        To
+        <input
+          type="date"
+          value={range.end}
+          min={range.start || undefined}
+          onChange={(e) => onChange({ ...range, end: e.target.value })}
+          className={inputClass}
+        />
+      </label>
+      <span className="text-xs text-gray-500 ml-auto">
+        {building ? (
+          <span className="inline-flex items-center gap-1.5">
+            <RefreshCw className="h-3 w-3 animate-spin" />
+            Building stats for {describeRange(range)}…
+          </span>
+        ) : ready && (range.start || range.end) ? (
+          `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
 const LabelingDataDashboard = () => {
   const stored = useMemo(() => readStoredSummary(), []);
+  const [range, setRange] = useState(() => readStoredRange());
+  const rangeActive = Boolean(range.start || range.end);
+  const rangeParams = useMemo(() => {
+    const params = {};
+    if (range.start) params.start = range.start;
+    if (range.end) params.end = range.end;
+    return params;
+  }, [range.start, range.end]);
+  // Responses for a range the viewer has since changed are dropped.
+  const rangeKeyRef = useRef(`${range.start}..${range.end}`);
+  const changeRange = useCallback((next) => {
+    const clean = { start: next.start || '', end: next.end || '' };
+    rangeKeyRef.current = `${clean.start}..${clean.end}`;
+    writeStoredRange(clean);
+    setRange(clean);
+  }, []);
   const storedStatus = useMemo(() => readStoredStatus(), []);
   const [data, setData] = useState(stored?.data || null);
   const [status, setStatus] = useState(storedStatus?.status || null);
@@ -1519,10 +1645,12 @@ const LabelingDataDashboard = () => {
     // Keep showing last results while refreshing; only block when we have nothing.
     setLoading(true);
     setError(null);
+    const requestKey = rangeKeyRef.current;
     try {
       const response = await axios.get('/api/labeling/summary', {
-        params: refresh ? { refresh: 1 } : undefined,
+        params: { ...rangeParams, ...(refresh ? { refresh: 1 } : {}) },
       });
+      if (requestKey !== rangeKeyRef.current) return true;
       if (response.data.success) {
         const pending = Boolean(response.data.pending);
         const nextData = response.data.data;
@@ -1536,12 +1664,15 @@ const LabelingDataDashboard = () => {
         if (nextGenerated) setGeneratedAt(nextGenerated);
         if (nextData) {
           setData(nextData);
-          writeStoredSummary({
-            data: nextData,
-            generatedAt: nextGenerated,
-            cached: nextCached,
-            stale: nextStale,
-          });
+          // Only the all-time summary paints instantly on reload; a range is rebuilt.
+          if (!rangeActive) {
+            writeStoredSummary({
+              data: nextData,
+              generatedAt: nextGenerated,
+              cached: nextCached,
+              stale: nextStale,
+            });
+          }
         }
       } else {
         setError(response.data.error || 'Failed to load labeling data');
@@ -1559,7 +1690,7 @@ const LabelingDataDashboard = () => {
       setLoading(false);
     }
     return true;
-  }, []);
+  }, [rangeParams, rangeActive]);
 
   const processStaging = useCallback(async () => {
     setError(null);
@@ -1585,7 +1716,9 @@ const LabelingDataDashboard = () => {
       );
       setProcessNotice({
         type: 'info',
-        text: 'Adding new staging files in the background. Files already in extracted-txt stay put.',
+        text: status?.collar_sync?.azure_configured
+          ? 'Adding new staging files in the background, then syncing collar logs from Azure if anything new was added.'
+          : 'Adding new staging files in the background. Files already in extracted-txt stay put.',
       });
       await fetchStatus();
     } catch (err) {
@@ -1608,7 +1741,7 @@ const LabelingDataDashboard = () => {
       setError(errorMsg);
       setProcessing(false);
     }
-  }, [fetchStatus]);
+  }, [fetchStatus, status?.collar_sync?.azure_configured]);
 
   const compactStaging = useCallback(async () => {
     const health = status?.staging_health || {};
@@ -1803,7 +1936,7 @@ const LabelingDataDashboard = () => {
         return;
       }
       try {
-        const response = await axios.get('/api/labeling/summary');
+        const response = await axios.get('/api/labeling/summary', { params: rangeParams });
         if (!response.data?.success || cancelled) return;
         const pending = Boolean(response.data.pending);
         setSummaryPending(pending);
@@ -1812,12 +1945,14 @@ const LabelingDataDashboard = () => {
           setCached(Boolean(response.data.cached));
           setStale(false);
           setGeneratedAt(response.data.generated_at || null);
-          writeStoredSummary({
-            data: response.data.data,
-            generatedAt: response.data.generated_at || null,
-            cached: Boolean(response.data.cached),
-            stale: false,
-          });
+          if (!rangeActive) {
+            writeStoredSummary({
+              data: response.data.data,
+              generatedAt: response.data.generated_at || null,
+              cached: Boolean(response.data.cached),
+              stale: false,
+            });
+          }
           clearInterval(id);
         }
       } catch {
@@ -1828,7 +1963,7 @@ const LabelingDataDashboard = () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [stale, summaryPending]);
+  }, [stale, summaryPending, rangeParams, rangeActive]);
 
   // Poll while a background process is running (also resumes after page reload)
   useEffect(() => {
@@ -1857,6 +1992,8 @@ const LabelingDataDashboard = () => {
           });
           setSyncingCollar(false);
           setCollarMode(null);
+          // A sync that follows Process staging can fail after new files landed; show them.
+          if (proc?.job === 'sync-collar') await fetchSummary({ refresh: true });
         } else if (proc?.job === 'promote-forwards') {
           setProcessNotice({
             type: 'success',
@@ -1900,6 +2037,8 @@ const LabelingDataDashboard = () => {
     return () => clearInterval(id);
   }, [processInfo?.running, processing, fetchStatus, fetchSummary]);
 
+  const dataMatchesRange =
+    (data?.window?.start || '') === range.start && (data?.window?.end || '') === range.end;
   const totals = data?.totals || {};
   const activities = data?.activities || [];
   const pendingForwards = status?.pending_forwards || null;
@@ -2314,6 +2453,13 @@ const LabelingDataDashboard = () => {
           </button>
         </div>
       </div>
+
+      <DateRangeBar
+        range={range}
+        onChange={changeRange}
+        building={!dataMatchesRange || (summaryPending && rangeActive)}
+        ready={dataMatchesRange}
+      />
 
       {error && data ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
@@ -2770,6 +2916,7 @@ const LabelingDataDashboard = () => {
             selectedDay={mismatchDay}
             onSelectDay={setMismatchDay}
             lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
+            dataWindow={data?.window}
           />
           <div className="mt-6">
             <MismatchExplorer

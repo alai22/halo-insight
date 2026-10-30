@@ -20,7 +20,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,10 +30,49 @@ import boto3
 
 from ..utils.config import Config
 from ..utils.logging import get_logger
+from ..utils.runtime_stats import env_int
 
 logger = get_logger("labeling_data_analyzer")
 
 FILE_KINDS = ("collar_collected", "durations", "user_reported")
+
+# File texts by (bucket, key, size), kept across scans so a date-range summary can
+# re-aggregate without downloading every file again. Least recently used goes first.
+_TEXT_CACHE: "OrderedDict[Tuple[str, str, int], str]" = OrderedDict()
+_TEXT_CACHE_LOCK = threading.Lock()
+_TEXT_CACHE_MAX_CHARS = env_int("LABELING_TEXT_CACHE_MAX_CHARS", 64_000_000)
+_text_cache_chars = 0
+
+
+def _text_cache_get(cache_key: Tuple[str, str, int]) -> Optional[str]:
+    with _TEXT_CACHE_LOCK:
+        text = _TEXT_CACHE.get(cache_key)
+        if text is not None:
+            _TEXT_CACHE.move_to_end(cache_key)
+        return text
+
+
+def _text_cache_put(cache_key: Tuple[str, str, int], text: str) -> None:
+    global _text_cache_chars
+    if len(text) > _TEXT_CACHE_MAX_CHARS:
+        return
+    with _TEXT_CACHE_LOCK:
+        previous = _TEXT_CACHE.pop(cache_key, None)
+        if previous is not None:
+            _text_cache_chars -= len(previous)
+        _TEXT_CACHE[cache_key] = text
+        _text_cache_chars += len(text)
+        while _text_cache_chars > _TEXT_CACHE_MAX_CHARS and _TEXT_CACHE:
+            _, evicted = _TEXT_CACHE.popitem(last=False)
+            _text_cache_chars -= len(evicted)
+
+
+def in_date_window(timestamp: Optional[str], window: Optional[Tuple[str, str]]) -> bool:
+    """True when the ISO timestamp's day is inside an inclusive (start, end) day window."""
+    if window is None:
+        return True
+    day = (timestamp or "")[:10]
+    return bool(day) and window[0] <= day <= window[1]
 UNKNOWN_COLLAR_SN = "_unknown"
 
 # activity_session_* = posture model; gps_session_* = indoor/outdoor model
@@ -354,18 +394,29 @@ class LabelingDataAnalyzer:
                 )
         return files
 
-    def _get_text(self, key: str) -> str:
+    def _get_text(self, key: str, size: Optional[int] = None) -> str:
+        cache_key = (self.bucket_name or "", key, int(size)) if size is not None else None
+        if cache_key is not None:
+            cached = _text_cache_get(cache_key)
+            if cached is not None:
+                return cached
         body = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)["Body"].read()
-        return body.decode("utf-8", errors="replace")
+        text = body.decode("utf-8", errors="replace")
+        if cache_key is not None:
+            _text_cache_put(cache_key, text)
+        return text
 
-    def analyze(self, include_content: bool = True) -> Dict[str, Any]:
+    def analyze(
+        self, include_content: bool = True, window: Optional[Tuple[str, str]] = None
+    ) -> Dict[str, Any]:
         """
         Inventory files by user and aggregate posture (activity) + GPS indoor/outdoor.
 
         Top-level stats are posture/activity_session for backward compatibility.
         GPS indoor/outdoor stats are under the ``gps`` key.
+        window: inclusive (start, end) YYYY-MM-DD; only sessions on those days count.
         """
-        files = self.list_session_files()
+        files = [f for f in self.list_session_files() if in_date_window(f.timestamp, window)]
         activity_files = [f for f in files if f.family == "activity"]
         gps_files = [f for f in files if f.family == "gps"]
         activity = self._analyze_file_set(activity_files, include_content=include_content)
@@ -416,7 +467,7 @@ class LabelingDataAnalyzer:
                 if sess_key in session_collar:
                     continue
                 try:
-                    text = self._get_text(ref.key)
+                    text = self._get_text(ref.key, ref.size)
                     parsed = parse_collar_collected(text)
                     if parsed.collar_sn:
                         session_collar[sess_key] = sanitize_collar_sn(parsed.collar_sn)
@@ -498,7 +549,7 @@ class LabelingDataAnalyzer:
                 continue
 
             try:
-                text = self._get_text(ref.key)
+                text = self._get_text(ref.key, ref.size)
             except Exception as exc:  # noqa: BLE001 - collect and continue
                 parse_errors.append({"key": ref.key, "error": str(exc)})
                 continue
@@ -720,7 +771,7 @@ class LabelingDataAnalyzer:
         )
         # Monkey-patch list to use local files
         analyzer.list_session_files = lambda: files  # type: ignore[method-assign]
-        analyzer._get_text = lambda key: open(key, "r", encoding="utf-8", errors="replace").read()  # type: ignore[method-assign]
+        analyzer._get_text = lambda key, size=None: open(key, "r", encoding="utf-8", errors="replace").read()  # type: ignore[method-assign]
         return analyzer.analyze(include_content=True)
 
 

@@ -239,3 +239,35 @@ class TestLocalAnalyze:
         assert known_dog["owners"] == ["owner@x.com"]
         assert unknown_dog["total_duration_seconds"] == pytest.approx(4.0)
         assert unknown_dog["sessions"] == 1
+
+
+def test_get_text_reuses_cached_text_for_same_key_and_size():
+    calls = []
+
+    class _Body:
+        def read(self):
+            return b"Durations:\n"
+
+    class _S3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            calls.append(Key)
+            return {"Body": _Body()}
+
+    analyzer = LabelingDataAnalyzer(bucket_name="cache-test-bucket", prefix="x/", s3_client=_S3())
+    assert analyzer._get_text("x/a.txt", 11) == "Durations:\n"
+    assert analyzer._get_text("x/a.txt", 11) == "Durations:\n"
+    assert calls == ["x/a.txt"]
+    # A different size means the file changed, so it is read again.
+    analyzer._get_text("x/a.txt", 12)
+    assert calls == ["x/a.txt", "x/a.txt"]
+
+
+def test_in_date_window_is_inclusive_by_day():
+    from backend.services.labeling_data_analyzer import in_date_window
+
+    window = ("2026-08-01", "2026-08-31")
+    assert in_date_window("2026-08-01T00:00:00", window)
+    assert in_date_window("2026-08-31T23:59:59", window)
+    assert not in_date_window("2026-09-01T00:00:00", window)
+    assert not in_date_window("", window)
+    assert in_date_window("anything", None)
