@@ -5,6 +5,7 @@ API routes for Halo AI labeling: staging process + summaries.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -59,6 +60,9 @@ _PROCESS_STATE: Dict[str, Any] = {
 }
 _STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
+# Who each collar belongs to, edited on the dashboard. Kept in S3, not the repo.
+_COLLAR_OWNERS_KEY = "labeling-jobs/collar_owners.json"
+_COLLAR_OWNER_FIELD_MAX = 120
 # Status polls every few seconds. Re-listing the whole staging tree that often
 # competes with the job that is copying those same objects.
 _INVENTORY_LOCK = threading.Lock()
@@ -649,6 +653,74 @@ def labeling_status():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get labeling status")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+def collar_serial_key(sn: Any) -> str:
+    """Serial as lowercase letters and digits, so 26-H5232291-RT matches 26h5232291rt."""
+    return re.sub(r"[^a-z0-9]", "", str(sn or "").lower())
+
+
+def _clean_owner_rows(rows: Any) -> list:
+    """Keep rows with a serial and an owner or model; last row wins per serial."""
+    if not isinstance(rows, list):
+        raise ValueError("owners must be a list")
+    by_key: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = collar_serial_key(row.get("collar_sn"))
+        owner = str(row.get("owner") or "").strip()[:_COLLAR_OWNER_FIELD_MAX]
+        model = str(row.get("model") or "").strip()[:_COLLAR_OWNER_FIELD_MAX]
+        if key and (owner or model):
+            by_key[key] = {"collar_sn": key, "owner": owner, "model": model}
+    return sorted(by_key.values(), key=lambda r: r["collar_sn"])
+
+
+@labeling_bp.route("/collar-owners", methods=["GET"])
+@require_admin_auth
+def labeling_collar_owners():
+    """The collar → owner list. Empty until someone saves one."""
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    try:
+        body = json.loads(
+            _s3_client().get_object(Bucket=bucket, Key=_COLLAR_OWNERS_KEY)["Body"].read()
+        )
+    except Exception as exc:  # noqa: BLE001
+        if "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
+            logger.warning("Collar owners load failed: %s", exc)
+        body = {}
+    return jsonify({
+        "success": True,
+        "data": {
+            "owners": body.get("owners") or [],
+            "updated_at": body.get("updated_at"),
+        },
+    })
+
+
+@labeling_bp.route("/collar-owners", methods=["PUT"])
+@require_admin_auth
+def labeling_save_collar_owners():
+    """Replace the collar → owner list. Body: {"owners": [{collar_sn, owner, model}]}."""
+    try:
+        rows = _clean_owner_rows((request.get_json(silent=True) or {}).get("owners"))
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    payload = {
+        "owners": rows,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        _s3_client().put_object(
+            Bucket=Config.LABELING_S3_BUCKET_NAME,
+            Key=_COLLAR_OWNERS_KEY,
+            Body=json.dumps(payload).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Collar owners save failed")
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({"success": True, "data": payload})
 
 
 @labeling_bp.route("/promote-forwards", methods=["POST"])

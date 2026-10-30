@@ -225,3 +225,52 @@ def test_summary_with_dates_builds_window_in_background(monkeypatch):
     assert body["pending"] is False
     assert body["data"]["window"]["start"] == "2026-08-01"
     routes._window_cache_clear()
+
+
+def test_collar_owner_rows_normalize_serials_and_drop_empty_rows():
+    rows = routes._clean_owner_rows(
+        [
+            {"collar_sn": "26-H5232291-RT", "owner": " Adrian Lai ", "model": "HC5"},
+            {"collar_sn": "26h5232291rt", "owner": "Adrian L", "model": "HC5"},
+            {"collar_sn": "25h5444692rt", "owner": "", "model": ""},
+            {"collar_sn": "", "owner": "Nobody"},
+            "junk",
+        ]
+    )
+    assert rows == [{"collar_sn": "26h5232291rt", "owner": "Adrian L", "model": "HC5"}]
+    with pytest.raises(ValueError):
+        routes._clean_owner_rows({"collar_sn": "x"})
+
+
+def test_collar_owners_save_and_load_round_trip(monkeypatch):
+    store = {}
+
+    class _Body:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    class _S3:
+        def put_object(self, Bucket, Key, Body, ContentType):  # noqa: N803
+            store[Key] = Body
+
+        def get_object(self, Bucket, Key):  # noqa: N803
+            if Key not in store:
+                raise Exception("NoSuchKey")
+            return {"Body": _Body(store[Key])}
+
+    monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
+    client = _client()
+    headers = {"X-Admin-Token": "t"}
+    assert client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]["owners"] == []
+    saved = client.put(
+        "/api/labeling/collar-owners",
+        json={"owners": [{"collar_sn": "26H4171887RT", "owner": "Tavia Soule", "model": "HC4"}]},
+        headers=headers,
+    ).get_json()
+    assert saved["success"] is True
+    loaded = client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]
+    assert loaded["owners"] == [{"collar_sn": "26h4171887rt", "owner": "Tavia Soule", "model": "HC4"}]
+    assert loaded["updated_at"]

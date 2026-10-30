@@ -513,10 +513,194 @@ function CoverageBreakdown({ totals, reasons }) {
   );
 }
 
+/** Serial as lowercase letters and digits, so 26-H5232291-RT matches 26h5232291rt. */
+function serialKey(sn) {
+  return String(sn || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Owner (from the owner list) and dog (from app data) under a serial. */
+function CollarOwnerLine({ info }) {
+  if (!info?.owner && !info?.dog) {
+    return <span className="block text-xs text-gray-400 italic truncate">No owner listed</span>;
+  }
+  return (
+    <span className="block text-xs text-gray-500 truncate">
+      {info.owner || <span className="italic text-gray-400">No owner listed</span>}
+      {info.dog ? ` · ${info.dog}` : ''}
+    </span>
+  );
+}
+
+/**
+ * Parse pasted rows of "serial, owner, model" (commas or tabs, e.g. copied from a
+ * Notion table). A header row naming the serial column is skipped.
+ */
+function parseOwnerPaste(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.split(line.includes('\t') ? '\t' : ',').map((cell) => cell.trim()))
+    .filter((cells) => cells[0] && !/serial/i.test(cells[0]))
+    .map(([collar_sn, owner = '', model = '']) => ({ collar_sn: serialKey(collar_sn), owner, model }))
+    .filter((row) => row.collar_sn && (row.owner || row.model));
+}
+
+/** Side panel to edit who each collar belongs to. Saved to S3 for everyone. */
+function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave, onClose }) {
+  const [draft, setDraft] = useState(() => {
+    const map = new Map();
+    owners.forEach((row) => map.set(serialKey(row.collar_sn), { owner: row.owner || '', model: row.model || '' }));
+    collarRows.forEach((row) => {
+      const key = serialKey(row.collar_sn);
+      if (key && row.collar_sn !== '_unknown' && !map.has(key)) map.set(key, { owner: '', model: '' });
+    });
+    return map;
+  });
+  const [paste, setPaste] = useState('');
+  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const sessionsByKey = useMemo(() => {
+    const map = new Map();
+    collarRows.forEach((row) => map.set(serialKey(row.collar_sn), row.sessions || 0));
+    return map;
+  }, [collarRows]);
+  const keys = [...draft.keys()]
+    .filter((key) => !onlyMissing || !draft.get(key).owner)
+    .sort((a, b) => (sessionsByKey.get(b) || 0) - (sessionsByKey.get(a) || 0) || a.localeCompare(b));
+  const missing = [...draft.values()].filter((row) => !row.owner).length;
+
+  const update = (key, field, value) => {
+    setDraft((prev) => {
+      const next = new Map(prev);
+      next.set(key, { ...next.get(key), [field]: value });
+      return next;
+    });
+  };
+  const addPasted = () => {
+    const rows = parseOwnerPaste(paste);
+    setDraft((prev) => {
+      const next = new Map(prev);
+      rows.forEach((row) => next.set(row.collar_sn, { owner: row.owner, model: row.model }));
+      return next;
+    });
+    setMessage(rows.length ? `Added ${rows.length} pasted row${rows.length === 1 ? '' : 's'}. Save to keep them.` : 'No rows found. Use serial, owner, model on each line.');
+    setPaste('');
+  };
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    const rows = [...draft.entries()].map(([collar_sn, row]) => ({ collar_sn, ...row }));
+    const ok = await onSave(rows);
+    setSaving(false);
+    setMessage(ok ? 'Saved.' : 'Could not save. Try again.');
+  };
+  const inputClass = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md';
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Collar owners">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative h-full w-full max-w-4xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Collar owners</h3>
+            <p className="text-xs text-gray-500">
+              Who each collar belongs to. Dog names and app accounts come from the labeled data.
+              {updatedAt ? ` Last saved ${formatUpdatedAt(updatedAt)}.` : ''}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-500" aria-label="Close">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-100 flex flex-col gap-2">
+          <textarea
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+            rows={3}
+            placeholder={'Paste rows to add or update, one per line:\n26h5232291rt, Adrian Lai, HC5'}
+            className="w-full px-2.5 py-1.5 text-sm font-mono border border-gray-300 rounded-md"
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={addPasted}
+              disabled={!paste.trim()}
+              className="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+            >
+              Add pasted rows
+            </button>
+            <label className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+              <input type="checkbox" checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} />
+              Only collars with no owner ({missing})
+            </label>
+            {message ? <span className="text-xs text-gray-500">{message}</span> : null}
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving}
+              className="ml-auto px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5">
+          <table className="min-w-full text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-gray-500 border-b">
+                <th className="py-2 pr-3 font-medium">Serial</th>
+                <th className="py-2 pr-3 font-medium w-1/4">Owner</th>
+                <th className="py-2 pr-3 font-medium w-24">Model</th>
+                <th className="py-2 pr-3 font-medium">Dog</th>
+                <th className="py-2 pr-3 font-medium">App accounts</th>
+                <th className="py-2 font-medium text-right">Sessions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => {
+                const row = draft.get(key);
+                const info = collarInfo.get(key) || {};
+                return (
+                  <tr key={key} className="border-b border-gray-100 align-middle">
+                    <td className="py-1.5 pr-3 font-mono text-xs text-gray-900">{key}</td>
+                    <td className="py-1.5 pr-3">
+                      <input value={row.owner} onChange={(e) => update(key, 'owner', e.target.value)} className={inputClass} placeholder="Name" />
+                    </td>
+                    <td className="py-1.5 pr-3">
+                      <input value={row.model} onChange={(e) => update(key, 'model', e.target.value)} className={inputClass} placeholder="HC5" />
+                    </td>
+                    <td className="py-1.5 pr-3 text-gray-700">
+                      {info.dog || <span className="text-gray-400">—</span>}
+                      {info.breed ? <span className="text-gray-400"> · {info.breed}</span> : null}
+                    </td>
+                    <td className="py-1.5 pr-3 text-xs text-gray-600">{(info.accounts || []).join(', ') || '—'}</td>
+                    <td className="py-1.5 text-right tabular-nums text-gray-600">{sessionsByKey.get(key) || 0}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const COLLAR_LIST_LIMIT = 15;
 
 /** One row per collar: sessions split by match reason, plus Azure and S3 file counts. */
-function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpenCollar }) {
+function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpenCollar, collarInfo }) {
   if (rows.length === 0) {
     return <p className="text-sm text-gray-500">No labeled collars in the summary yet.</p>;
   }
@@ -532,8 +716,8 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
         </p>
       ) : (
         <>
-          <div className="hidden sm:grid grid-cols-[9rem_1fr_7rem_9rem] gap-3 text-xs text-gray-500 border-b border-gray-100 pb-1.5">
-            <span>Serial</span>
+          <div className="hidden sm:grid grid-cols-[11rem_1fr_7rem_9rem] gap-3 text-xs text-gray-500 border-b border-gray-100 pb-1.5">
+            <span>Serial · owner</span>
             <span>Sessions (bar length is the count)</span>
             <span className="text-right">Matched</span>
             <span className="text-right">Azure → S3 files</span>
@@ -554,10 +738,13 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
                     }
                   }}
                   title="Show this collar's files in S3"
-                  className="grid grid-cols-[9rem_1fr] sm:grid-cols-[9rem_1fr_7rem_9rem] gap-x-3 gap-y-1 items-center py-1.5 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded"
+                  className="grid grid-cols-[11rem_1fr] sm:grid-cols-[11rem_1fr_7rem_9rem] gap-x-3 gap-y-1 items-center py-1.5 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded"
                 >
-                  <span className="font-mono text-xs text-gray-900 truncate" title={row.collar_sn}>
-                    {row.collar_sn}
+                  <span className="min-w-0" title={row.collar_sn}>
+                    <span className="block font-mono text-xs text-gray-900 truncate">
+                      {row.collar_sn}
+                    </span>
+                    <CollarOwnerLine info={collarInfo.get(serialKey(row.collar_sn))} />
                   </span>
                   <CollarSessionBar row={row} maxSessions={maxSessions} />
                   <span className="text-right tabular-nums text-gray-700 col-start-2 sm:col-start-auto">
@@ -840,7 +1027,14 @@ function MismatchTopChips({ label, rows, field, onPick }) {
  * gap to the closest counterpart on the same collar. A steady gap across rows points to a
  * clock or timezone offset rather than missing uploads.
  */
-function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, syncedSns }) {
+function MismatchExplorer({
+  coverage,
+  selectedDay,
+  onClearDay,
+  lastAzureMs,
+  syncedSns,
+  collarInfo,
+}) {
   const [tab, setTab] = useState('app');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('newest');
@@ -1014,7 +1208,12 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, sync
                     <td className="py-1.5 pr-4 text-gray-900">
                       {isApp ? row.email : (row.labelers || []).join(', ') || '—'}
                     </td>
-                    <td className="py-1.5 pr-4 font-mono text-xs text-gray-700">{row.collar_sn}</td>
+                    <td className="py-1.5 pr-4 max-w-[12rem]">
+                      <span className="block font-mono text-xs text-gray-700">{row.collar_sn}</span>
+                      {row.collar_sn !== '_unknown' ? (
+                        <CollarOwnerLine info={collarInfo.get(serialKey(row.collar_sn))} />
+                      ) : null}
+                    </td>
                     <td className="py-1.5 pr-4 text-gray-600">{row.family}</td>
                     {isApp ? (
                       <td className="py-1.5 pr-4 text-gray-600 tabular-nums">
@@ -1072,7 +1271,7 @@ function formatFileSize(bytes) {
 }
 
 /** Side panel listing the AI logs mirrored into collar-raw/, per collar, with the sessions each one matched. */
-function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClose }) {
+function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClose, collarInfo }) {
   const [usage, setUsage] = useState('all');
   const [family, setFamily] = useState('all');
   const [limit, setLimit] = useState(COLLAR_FILES_PAGE);
@@ -1133,6 +1332,7 @@ function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClo
         <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
           <div className="min-w-0">
             <h3 className="text-lg font-semibold text-gray-900">Collar files in S3</h3>
+            {collar ? <CollarOwnerLine info={collarInfo.get(serialKey(collar))} /> : null}
             <p className="text-xs text-gray-500 font-mono truncate">
               {prefix}
               {collar || '<serial>'}/ai/
@@ -1158,7 +1358,9 @@ function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClo
               <option value="">All collars ({(files || []).length})</option>
               {serials.map((sn) => (
                 <option key={sn} value={sn}>
-                  {sn} ({countsBySn.get(sn) || 0})
+                  {sn}
+                  {collarInfo.get(serialKey(sn))?.owner ? ` · ${collarInfo.get(serialKey(sn)).owner}` : ''} (
+                  {countsBySn.get(sn) || 0})
                 </option>
               ))}
             </select>
@@ -1612,8 +1814,12 @@ const LabelingDataDashboard = () => {
   const [statusError, setStatusError] = useState(null);
   const [showAllCollars, setShowAllCollars] = useState(false);
   const [mismatchDay, setMismatchDay] = useState(null);
+  const mismatchRef = useRef(null);
   // null = closed, '' = all collars, otherwise one serial.
   const [filesCollar, setFilesCollar] = useState(null);
+  const [collarOwners, setCollarOwners] = useState([]);
+  const [collarOwnersUpdatedAt, setCollarOwnersUpdatedAt] = useState(null);
+  const [ownersOpen, setOwnersOpen] = useState(false);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -1663,6 +1869,31 @@ const LabelingDataDashboard = () => {
       );
     }
     return null;
+  }, []);
+
+  const fetchCollarOwners = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/labeling/collar-owners');
+      if (response.data?.success) {
+        setCollarOwners(response.data.data?.owners || []);
+        setCollarOwnersUpdatedAt(response.data.data?.updated_at || null);
+      }
+    } catch (err) {
+      console.error('Failed to load collar owners', err);
+    }
+  }, []);
+
+  const saveCollarOwners = useCallback(async (rows) => {
+    try {
+      const response = await axios.put('/api/labeling/collar-owners', { owners: rows });
+      if (!response.data?.success) return false;
+      setCollarOwners(response.data.data?.owners || []);
+      setCollarOwnersUpdatedAt(response.data.data?.updated_at || null);
+      return true;
+    } catch (err) {
+      console.error('Failed to save collar owners', err);
+      return false;
+    }
   }, []);
 
   const fetchSummary = useCallback(async ({ refresh = false } = {}) => {
@@ -1930,6 +2161,10 @@ const LabelingDataDashboard = () => {
 
   const syncCollar = useCallback(() => runCollarJob(false), [runCollarJob]);
   const checkAzure = useCallback(() => runCollarJob(true), [runCollarJob]);
+
+  useEffect(() => {
+    fetchCollarOwners();
+  }, [fetchCollarOwners]);
 
   useEffect(() => {
     fetchStatus();
@@ -2280,6 +2515,24 @@ const LabelingDataDashboard = () => {
     });
     return map;
   }, [clone]);
+  // Owner and model from the owner list; dog, breed and app accounts from labeled data.
+  const collarInfo = useMemo(() => {
+    const map = new Map();
+    (data?.dogs || []).forEach((dog) => {
+      const key = serialKey(dog.collar_sn);
+      if (!key || dog.collar_sn === '_unknown') return;
+      map.set(key, {
+        dog: (dog.name || '').trim() || null,
+        breed: dog.breed || null,
+        accounts: dog.owners || [],
+      });
+    });
+    collarOwners.forEach((row) => {
+      const key = serialKey(row.collar_sn);
+      map.set(key, { ...(map.get(key) || {}), owner: row.owner || null, model: row.model || null });
+    });
+    return map;
+  }, [data?.dogs, collarOwners]);
   const lastAzureAt = clone?.generated_at || null;
   const lastAzureMs = lastAzureAt ? Date.parse(lastAzureAt) : null;
   const syncedSns = useMemo(() => new Set(Object.keys(cloneBySn)), [cloneBySn]);
@@ -2759,7 +3012,7 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-10 items-start">
         <section className="min-w-0">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
@@ -2905,58 +3158,35 @@ const LabelingDataDashboard = () => {
           <CollarNextStep step={nextStep} />
         </section>
 
-        <section className="xl:col-span-2 min-w-0 bg-white border border-gray-200 rounded-lg p-5">
-          <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
-          <p className="text-sm text-gray-500 mb-3">
-            Labeled sessions per collar and whether each found a collar log. Collars that are
-            behind come first.
-          </p>
-          <CollarCoverageList
-            rows={collarPipelineRows}
-            behindCount={behindCollarRows.length}
-            showAll={showAllCollars}
-            onToggleShowAll={() => setShowAllCollars((v) => !v)}
-            onOpenCollar={setFilesCollar}
-          />
-        </section>
-      </div>
-
-      {filesCollar !== null ? (
-        <CollarFilesDrawer
-          coverage={collarCoverage}
-          collarRows={collarPipelineRows}
-          collar={filesCollar}
-          onChangeCollar={setFilesCollar}
-          onClose={() => setFilesCollar(null)}
-        />
-      ) : null}
-
-      <div className="mb-6">
-        <ChartCard
-          title="App and collar data by day"
-          description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used. Click a day to list its mismatches below."
-        >
-          <DailySourcesChart
-            byDate={collarCoverage?.by_date}
-            selectedDay={mismatchDay}
-            onSelectDay={setMismatchDay}
-            lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
-            dataWindow={data?.window}
-          />
-          <div className="mt-6">
-            <MismatchExplorer
-              coverage={collarCoverage}
+        <div className="xl:col-span-2 min-w-0">
+          <ChartCard
+            title="App and collar data by day"
+            description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used. Click a day to list its mismatches below."
+          >
+            <DailySourcesChart
+              byDate={collarCoverage?.by_date}
               selectedDay={mismatchDay}
-              onClearDay={() => setMismatchDay(null)}
-              lastAzureMs={lastAzureMs}
-              syncedSns={syncedSns}
+              onSelectDay={setMismatchDay}
+              lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
+              dataWindow={data?.window}
             />
-          </div>
-        </ChartCard>
+            {mismatchDay ? (
+              <button
+                type="button"
+                onClick={() =>
+                  mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
+                className="mt-2 text-xs text-blue-700 hover:text-blue-900"
+              >
+                See mismatches on {mismatchDay} ↓
+              </button>
+            ) : null}
+          </ChartCard>
+        </div>
       </div>
 
-      <div className="mb-2">
-        <h2 className="text-xl font-semibold text-gray-900">Collar dumps</h2>
+      <div className="mb-4">
+        <h2 className="text-xl font-semibold text-gray-900">Collar and app matching</h2>
         <p className="text-sm text-gray-500">
           Binary <span className="font-mono text-xs">&lt;sn&gt;/ai/*.log</span> from Azure, joined
           to labeled sessions by collar SN + timestamp
@@ -3003,6 +3233,57 @@ const LabelingDataDashboard = () => {
               : null
           }
         />
+      </div>
+
+      <section className="min-w-0 bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
+          <button
+            type="button"
+            onClick={() => setOwnersOpen(true)}
+            className="text-xs text-blue-700 hover:text-blue-900"
+          >
+            Edit owners
+            {collarPipelineRows.some(
+              (row) => row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
+            )
+              ? ` · ${
+                  collarPipelineRows.filter(
+                    (row) =>
+                      row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
+                  ).length
+                } without one`
+              : ''}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-3">
+          Labeled sessions per collar and whether each found a collar log. Collars that are
+          behind come first.
+        </p>
+        <CollarCoverageList
+          rows={collarPipelineRows}
+          behindCount={behindCollarRows.length}
+          showAll={showAllCollars}
+          onToggleShowAll={() => setShowAllCollars((v) => !v)}
+          onOpenCollar={setFilesCollar}
+          collarInfo={collarInfo}
+        />
+      </section>
+
+      <div ref={mismatchRef} className="mb-6 scroll-mt-4">
+        <ChartCard
+          title="Mismatches"
+          description="App sessions with no collar log, and collar logs no session used. Click a day in the chart above to narrow this list."
+        >
+          <MismatchExplorer
+            coverage={collarCoverage}
+            selectedDay={mismatchDay}
+            onClearDay={() => setMismatchDay(null)}
+            lastAzureMs={lastAzureMs}
+            syncedSns={syncedSns}
+            collarInfo={collarInfo}
+          />
+        </ChartCard>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
@@ -3056,6 +3337,35 @@ const LabelingDataDashboard = () => {
         )}
       </div>
 
+      {filesCollar !== null ? (
+        <CollarFilesDrawer
+          coverage={collarCoverage}
+          collarRows={collarPipelineRows}
+          collar={filesCollar}
+          onChangeCollar={setFilesCollar}
+          onClose={() => setFilesCollar(null)}
+          collarInfo={collarInfo}
+        />
+      ) : null}
+
+      {ownersOpen ? (
+        <CollarOwnersEditor
+          owners={collarOwners}
+          updatedAt={collarOwnersUpdatedAt}
+          collarRows={collarPipelineRows}
+          collarInfo={collarInfo}
+          onSave={saveCollarOwners}
+          onClose={() => setOwnersOpen(false)}
+        />
+      ) : null}
+
+      <div className="mb-4">
+        <h2 className="text-xl font-semibold text-gray-900">Contributors</h2>
+        <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+          Who labeled, how much, and when it arrived.
+        </p>
+      </div>
+
       <div className={hasGps ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8' : 'mb-8'}>
         <div>
           <div className="text-base font-semibold text-gray-900">Posture</div>
@@ -3106,7 +3416,7 @@ const LabelingDataDashboard = () => {
 
       <section className="mb-10">
         <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">Data sync</h2>
+          <h2 className="text-lg font-semibold text-gray-900">When data arrived</h2>
           <p className="text-sm text-gray-500 mt-1 max-w-3xl">
             When labeled sessions arrived, and who sent them.
           </p>
@@ -3173,6 +3483,119 @@ const LabelingDataDashboard = () => {
             </ChartCard>
           ) : null}
         </div>
+      </section>
+
+      <section className="mb-10">
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">By labeler</h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+            Posture sessions for each person. Expand a row for activities and collar serials.
+          </p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <div className="space-y-3">
+          {users.map((user) => {
+            const isOpen = expandedUser === user.email;
+            const kinds = user.by_kind || {};
+            return (
+              <div key={user.email} className="border border-gray-200 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setExpandedUser(isOpen ? null : user.email)}
+                  className="w-full flex items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-gray-900 truncate">{user.email}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {user.sessions} sessions · {user.files} files · collars {(user.collar_sns || []).length} ·
+                      collar_collected {kinds.collar_collected || 0} ·
+                      durations {kinds.durations || 0} · user_reported {kinds.user_reported || 0}
+                    </div>
+                    {(user.collar_sns || []).length > 0 ? (
+                      <div className="text-xs text-gray-400 mt-0.5 truncate">
+                        SN: {(user.collar_sns || []).join(', ')}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-sm font-semibold text-gray-900">
+                      {user.total_duration_human || formatSecondsShort(user.total_duration_seconds)}
+                    </div>
+                    <div className="text-xs text-gray-400">{isOpen ? 'Hide' : 'Show'} activities</div>
+                  </div>
+                </button>
+
+                {isOpen ? (
+                  <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
+                    {(user.activities || []).length === 0 ? (
+                      <p className="text-sm text-gray-500 pt-3">No non-zero durations for this user.</p>
+                    ) : (
+                      <div className="pt-3 overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-500 border-b border-gray-200">
+                              <th className="py-2 pr-4 font-medium">Activity</th>
+                              <th className="py-2 pr-4 font-medium">Duration</th>
+                              <th className="py-2 font-medium">Seconds</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {user.activities.map((a) => (
+                              <tr key={`${user.email}-${a.label}`} className="border-b border-gray-100">
+                                <td className="py-2 pr-4 text-gray-900">{a.label}</td>
+                                <td className="py-2 pr-4 text-gray-700">{a.human}</td>
+                                <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {(user.collars || []).length > 0 ? (
+                      <div className="mt-4 space-y-2">
+                        <div className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+                          By collar SN
+                        </div>
+                        {user.collars.map((collar) => (
+                          <div
+                            key={`${user.email}-${collar.collar_sn}`}
+                            className="bg-white border border-gray-200 rounded-md px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-mono text-sm text-gray-900">{collar.collar_sn}</div>
+                              <div className="text-xs text-gray-500">
+                                {collar.sessions} sessions · {collar.files} files ·{' '}
+                                {collar.total_duration_human}
+                              </div>
+                            </div>
+                            {(collar.activities || []).length > 0 ? (
+                              <div className="mt-1 text-xs text-gray-500">
+                                {collar.activities
+                                  .map((a) => `${a.name} ${a.human}`)
+                                  .join(' · ')}
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {Object.keys(user.collar_activity_events || {}).length > 0 ? (
+                      <div className="mt-3 text-xs text-gray-500">
+                        Collar transitions:{' '}
+                        {Object.entries(user.collar_activity_events)
+                          .map(([label, count]) => `${label.split(' ')[0]} ${count}`)
+                          .join(' · ')}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
       </section>
 
       <section className="mb-10">
@@ -3294,119 +3717,6 @@ const LabelingDataDashboard = () => {
         </div>
       </section>
 
-
-      <section>
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">By labeler</h2>
-          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            Posture sessions for each person. Expand a row for activities and collar serials.
-          </p>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-lg p-5">
-        <div className="space-y-3">
-          {users.map((user) => {
-            const isOpen = expandedUser === user.email;
-            const kinds = user.by_kind || {};
-            return (
-              <div key={user.email} className="border border-gray-200 rounded-lg overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setExpandedUser(isOpen ? null : user.email)}
-                  className="w-full flex items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50"
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium text-gray-900 truncate">{user.email}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      {user.sessions} sessions · {user.files} files · collars {(user.collar_sns || []).length} ·
-                      collar_collected {kinds.collar_collected || 0} ·
-                      durations {kinds.durations || 0} · user_reported {kinds.user_reported || 0}
-                    </div>
-                    {(user.collar_sns || []).length > 0 ? (
-                      <div className="text-xs text-gray-400 mt-0.5 truncate">
-                        SN: {(user.collar_sns || []).join(', ')}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className="text-sm font-semibold text-gray-900">
-                      {user.total_duration_human || formatSecondsShort(user.total_duration_seconds)}
-                    </div>
-                    <div className="text-xs text-gray-400">{isOpen ? 'Hide' : 'Show'} activities</div>
-                  </div>
-                </button>
-
-                {isOpen ? (
-                  <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
-                    {(user.activities || []).length === 0 ? (
-                      <p className="text-sm text-gray-500 pt-3">No non-zero durations for this user.</p>
-                    ) : (
-                      <div className="pt-3 overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                          <thead>
-                            <tr className="text-left text-gray-500 border-b border-gray-200">
-                              <th className="py-2 pr-4 font-medium">Activity</th>
-                              <th className="py-2 pr-4 font-medium">Duration</th>
-                              <th className="py-2 font-medium">Seconds</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {user.activities.map((a) => (
-                              <tr key={`${user.email}-${a.label}`} className="border-b border-gray-100">
-                                <td className="py-2 pr-4 text-gray-900">{a.label}</td>
-                                <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                                <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    {(user.collars || []).length > 0 ? (
-                      <div className="mt-4 space-y-2">
-                        <div className="text-xs font-medium text-gray-600 uppercase tracking-wide">
-                          By collar SN
-                        </div>
-                        {user.collars.map((collar) => (
-                          <div
-                            key={`${user.email}-${collar.collar_sn}`}
-                            className="bg-white border border-gray-200 rounded-md px-3 py-2"
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="font-mono text-sm text-gray-900">{collar.collar_sn}</div>
-                              <div className="text-xs text-gray-500">
-                                {collar.sessions} sessions · {collar.files} files ·{' '}
-                                {collar.total_duration_human}
-                              </div>
-                            </div>
-                            {(collar.activities || []).length > 0 ? (
-                              <div className="mt-1 text-xs text-gray-500">
-                                {collar.activities
-                                  .map((a) => `${a.name} ${a.human}`)
-                                  .join(' · ')}
-                              </div>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {Object.keys(user.collar_activity_events || {}).length > 0 ? (
-                      <div className="mt-3 text-xs text-gray-500">
-                        Collar transitions:{' '}
-                        {Object.entries(user.collar_activity_events)
-                          .map(([label, count]) => `${label.split(' ')[0]} ${count}`)
-                          .join(' · ')}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      </section>
 
       <details className="mt-8 group">
         <summary className="cursor-pointer list-none text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
