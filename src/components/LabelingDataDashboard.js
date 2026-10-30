@@ -275,8 +275,8 @@ function collarNextStep({ statusLoaded, statusError, azureConfigured, clone, tot
         }
       : {
           tone: 'info',
+          loading: true,
           title: 'Loading collar sync status…',
-          body: 'Checking the server for Azure and S3 state.',
         };
   }
   if (!azureConfigured) {
@@ -360,17 +360,23 @@ const NEXT_STEP_STYLES = {
 };
 
 function CollarNextStep({ step }) {
+  if (step.loading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-500 px-1">
+        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+        {step.title}
+      </div>
+    );
+  }
   const Icon = step.tone === 'ok' ? CheckCircle2 : AlertCircle;
   return (
-    <div className={`border rounded-lg p-4 mb-6 ${NEXT_STEP_STYLES[step.tone]}`}>
+    <div className={`border rounded-lg px-4 py-3 ${NEXT_STEP_STYLES[step.tone]}`}>
       <div className="flex items-start gap-3">
-        <Icon className="h-5 w-5 flex-shrink-0 mt-0.5" />
+        <Icon className="h-4 w-4 flex-shrink-0 mt-0.5" />
         <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wide opacity-70">
-            Collar data · next step
-          </div>
-          <div className="font-semibold mt-0.5">{step.title}</div>
-          <p className="text-sm mt-1">{step.body}</p>
+          <div className="text-xs font-medium uppercase tracking-wide opacity-70">Next step</div>
+          <div className="text-sm font-semibold mt-0.5">{step.title}</div>
+          {step.body ? <p className="text-sm mt-1">{step.body}</p> : null}
           {step.error ? (
             <div className="mt-2 text-xs">
               <div className="opacity-70 mb-1">
@@ -439,6 +445,102 @@ function CoverageBreakdown({ totals, reasons }) {
           )
         )}
       </div>
+    </div>
+  );
+}
+
+const COLLAR_LIST_LIMIT = 15;
+
+/** One row per collar: sessions split by match reason, plus Azure and S3 file counts. */
+function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll }) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-gray-500">No labeled collars in the summary yet.</p>;
+  }
+  const visible = showAll ? rows : rows.filter((row) => row.behind).slice(0, COLLAR_LIST_LIMIT);
+  return (
+    <div>
+      {visible.length === 0 ? (
+        <p className="text-sm text-gray-500">
+          No collars are behind. Azure is not ahead of S3, and every session with a serial has a
+          dump.
+        </p>
+      ) : (
+        <>
+          <div className="hidden sm:grid grid-cols-[9rem_1fr_7rem_9rem] gap-3 text-xs text-gray-500 border-b border-gray-100 pb-1.5">
+            <span>Serial</span>
+            <span>Sessions with collar data</span>
+            <span className="text-right">Matched</span>
+            <span className="text-right">Azure → S3 files</span>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {visible.map((row) => {
+              const azureAhead = row.azure_files != null && row.azure_files > row.s3_files;
+              return (
+                <li
+                  key={row.collar_sn}
+                  className="grid grid-cols-[9rem_1fr] sm:grid-cols-[9rem_1fr_7rem_9rem] gap-x-3 gap-y-1 items-center py-1.5 text-sm"
+                >
+                  <span className="font-mono text-xs text-gray-900 truncate" title={row.collar_sn}>
+                    {row.collar_sn}
+                  </span>
+                  <CollarSessionBar row={row} />
+                  <span className="text-right tabular-nums text-gray-700 col-start-2 sm:col-start-auto">
+                    {row.matched}
+                    <span className="text-gray-400"> / {row.sessions}</span>
+                  </span>
+                  <span
+                    className={`text-right tabular-nums ${azureAhead ? 'text-amber-800' : 'text-gray-500'}`}
+                    title={azureAhead ? `${row.azure_files - row.s3_files} in Azure not in S3` : undefined}
+                  >
+                    {row.azure_files == null ? '—' : row.azure_files} → {row.s3_files}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-3 text-xs text-gray-600">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {COVERAGE_SEGMENTS.map((seg) => (
+            <span key={seg.key} className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: seg.color }} />
+              {seg.label}
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          className="text-gray-500 hover:text-gray-700 underline decoration-dotted underline-offset-2"
+        >
+          {showAll
+            ? `Show only collars that are behind (${behindCount})`
+            : `Show all ${rows.length} collars`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Sessions on one collar, as a full-width bar split by matched and each miss reason. */
+function CollarSessionBar({ row }) {
+  const total = row.sessions || 0;
+  const reason = missingReasonText(row);
+  if (!total) {
+    return <span className="text-xs text-gray-400">No app sessions</span>;
+  }
+  return (
+    <div
+      className="flex h-2.5 w-full overflow-hidden rounded-full bg-gray-100"
+      title={`${row.matched} of ${total} matched${reason !== '—' ? ` · ${reason}` : ''}`}
+    >
+      {COVERAGE_SEGMENTS.filter((seg) => row[seg.key] > 0).map((seg) => (
+        <div
+          key={seg.key}
+          style={{ width: `${(row[seg.key] / total) * 100}%`, backgroundColor: seg.color }}
+        />
+      ))}
     </div>
   );
 }
@@ -642,6 +744,7 @@ const LabelingDataDashboard = () => {
   const [data, setData] = useState(stored?.data || null);
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState(null);
+  const [showAllCollars, setShowAllCollars] = useState(false);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -1331,8 +1434,6 @@ const LabelingDataDashboard = () => {
     () => collarPipelineRows.filter((row) => row.behind),
     [collarPipelineRows]
   );
-  const behindChartRows = behindCollarRows.slice(0, 15);
-  const behindChartHeight = Math.max(180, behindChartRows.length * 36 + 48);
   const missingReasons = collarCoverage?.missing_reasons || {};
   const nextStep = collarNextStep({
     statusLoaded: Boolean(status?.collar_sync),
@@ -1383,7 +1484,7 @@ const LabelingDataDashboard = () => {
   }
 
   return (
-    <div className="flex flex-col p-6 bg-gray-50" style={{ minHeight: '100vh' }}>
+    <div className="flex flex-col p-6 bg-gray-50 w-full max-w-[1440px] mx-auto" style={{ minHeight: '100vh' }}>
       <div className="flex items-center justify-between mb-6 flex-shrink-0 gap-4">
         <div className="min-w-0">
           <h2 className="text-2xl font-bold text-gray-900">Labeling Data</h2>
@@ -1720,177 +1821,113 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      <div className="mb-2">
-        <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
-        <p className="text-sm text-gray-500">
-          App labels in staging, whether they are summarized, and whether Azure collar logs for
-          those collars are cloned into S3.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-        <PipelineCard
-          label="App data"
-          value={status?.staging_extracted_files ?? 0}
-          detail={`${status?.staging_batches ?? 0} batches${
-            pendingForwards?.pending_count
-              ? ` · ${pendingForwards.pending_count} forwards waiting`
-              : ''
-          }`}
-          state={
-            unprocessedEmails.length
-              ? 'Ready to summarize'
-              : pendingForwards?.pending_count
-                ? 'Forwards waiting to promote'
-                : 'No new labelers waiting'
-          }
-          tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
-        />
-        <PipelineCard
-          label="Summarized"
-          value={status?.output_files ?? totals.files ?? 0}
-          detail={
-            generatedAt ? `Summary ${formatUpdatedAt(generatedAt)}` : 'Summary not loaded yet'
-          }
-          state={
-            unprocessedEmails.length ? 'Staging not in the summary' : 'Current'
-          }
-          tone={unprocessedEmails.length ? 'attention' : 'ok'}
-        />
-        <PipelineCard
-          label="Azure"
-          value={clone ? clone.azure_files ?? 0 : '—'}
-          detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
-          state={
-            azureUnreadable && clone
-              ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
-              : clone?.generated_at
-                ? `Checked ${formatUpdatedAt(clone.generated_at)}`
-                : 'Not checked yet'
-          }
-          tone={clone && !azureUnreadable ? 'ok' : 'attention'}
-          action={
-            <button
-              type="button"
-              onClick={checkAzure}
-              disabled={processing || !azureConfigured}
-              className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-              title={
-                azureConfigured
-                  ? 'List Azure ai/ logs for labeled collars without copying'
-                  : 'Set LABELING_AZURE_SAS_URL on the server'
-              }
-            >
-              {azureCheckRunning ? (
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <DownloadCloud className="h-3.5 w-3.5" />
-              )}
-              {azureCheckRunning ? 'Checking…' : 'Check Azure'}
-            </button>
-          }
-        />
-        <PipelineCard
-          label="Cloned to S3"
-          value={collarTotals.ai_files ?? 0}
-          detail={
-            !clone
-              ? 'Sync or check Azure to compare'
-              : clone.inventory_only
-                ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
-                : `Copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
-          }
-          state={
-            !clone
-              ? 'Not compared to Azure yet'
-              : azureUnreadable
-                ? 'Blocked until Azure can be read'
-                : (clone.not_cloned || 0) === 0
-                  ? 'Caught up'
-                  : 'Azure has files not in S3'
-          }
-          tone={!clone || azureUnreadable || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
-        />
-      </div>
-
-      <CollarNextStep step={nextStep} />
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          App sessions versus AI files already in S3. Showing collars that are behind
-          {behindCollarRows.length > behindChartRows.length
-            ? ` (top ${behindChartRows.length} of ${behindCollarRows.length})`
-            : ''}
-          .
-        </p>
-        {behindChartRows.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            {collarPipelineRows.length === 0
-              ? 'No labeled collars in the summary yet.'
-              : 'No collars are behind. Azure is not ahead of S3, and every session with a serial has a dump.'}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
+        <section className="min-w-0">
+          <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
+          <p className="text-sm text-gray-500 mb-3">
+            App labels in staging, whether they are summarized, and whether Azure collar logs for
+            those collars are cloned into S3.
           </p>
-        ) : (
-          <div style={{ height: behindChartHeight }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={behindChartRows}
-                layout="vertical"
-                margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis type="number" tick={{ fontSize: 12 }} allowDecimals={false} />
-                <YAxis type="category" dataKey="collar_sn" width={120} tick={{ fontSize: 11 }} />
-                <Tooltip
-                  formatter={(value, name, props) => {
-                    const azure = props.payload.azure_files;
-                    if (name === 'App sessions') {
-                      const extra =
-                        azure == null ? '' : ` · ${azure} in Azure`;
-                      return [`${value}${extra}`, name];
-                    }
-                    return [value, name];
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="sessions" name="App sessions" fill="#4285F4" barSize={8} />
-                <Bar dataKey="s3_files" name="S3 files" fill="#111827" barSize={8} />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-1 gap-px bg-gray-200 border border-gray-200 rounded-lg overflow-hidden mb-4">
+            <PipelineStage
+              label="App data"
+              value={status?.staging_extracted_files ?? 0}
+              detail={`${status?.staging_batches ?? 0} batches${
+                pendingForwards?.pending_count
+                  ? ` · ${pendingForwards.pending_count} forwards waiting`
+                  : ''
+              }`}
+              state={
+                unprocessedEmails.length
+                  ? 'Ready to summarize'
+                  : pendingForwards?.pending_count
+                    ? 'Forwards waiting to promote'
+                    : 'No new labelers waiting'
+              }
+              tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
+            />
+            <PipelineStage
+              label="Summarized"
+              value={status?.output_files ?? totals.files ?? 0}
+              detail={
+                generatedAt ? `Summary ${formatUpdatedAt(generatedAt)}` : 'Summary not loaded yet'
+              }
+              state={
+                unprocessedEmails.length ? 'Staging not in the summary' : 'Current'
+              }
+              tone={unprocessedEmails.length ? 'attention' : 'ok'}
+            />
+            <PipelineStage
+              label="Azure"
+              value={clone ? clone.azure_files ?? 0 : '—'}
+              detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
+              state={
+                azureUnreadable && clone
+                  ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
+                  : clone?.generated_at
+                    ? `Checked ${formatUpdatedAt(clone.generated_at)}`
+                    : 'Not checked yet'
+              }
+              tone={clone && !azureUnreadable ? 'ok' : 'attention'}
+              action={
+                <button
+                  type="button"
+                  onClick={checkAzure}
+                  disabled={processing || !azureConfigured}
+                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  title={
+                    azureConfigured
+                      ? 'List Azure ai/ logs for labeled collars without copying'
+                      : 'Set LABELING_AZURE_SAS_URL on the server'
+                  }
+                >
+                  {azureCheckRunning ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <DownloadCloud className="h-3 w-3" />
+                  )}
+                  {azureCheckRunning ? 'Checking…' : 'Check Azure'}
+                </button>
+              }
+            />
+            <PipelineStage
+              label="Cloned to S3"
+              value={collarTotals.ai_files ?? 0}
+              detail={
+                !clone
+                  ? 'Sync or check Azure to compare'
+                  : clone.inventory_only
+                    ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
+                    : `Copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
+              }
+              state={
+                !clone
+                  ? 'Not compared to Azure yet'
+                  : azureUnreadable
+                    ? 'Blocked until Azure can be read'
+                    : (clone.not_cloned || 0) === 0
+                      ? 'Caught up'
+                      : 'Azure has files not in S3'
+              }
+              tone={!clone || azureUnreadable || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
+            />
           </div>
-        )}
-        <CollapsibleTable label="Show collar table">
-          {collarPipelineRows.length === 0 ? (
-            <p className="text-sm text-gray-500">No collar rows yet.</p>
-          ) : (
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-2 pr-4 font-medium">Serial</th>
-                  <th className="py-2 pr-4 font-medium">App sessions</th>
-                  <th className="py-2 pr-4 font-medium">Azure files</th>
-                  <th className="py-2 pr-4 font-medium">S3 files</th>
-                  <th className="py-2 pr-4 font-medium">Matched</th>
-                  <th className="py-2 font-medium">Missing</th>
-                </tr>
-              </thead>
-              <tbody>
-                {collarPipelineRows.map((row) => (
-                  <tr key={row.collar_sn} className="border-b border-gray-100">
-                    <td className="py-2 pr-4 font-mono text-xs text-gray-900">{row.collar_sn}</td>
-                    <td className="py-2 pr-4 text-gray-700">{row.sessions}</td>
-                    <td className="py-2 pr-4 text-gray-700">
-                      {row.azure_files == null ? '—' : row.azure_files}
-                    </td>
-                    <td className="py-2 pr-4 text-gray-700">{row.s3_files}</td>
-                    <td className="py-2 pr-4 text-gray-700">{row.matched}</td>
-                    <td className="py-2 text-gray-500">{missingReasonText(row)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CollapsibleTable>
+          <CollarNextStep step={nextStep} />
+        </section>
+
+        <section className="xl:col-span-2 min-w-0 bg-white border border-gray-200 rounded-lg p-5">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
+          <p className="text-sm text-gray-500 mb-3">
+            Labeled sessions per collar and whether each found a collar log. Collars that are
+            behind come first.
+          </p>
+          <CollarCoverageList
+            rows={collarPipelineRows}
+            behindCount={behindCollarRows.length}
+            showAll={showAllCollars}
+            onToggleShowAll={() => setShowAllCollars((v) => !v)}
+          />
+        </section>
       </div>
 
       <div className="mb-2">
@@ -2478,15 +2515,29 @@ const LabelingDataDashboard = () => {
   );
 };
 
-function PipelineCard({ label, value, detail, state, tone = 'ok', action }) {
+function PipelineStage({ label, value, detail, state, tone = 'ok', action }) {
   const stateClass = tone === 'attention' ? 'text-amber-800' : 'text-emerald-800';
+  const dotClass = tone === 'attention' ? 'bg-amber-500' : 'bg-emerald-500';
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col">
-      <div className="text-gray-500 text-xs uppercase tracking-wide mb-2">{label}</div>
-      <div className="text-2xl font-semibold text-gray-900">{value}</div>
-      {detail ? <div className="text-xs text-gray-500 mt-1">{detail}</div> : null}
-      {state ? <div className={`text-xs mt-1 ${stateClass}`}>{state}</div> : null}
-      {action || null}
+    <div className="bg-white px-4 py-3 min-w-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-gray-500 text-xs uppercase tracking-wide">{label}</span>
+        {action || null}
+      </div>
+      <div className="flex items-baseline gap-x-2 flex-wrap mt-0.5">
+        <span className="text-xl font-semibold text-gray-900 tabular-nums">{value}</span>
+        {state ? (
+          <span className={`inline-flex items-center gap-1.5 text-xs ${stateClass}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+            {state}
+          </span>
+        ) : null}
+      </div>
+      {detail ? (
+        <div className="text-xs text-gray-500 truncate" title={detail}>
+          {detail}
+        </div>
+      ) : null}
     </div>
   );
 }
