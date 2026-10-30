@@ -1727,7 +1727,7 @@ function describeRange(range) {
 }
 
 /** Start and end date for every stat on the page, with quick presets. */
-function DateRangeBar({ range, onChange, building, ready }) {
+function DateRangeBar({ range, onChange, building, ready, error, onRetry }) {
   const today = localDayOffset(0);
   const presets = [
     { label: 'All time', start: '', end: '' },
@@ -1775,7 +1775,15 @@ function DateRangeBar({ range, onChange, building, ready }) {
         />
       </label>
       <span className="text-xs text-gray-500 ml-auto">
-        {building ? (
+        {error ? (
+          <span className="inline-flex items-center gap-2 text-amber-800">
+            <AlertCircle className="h-3 w-3" />
+            {error}
+            <button type="button" onClick={onRetry} className="underline hover:text-amber-950">
+              Retry
+            </button>
+          </span>
+        ) : building ? (
           <span className="inline-flex items-center gap-1.5">
             <RefreshCw className="h-3 w-3 animate-spin" />
             Building stats for {describeRange(range)}…
@@ -1792,6 +1800,7 @@ const LabelingDataDashboard = () => {
   const stored = useMemo(() => readStoredSummary(), []);
   const [range, setRange] = useState(() => readStoredRange());
   const rangeActive = Boolean(range.start || range.end);
+  const [rangeError, setRangeError] = useState(null);
   const rangeParams = useMemo(() => {
     const params = {};
     if (range.start) params.start = range.start;
@@ -1803,6 +1812,7 @@ const LabelingDataDashboard = () => {
   const changeRange = useCallback((next) => {
     const clean = { start: next.start || '', end: next.end || '' };
     rangeKeyRef.current = `${clean.start}..${clean.end}`;
+    setRangeError(null);
     writeStoredRange(clean);
     setRange(clean);
   }, []);
@@ -1906,7 +1916,14 @@ const LabelingDataDashboard = () => {
         params: { ...rangeParams, ...(refresh ? { refresh: 1 } : {}) },
       });
       if (requestKey !== rangeKeyRef.current) return true;
+      if (response.data.success && response.data.error) {
+        setRangeError(response.data.error);
+        setSummaryPending(false);
+        setStale(false);
+        return false;
+      }
       if (response.data.success) {
+        setRangeError(null);
         const pending = Boolean(response.data.pending);
         const nextData = response.data.data;
         const nextGenerated = response.data.generated_at || null;
@@ -2192,11 +2209,23 @@ const LabelingDataDashboard = () => {
       // A full scan can take several minutes. Keep the last charts up meanwhile.
       if (cancelled || attempts > 60) {
         clearInterval(id);
+        if (!cancelled && rangeActive) {
+          setSummaryPending(false);
+          setStale(false);
+          setRangeError('Stats for this range are still building on the server.');
+        }
         return;
       }
       try {
         const response = await axios.get('/api/labeling/summary', { params: rangeParams });
         if (!response.data?.success || cancelled) return;
+        if (response.data.error) {
+          setRangeError(response.data.error);
+          setSummaryPending(false);
+          setStale(false);
+          clearInterval(id);
+          return;
+        }
         const pending = Boolean(response.data.pending);
         setSummaryPending(pending);
         if (response.data.data && !pending && !response.data.stale) {
@@ -2735,8 +2764,13 @@ const LabelingDataDashboard = () => {
       <DateRangeBar
         range={range}
         onChange={changeRange}
-        building={!dataMatchesRange || (summaryPending && rangeActive)}
+        building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
         ready={dataMatchesRange}
+        error={rangeError}
+        onRetry={() => {
+          setRangeError(null);
+          fetchSummary({ refresh: true });
+        }}
       />
 
       {error && data ? (

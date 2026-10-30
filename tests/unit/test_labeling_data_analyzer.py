@@ -271,3 +271,38 @@ def test_in_date_window_is_inclusive_by_day():
     assert not in_date_window("2026-09-01T00:00:00", window)
     assert not in_date_window("", window)
     assert in_date_window("anything", None)
+
+
+def test_snapshot_payload_holds_listing_and_texts_read():
+    from backend.services.labeling_data_analyzer import (
+        SessionFileRef,
+        file_snapshot_payload,
+        files_from_snapshot,
+    )
+
+    class _Body:
+        def read(self):
+            return b"Durations:\n"
+
+    class _S3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            return {"Body": _Body()}
+
+    ref = SessionFileRef(
+        key="p/a.txt", user="a@x.com", filename="a.txt", timestamp="2026-08-02T10:00:00",
+        index=0, kind="durations", size=11,
+    )
+    analyzer = LabelingDataAnalyzer(bucket_name="snap-bucket", prefix="p/", s3_client=_S3())
+    analyzer.analyze(include_content=True, files=[ref])
+    payload = file_snapshot_payload(analyzer)
+    assert payload["texts"] == {"p/a.txt": "Durations:\n"}
+    assert files_from_snapshot(payload) == [ref]
+
+    # Served from overrides, the S3 client is never asked.
+    class _NoS3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            raise AssertionError("read S3")
+
+    again = LabelingDataAnalyzer(bucket_name="snap-bucket-2", prefix="p/", s3_client=_NoS3())
+    again.text_overrides = payload["texts"]
+    again.analyze(include_content=True, files=files_from_snapshot(payload))

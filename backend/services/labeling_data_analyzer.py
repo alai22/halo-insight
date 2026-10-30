@@ -22,7 +22,7 @@ import os
 import re
 import threading
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,6 +65,21 @@ def _text_cache_put(cache_key: Tuple[str, str, int], text: str) -> None:
         while _text_cache_chars > _TEXT_CACHE_MAX_CHARS and _TEXT_CACHE:
             _, evicted = _TEXT_CACHE.popitem(last=False)
             _text_cache_chars -= len(evicted)
+
+
+def file_snapshot_payload(analyzer: "LabelingDataAnalyzer") -> Dict[str, Any]:
+    """The file listing and texts behind the analyzer's last scan, for re-aggregating later."""
+    files = analyzer.last_files
+    return {
+        "bucket": analyzer.bucket_name,
+        "prefix": analyzer.prefix,
+        "files": [asdict(f) for f in files],
+        "texts": {f.key: analyzer.texts_read[f.key] for f in files if f.key in analyzer.texts_read},
+    }
+
+
+def files_from_snapshot(payload: Dict[str, Any]) -> List["SessionFileRef"]:
+    return [SessionFileRef(**row) for row in payload.get("files") or []]
 
 
 def in_date_window(timestamp: Optional[str], window: Optional[Tuple[str, str]]) -> bool:
@@ -362,6 +377,11 @@ class LabelingDataAnalyzer:
         self.prefix = (prefix or Config.LABELING_S3_PREFIX or "extracted-txt/").rstrip("/") + "/"
         self.region = region or Config.S3_REGION or "us-east-1"
         self.s3_client = s3_client or boto3.client("s3", region_name=self.region)
+        # Texts read by this analyzer, by key, so a full scan can be saved as a snapshot.
+        self.texts_read: Dict[str, str] = {}
+        # Texts to serve instead of reading S3, by key (from a snapshot).
+        self.text_overrides: Dict[str, str] = {}
+        self.last_files: List[SessionFileRef] = []
 
         if not self.bucket_name:
             raise ValueError("LABELING_S3_BUCKET_NAME is not configured")
@@ -395,6 +415,13 @@ class LabelingDataAnalyzer:
         return files
 
     def _get_text(self, key: str, size: Optional[int] = None) -> str:
+        if key in self.text_overrides:
+            return self.text_overrides[key]
+        text = self._read_text(key, size)
+        self.texts_read[key] = text
+        return text
+
+    def _read_text(self, key: str, size: Optional[int] = None) -> str:
         cache_key = (self.bucket_name or "", key, int(size)) if size is not None else None
         if cache_key is not None:
             cached = _text_cache_get(cache_key)
@@ -407,7 +434,10 @@ class LabelingDataAnalyzer:
         return text
 
     def analyze(
-        self, include_content: bool = True, window: Optional[Tuple[str, str]] = None
+        self,
+        include_content: bool = True,
+        window: Optional[Tuple[str, str]] = None,
+        files: Optional[List[SessionFileRef]] = None,
     ) -> Dict[str, Any]:
         """
         Inventory files by user and aggregate posture (activity) + GPS indoor/outdoor.
@@ -415,8 +445,11 @@ class LabelingDataAnalyzer:
         Top-level stats are posture/activity_session for backward compatibility.
         GPS indoor/outdoor stats are under the ``gps`` key.
         window: inclusive (start, end) YYYY-MM-DD; only sessions on those days count.
+        files: use this listing instead of listing S3 (e.g. from a file snapshot).
         """
-        files = [f for f in self.list_session_files() if in_date_window(f.timestamp, window)]
+        all_files = files if files is not None else self.list_session_files()
+        self.last_files = all_files
+        files = [f for f in all_files if in_date_window(f.timestamp, window)]
         activity_files = [f for f in files if f.family == "activity"]
         gps_files = [f for f in files if f.family == "gps"]
         activity = self._analyze_file_set(activity_files, include_content=include_content)

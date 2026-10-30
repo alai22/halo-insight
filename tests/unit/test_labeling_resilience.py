@@ -274,3 +274,126 @@ def test_collar_owners_save_and_load_round_trip(monkeypatch):
     loaded = client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]
     assert loaded["owners"] == [{"collar_sn": "26h4171887rt", "owner": "Tavia Soule", "model": "HC4"}]
     assert loaded["updated_at"]
+
+
+def test_window_summary_builds_from_file_snapshot_without_reading_s3(monkeypatch):
+    from backend.services.labeling_data_analyzer import SessionFileRef
+
+    ref = SessionFileRef(
+        key="extracted-txt/a@x.com/sn1/activity_session_2026-08-02T10-00-00_0_durations.txt",
+        user="a@x.com",
+        filename="activity_session_2026-08-02T10-00-00_0_durations.txt",
+        timestamp="2026-08-02T10:00:00",
+        index=0,
+        kind="durations",
+        family="activity",
+        size=5,
+        collar_sn="sn1",
+    )
+    old = SessionFileRef(**{**ref.__dict__, "key": "old", "timestamp": "2026-07-01T10:00:00"})
+    seen = {}
+
+    class _Analyzer:
+        def __init__(self):
+            self.text_overrides = {}
+
+        def analyze(self, include_content, window, files=None):
+            seen["files"] = [f.key for f in files]
+            seen["window"] = window
+            seen["texts"] = dict(self.text_overrides)
+            return {"sessions": []}
+
+    monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
+    monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {"totals": {}})
+    monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
+    monkeypatch.setitem(
+        routes._SNAPSHOT_MEMO,
+        "payload",
+        {"files": [ref.__dict__, old.__dict__], "texts": {ref.key: "Durations:\n"}},
+    )
+    routes._window_cache_clear()
+    routes._compute_window_summary(("2026-08-01", "2026-08-31"))
+
+    # The snapshot's listing and texts are handed over; the analyzer applies the window.
+    assert seen["files"] == [ref.key, "old"]
+    assert seen["window"] == ("2026-08-01", "2026-08-31")
+    assert seen["texts"] == {ref.key: "Durations:\n"}
+    with routes._WINDOW_CACHE_LOCK:
+        cached = routes._WINDOW_CACHE["2026-08-01..2026-08-31"]["payload"]
+    assert cached["window"] == {"start": "2026-08-01", "end": "2026-08-31"}
+    routes._window_cache_clear()
+
+
+def test_file_snapshot_round_trips_through_gzip(monkeypatch):
+    store = {}
+
+    class _Body:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    class _S3:
+        def put_object(self, Bucket, Key, Body, ContentType, ContentEncoding):  # noqa: N803
+            store[Key] = Body
+
+        def get_object(self, Bucket, Key):  # noqa: N803
+            return {"Body": _Body(store[Key])}
+
+    monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
+    monkeypatch.setattr(routes.Config, "LABELING_S3_BUCKET_NAME", "bucket")
+    monkeypatch.setitem(routes._SNAPSHOT_MEMO, "payload", None)
+    routes._persist_file_snapshot({"files": [{"key": "k"}], "texts": {"k": "t"}}, 123.0)
+    monkeypatch.setitem(routes._SNAPSHOT_MEMO, "payload", None)
+    loaded = routes._load_file_snapshot()
+    assert loaded == {"files": [{"key": "k"}], "texts": {"k": "t"}, "generated_at": 123.0}
+
+
+def test_failed_window_summary_is_reported_not_retried(monkeypatch):
+    started = []
+    monkeypatch.setattr(routes, "_maybe_start_window_refresh", lambda w: started.append(w) or True)
+    routes._window_cache_clear()
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_ERRORS["2026-08-01..9999-12-31"] = "boom"
+
+    body = _client().get(
+        "/api/labeling/summary?start=2026-08-01", headers={"X-Admin-Token": "t"}
+    ).get_json()
+    assert body["pending"] is False
+    assert "boom" in body["error"]
+    assert started == []
+
+    # refresh=1 clears the error and tries again.
+    body = _client().get(
+        "/api/labeling/summary?start=2026-08-01&refresh=1", headers={"X-Admin-Token": "t"}
+    ).get_json()
+    assert body["pending"] is True
+    assert started == [("2026-08-01", "9999-12-31")]
+    routes._window_cache_clear()
+
+
+def test_window_summary_without_snapshot_runs_one_full_scan_first(monkeypatch):
+    calls = []
+
+    def _full(_ttl):
+        calls.append("full")
+        routes._SNAPSHOT_MEMO["payload"] = {"files": [], "texts": {}}
+
+    class _Analyzer:
+        text_overrides = {}
+
+        def analyze(self, include_content, window, files=None):
+            calls.append(("window", files))
+            return {}
+
+    monkeypatch.setitem(routes._SNAPSHOT_MEMO, "payload", None)
+    monkeypatch.setattr(routes, "_load_file_snapshot", lambda: routes._SNAPSHOT_MEMO["payload"])
+    monkeypatch.setattr(routes, "_compute_summary", _full)
+    monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
+    monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {})
+    monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
+    routes._window_cache_clear()
+    routes._compute_window_summary(("2026-08-01", "2026-08-31"))
+    assert calls == ["full", ("window", [])]
+    routes._window_cache_clear()

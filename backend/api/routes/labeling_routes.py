@@ -4,6 +4,7 @@ API routes for Halo AI labeling: staging process + summaries.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import threading
@@ -16,7 +17,12 @@ import boto3
 from flask import Blueprint, jsonify, request
 
 from backend.api.middleware.auth import require_admin_auth
-from backend.services.labeling_data_analyzer import LabelingDataAnalyzer, format_ui_summary
+from backend.services.labeling_data_analyzer import (
+    LabelingDataAnalyzer,
+    file_snapshot_payload,
+    files_from_snapshot,
+    format_ui_summary,
+)
 from backend.services.labeling_collar_sync_service import (
     LabelingCollarSyncService,
     azure_configured,
@@ -228,7 +234,55 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     data = _attach_collar_coverage(format_ui_summary(raw), raw)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
+    _persist_file_snapshot(file_snapshot_payload(analyzer), entry["generated_at"])
     return entry
+
+
+# The file listing and texts behind the last full summary. A date range is built from
+# this instead of downloading every labeling file again, so it takes seconds and gives
+# exactly the all-time numbers cut to the range.
+_FILE_SNAPSHOT_KEY = "labeling-jobs/summary_files_v1.json.gz"
+_SNAPSHOT_LOCK = threading.Lock()
+_SNAPSHOT_MEMO: Dict[str, Any] = {"payload": None}
+
+
+def _persist_file_snapshot(payload: Dict[str, Any], generated_at: float) -> None:
+    payload = {**payload, "generated_at": generated_at}
+    with _SNAPSHOT_LOCK:
+        _SNAPSHOT_MEMO["payload"] = payload
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    if not bucket:
+        return
+    try:
+        _s3_client().put_object(
+            Bucket=bucket,
+            Key=_FILE_SNAPSHOT_KEY,
+            Body=gzip.compress(json.dumps(payload).encode("utf-8")),
+            ContentType="application/json",
+            ContentEncoding="gzip",
+        )
+        log_rss(logger, f"labeling file snapshot saved ({len(payload.get('files') or [])} files)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to persist labeling file snapshot: %s", exc)
+
+
+def _load_file_snapshot() -> Optional[Dict[str, Any]]:
+    with _SNAPSHOT_LOCK:
+        if _SNAPSHOT_MEMO["payload"] is not None:
+            return _SNAPSHOT_MEMO["payload"]
+    bucket = Config.LABELING_S3_BUCKET_NAME
+    if not bucket:
+        return None
+    try:
+        body = _s3_client().get_object(Bucket=bucket, Key=_FILE_SNAPSHOT_KEY)["Body"].read()
+        payload = json.loads(gzip.decompress(body).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        if "NoSuchKey" not in str(exc):
+            logger.warning("Failed to load labeling file snapshot: %s", exc)
+        return None
+    with _SNAPSHOT_LOCK:
+        _SNAPSHOT_MEMO["payload"] = payload
+    return payload
 
 
 # Date-range summaries, newest last. They come from the same files as the full summary,
@@ -236,6 +290,7 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
 _WINDOW_CACHE_LOCK = threading.Lock()
 _WINDOW_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _WINDOW_RUNNING: set = set()
+_WINDOW_ERRORS: Dict[str, str] = {}
 _WINDOW_CACHE_MAX = 4
 _OPEN_START = "0000-01-01"
 _OPEN_END = "9999-12-31"
@@ -266,10 +321,23 @@ def _window_label(window: Tuple[str, str]) -> Dict[str, Optional[str]]:
 def _window_cache_clear() -> None:
     with _WINDOW_CACHE_LOCK:
         _WINDOW_CACHE.clear()
+        _WINDOW_ERRORS.clear()
 
 
 def _compute_window_summary(window: Tuple[str, str]) -> None:
-    raw = LabelingDataAnalyzer().analyze(include_content=True, window=window)
+    snapshot = _load_file_snapshot()
+    if snapshot is None:
+        # No snapshot yet (first range since this was deployed). One full scan writes it,
+        # and refreshes the all-time summary on the way.
+        _compute_summary(_DEFAULT_CACHE_TTL_SEC)
+        snapshot = _load_file_snapshot() or {}
+    analyzer = LabelingDataAnalyzer()
+    analyzer.text_overrides = snapshot.get("texts") or {}
+    raw = analyzer.analyze(
+        include_content=True,
+        window=window,
+        files=files_from_snapshot(snapshot) if snapshot.get("files") is not None else None,
+    )
     data = _attach_collar_coverage(format_ui_summary(raw), raw, window)
     data["window"] = _window_label(window)
     key = f"{window[0]}..{window[1]}"
@@ -295,8 +363,10 @@ def _maybe_start_window_refresh(window: Tuple[str, str]) -> bool:
             log_rss(logger, f"labeling window summary {key} start")
             _compute_window_summary(window)
             log_rss(logger, f"labeling window summary {key} finish")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception("Labeling window summary %s failed", key)
+            with _WINDOW_CACHE_LOCK:
+                _WINDOW_ERRORS[key] = str(exc) or exc.__class__.__name__
         finally:
             with _WINDOW_CACHE_LOCK:
                 _WINDOW_RUNNING.discard(key)
@@ -309,6 +379,21 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
     key = f"{window[0]}..{window[1]}"
     with _WINDOW_CACHE_LOCK:
         entry = _WINDOW_CACHE.get(key)
+        running = key in _WINDOW_RUNNING
+        if refresh:
+            _WINDOW_ERRORS.pop(key, None)
+        error = _WINDOW_ERRORS.get(key)
+    if error and entry is None and not running:
+        # Report the failure instead of starting the same failing build on every poll.
+        return jsonify({
+            "success": True,
+            "pending": False,
+            "cached": False,
+            "stale": False,
+            "generated_at": None,
+            "data": None,
+            "error": f"Could not build stats for this date range: {error}",
+        })
     generated_iso = (
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry["generated_at"])) if entry else None
     )
