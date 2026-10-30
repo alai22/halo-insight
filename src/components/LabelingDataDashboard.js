@@ -584,7 +584,7 @@ function dailySourceRows(byDate, days) {
 }
 
 /** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
-function DailySourcesChart({ byDate }) {
+function DailySourcesChart({ byDate, selectedDay, onSelectDay }) {
   const [days, setDays] = useState(30);
   const rows = useMemo(() => dailySourceRows(byDate, days), [byDate, days]);
   if (!byDate) {
@@ -627,9 +627,19 @@ function DailySourcesChart({ byDate }) {
           ))}
         </div>
       </div>
-      <div style={{ height: 260 }}>
+      <div style={{ height: 260 }} className="[&_*:focus]:outline-none">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <BarChart
+            data={rows}
+            margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
+            onClick={(state) => {
+              // Recharts 3 passes activeIndex; 2.x passed activePayload.
+              const date =
+                state?.activePayload?.[0]?.payload?.date || rows[Number(state?.activeIndex)]?.date;
+              if (date) onSelectDay(date === selectedDay ? null : date);
+            }}
+            style={{ cursor: 'pointer' }}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
             <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
             <YAxis tick={{ fontSize: 12 }} allowDecimals={false} width={36} />
@@ -649,11 +659,285 @@ function DailySourcesChart({ byDate }) {
                 stackId="sources"
                 fill={series.color}
                 radius={index === DAILY_SOURCE_SERIES.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-              />
+              >
+                {rows.map((row) => (
+                  <Cell
+                    key={row.date}
+                    fillOpacity={selectedDay && row.date !== selectedDay ? 0.3 : 1}
+                  />
+                ))}
+              </Bar>
             ))}
           </BarChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+const MISMATCH_REASON_LABELS = {
+  no_blobs_for_sn: 'No logs on collar',
+  time_gap: 'No log near session time',
+  unknown_sn: 'No collar serial',
+  bad_timestamp: 'Bad timestamp',
+};
+
+const MISMATCH_PAGE = 50;
+
+/** Signed gap as "+6h 38m" (log after session) or "−2d 3h" (log before). */
+function formatGap(seconds) {
+  if (seconds == null) return null;
+  const sign = seconds < 0 ? '−' : '+';
+  const abs = Math.abs(seconds);
+  const d = Math.floor(abs / 86400);
+  const h = Math.floor((abs % 86400) / 3600);
+  const m = Math.floor((abs % 3600) / 60);
+  if (d > 0) return `${sign}${d}d ${h}h`;
+  if (h > 0) return `${sign}${h}h ${m}m`;
+  if (m > 0) return `${sign}${m}m`;
+  return `${sign}${Math.round(abs)}s`;
+}
+
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Top values of one field as chips; clicking one filters the list to it. */
+function MismatchTopChips({ label, rows, field, onPick }) {
+  const counts = new Map();
+  rows.forEach((row) => {
+    [].concat(row[field] || []).forEach((value) => counts.set(value, (counts.get(value) || 0) + 1));
+  });
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  if (!top.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-gray-500 w-16 shrink-0">{label}</span>
+      {top.map(([value, count]) => (
+        <button
+          key={value}
+          type="button"
+          onClick={() => onPick(value)}
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+        >
+          <span className={field === 'collar_sn' ? 'font-mono' : ''}>{value}</span>
+          <span className="text-gray-400 tabular-nums">{count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Every app session without a collar log and every collar log without a session, with the
+ * gap to the closest counterpart on the same collar. A steady gap across rows points to a
+ * clock or timezone offset rather than missing uploads.
+ */
+function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
+  const [tab, setTab] = useState('app');
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('newest');
+  const [limit, setLimit] = useState(MISMATCH_PAGE);
+  const sessions = coverage?.mismatched_sessions;
+  const logs = coverage?.collar_only_logs;
+
+  const filter = useCallback(
+    (rows, fields) => {
+      const q = query.trim().toLowerCase();
+      return rows.filter((row) => {
+        if (selectedDay && String(row.timestamp || '').slice(0, 10) !== selectedDay) return false;
+        if (!q) return true;
+        return fields.some((field) =>
+          [].concat(row[field] || []).some((value) => String(value).toLowerCase().includes(q))
+        );
+      });
+    },
+    [query, selectedDay]
+  );
+  const appRows = useMemo(
+    () => filter(sessions || [], ['email', 'collar_sn', 'family', 'reason']),
+    [filter, sessions]
+  );
+  const collarRows = useMemo(
+    () => filter(logs || [], ['collar_sn', 'filename', 'family', 'labelers']),
+    [filter, logs]
+  );
+  const rows = tab === 'app' ? appRows : collarRows;
+  const sorted = useMemo(() => {
+    const list = [...rows];
+    if (sort === 'longest') {
+      list.sort((a, b) => (b.duration_seconds || 0) - (a.duration_seconds || 0));
+    } else {
+      const dir = sort === 'oldest' ? 1 : -1;
+      list.sort((a, b) => dir * String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+    }
+    return list;
+  }, [rows, sort]);
+
+  if (!sessions || !logs) {
+    return <p className="text-sm text-gray-500">Refresh to load mismatch details.</p>;
+  }
+
+  const isApp = tab === 'app';
+  const gapField = isApp ? 'nearest_log_delta_sec' : 'nearest_session_delta_sec';
+  const gaps = rows.map((row) => row[gapField]).filter((v) => v != null);
+  const typicalGap = median(gaps);
+  const switchTab = (next) => {
+    setTab(next);
+    setLimit(MISMATCH_PAGE);
+    if (next === 'collar' && sort === 'longest') setSort('newest');
+  };
+  const pick = (value) => {
+    setQuery(value);
+    setLimit(MISMATCH_PAGE);
+  };
+  const tabClass = (active) =>
+    `px-3 py-1.5 text-sm border-b-2 -mb-px ${
+      active
+        ? 'border-gray-900 text-gray-900 font-medium'
+        : 'border-transparent text-gray-500 hover:text-gray-700'
+    }`;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-200">
+        <div className="flex">
+          <button type="button" className={tabClass(isApp)} onClick={() => switchTab('app')}>
+            App without collar{' '}
+            <span className="text-gray-400 tabular-nums">{appRows.length}</span>
+          </button>
+          <button type="button" className={tabClass(!isApp)} onClick={() => switchTab('collar')}>
+            Collar without app{' '}
+            <span className="text-gray-400 tabular-nums">{collarRows.length}</span>
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 pb-1.5">
+          {selectedDay ? (
+            <button
+              type="button"
+              onClick={onClearDay}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-900 text-white text-xs"
+              title="Clear day filter"
+            >
+              {selectedDay} ×
+            </button>
+          ) : (
+            <span className="text-xs text-gray-400">Click a day in the chart to filter</span>
+          )}
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => pick(e.target.value)}
+            placeholder="Filter by email, serial, type…"
+            className="w-56 px-2.5 py-1 text-sm border border-gray-300 rounded-md"
+          />
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="px-2 py-1 text-sm border border-gray-300 rounded-md bg-white"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            {isApp ? <option value="longest">Longest first</option> : null}
+          </select>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-sm text-gray-500 py-4">Nothing matches these filters.</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-1.5 py-3">
+            <MismatchTopChips
+              label="Labelers"
+              rows={rows}
+              field={isApp ? 'email' : 'labelers'}
+              onPick={pick}
+            />
+            <MismatchTopChips label="Collars" rows={rows} field="collar_sn" onPick={pick} />
+            {typicalGap != null ? (
+              <p className="text-xs text-gray-500">
+                Median gap to the closest {isApp ? 'collar log' : 'session'}:{' '}
+                <span className="font-medium text-gray-800 tabular-nums">
+                  {formatGap(typicalGap)}
+                </span>{' '}
+                ({gaps.length} of {rows.length} have one on the same collar). A steady gap across
+                rows usually means a clock or timezone offset, not missing data.
+              </p>
+            ) : null}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="py-2 pr-4 font-medium">{isApp ? 'Session' : 'Log'} time</th>
+                  <th className="py-2 pr-4 font-medium">
+                    {isApp ? 'Labeler' : 'Labelers on collar'}
+                  </th>
+                  <th className="py-2 pr-4 font-medium">Collar</th>
+                  <th className="py-2 pr-4 font-medium">Type</th>
+                  {isApp ? <th className="py-2 pr-4 font-medium">Duration</th> : null}
+                  {isApp ? <th className="py-2 pr-4 font-medium">Why</th> : null}
+                  <th
+                    className="py-2 font-medium text-right"
+                    title="Log time minus session start. Positive means the log came after."
+                  >
+                    {isApp ? 'Closest log' : 'Closest session'}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.slice(0, limit).map((row, i) => (
+                  <tr
+                    key={`${row.collar_sn}-${row.timestamp}-${row.email || row.filename}-${i}`}
+                    className="border-b border-gray-100 align-top"
+                  >
+                    <td className="py-1.5 pr-4 font-mono text-xs text-gray-700 whitespace-nowrap">
+                      {String(row.timestamp || '—').replace('T', ' ')}
+                    </td>
+                    <td className="py-1.5 pr-4 text-gray-900">
+                      {isApp ? row.email : (row.labelers || []).join(', ') || '—'}
+                    </td>
+                    <td className="py-1.5 pr-4 font-mono text-xs text-gray-700">{row.collar_sn}</td>
+                    <td className="py-1.5 pr-4 text-gray-600">{row.family}</td>
+                    {isApp ? (
+                      <td className="py-1.5 pr-4 text-gray-600 tabular-nums">
+                        {formatSecondsShort(row.duration_seconds)}
+                      </td>
+                    ) : null}
+                    {isApp ? (
+                      <td className="py-1.5 pr-4 text-gray-600">
+                        {MISMATCH_REASON_LABELS[row.reason] || row.reason}
+                      </td>
+                    ) : null}
+                    <td
+                      className="py-1.5 text-right tabular-nums text-gray-700 whitespace-nowrap"
+                      title={(isApp ? row.nearest_log : row.nearest_session_email) || undefined}
+                    >
+                      {formatGap(row[gapField]) || (
+                        <span className="text-gray-400">none on collar</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {sorted.length > limit ? (
+            <button
+              type="button"
+              onClick={() => setLimit((n) => n + MISMATCH_PAGE)}
+              className="mt-3 text-xs text-gray-500 hover:text-gray-700 underline decoration-dotted underline-offset-2"
+            >
+              Show {Math.min(MISMATCH_PAGE, sorted.length - limit)} more of{' '}
+              {sorted.length - limit}
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -887,6 +1171,7 @@ const LabelingDataDashboard = () => {
   const [statusFromCache, setStatusFromCache] = useState(Boolean(storedStatus));
   const [statusError, setStatusError] = useState(null);
   const [showAllCollars, setShowAllCollars] = useState(false);
+  const [mismatchDay, setMismatchDay] = useState(null);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -2132,9 +2417,20 @@ const LabelingDataDashboard = () => {
       <div className="mb-6">
         <ChartCard
           title="App and collar data by day"
-          description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used."
+          description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used. Click a day to list its mismatches below."
         >
-          <DailySourcesChart byDate={collarCoverage?.by_date} />
+          <DailySourcesChart
+            byDate={collarCoverage?.by_date}
+            selectedDay={mismatchDay}
+            onSelectDay={setMismatchDay}
+          />
+          <div className="mt-6">
+            <MismatchExplorer
+              coverage={collarCoverage}
+              selectedDay={mismatchDay}
+              onClearDay={() => setMismatchDay(null)}
+            />
+          </div>
         </ChartCard>
       </div>
 
@@ -2235,34 +2531,6 @@ const LabelingDataDashboard = () => {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <CollapsibleTable label="Show unmatched session samples">
-              {(collarCoverage?.unmatched_samples || []).length === 0 ? (
-                <p className="text-sm text-gray-500">All labeled sessions have a matching dump.</p>
-              ) : (
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500 border-b">
-                      <th className="py-2 pr-4 font-medium">Labeler</th>
-                      <th className="py-2 pr-4 font-medium">Family</th>
-                      <th className="py-2 pr-4 font-medium">Session</th>
-                      <th className="py-2 pr-4 font-medium">Collar SN</th>
-                      <th className="py-2 font-medium">Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(collarCoverage?.unmatched_samples || []).map((row, i) => (
-                      <tr key={`${row.email}-${row.timestamp}-${i}`} className="border-b border-gray-100">
-                        <td className="py-2 pr-4 text-gray-900">{row.email}</td>
-                        <td className="py-2 pr-4 text-gray-700">{row.family}</td>
-                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.timestamp}</td>
-                        <td className="py-2 pr-4 font-mono text-xs text-gray-700">{row.collar_sn}</td>
-                        <td className="py-2 text-gray-500">{row.reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </CollapsibleTable>
           </>
         )}
       </div>

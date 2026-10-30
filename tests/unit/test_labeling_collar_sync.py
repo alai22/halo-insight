@@ -122,6 +122,17 @@ def test_match_coverage_by_date_splits_matched_app_only_and_collar_only():
         {"date": "2026-04-21", "matched": 1, "app_only": 1, "collar_only": 0},
         {"date": "2026-04-22", "matched": 0, "app_only": 0, "collar_only": 1},
     ]
+    by_reason = {row["reason"]: row for row in coverage["mismatched_sessions"]}
+    assert set(by_reason) == {"time_gap", "unknown_sn", "bad_timestamp"}
+    # 12:00 session; closest sn1 log is 18:38:31 the same day.
+    assert by_reason["time_gap"]["nearest_log_delta_sec"] == 6 * 3600 + 38 * 60 + 31
+    assert by_reason["time_gap"]["email"] == "a@x.com"
+    assert "nearest_log_delta_sec" not in by_reason["unknown_sn"]
+    [log] = coverage["collar_only_logs"]
+    assert log["timestamp"] == "2026-04-22T09:00:00"
+    assert log["labelers"] == ["a@x.com"]
+    # Closest session is 2026-04-21T18:38:31, so the log is 14h21m29s later.
+    assert log["nearest_session_delta_sec"] == 14 * 3600 + 21 * 60 + 29
 
 
 def test_clone_snapshot_not_cloned_depends_on_check_vs_copy():

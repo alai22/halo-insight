@@ -219,6 +219,16 @@ def sessions_from_analyze(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _nearest(when: datetime, items: Iterable[Tuple[datetime, Any]]) -> Optional[Tuple[float, Any]]:
+    """Closest item to ``when`` as (signed seconds item minus when, item)."""
+    best: Optional[Tuple[float, Any]] = None
+    for at, item in items:
+        delta = (at - when).total_seconds()
+        if best is None or abs(delta) < abs(best[0]):
+            best = (delta, item)
+    return best
+
+
 def match_coverage(
     sessions: Iterable[Dict[str, Any]],
     ai_files: Iterable[CollarAiFile],
@@ -252,6 +262,22 @@ def match_coverage(
         lambda: {"matched": 0, "app_only": 0, "collar_only": 0}
     )
     used_files = set()
+    # Every unmatched session and its closest log on the same collar, for debugging on the dashboard.
+    # nearest_log_delta_sec is log time minus session start, so a clock offset shows one sign.
+    mismatched_sessions: List[Dict[str, Any]] = []
+    sessions_by_sn: Dict[str, List[Tuple[datetime, Dict[str, Any]]]] = defaultdict(list)
+    labelers_by_sn: Dict[str, set] = defaultdict(set)
+
+    def _mismatch(row: Dict[str, Any], start: Optional[datetime], sn: str, family: str) -> None:
+        if start is not None and sn != UNKNOWN_COLLAR_SN:
+            same = [(b.when, b) for b in by_sn_family.get((sn, family)) or []]
+            nearest = _nearest(start, same) or _nearest(
+                start, ((b.when, b) for b in files_list if b.collar_sn == sn)
+            )
+            if nearest is not None:
+                row["nearest_log_delta_sec"] = round(nearest[0], 1)
+                row["nearest_log"] = nearest[1].filename
+        mismatched_sessions.append(row)
 
     def _touch_sn(sn: str) -> Dict[str, Any]:
         return by_sn.setdefault(
@@ -309,6 +335,19 @@ def match_coverage(
             user["unknown_sn_sessions"] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
+            _mismatch(
+                {
+                    "email": email,
+                    "family": family,
+                    "timestamp": session.get("timestamp"),
+                    "collar_sn": UNKNOWN_COLLAR_SN,
+                    "duration_seconds": round(duration, 3),
+                    "reason": "unknown_sn",
+                },
+                None,
+                UNKNOWN_COLLAR_SN,
+                family,
+            )
             if len(unmatched) < UNMATCHED_SAMPLE_LIMIT:
                 unmatched.append(
                     {
@@ -331,6 +370,19 @@ def match_coverage(
             sn_row["bad_timestamp"] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
+            _mismatch(
+                {
+                    "email": email,
+                    "family": family,
+                    "timestamp": session.get("timestamp"),
+                    "collar_sn": sn,
+                    "duration_seconds": round(duration, 3),
+                    "reason": "bad_timestamp",
+                },
+                None,
+                sn,
+                family,
+            )
             if len(unmatched) < UNMATCHED_SAMPLE_LIMIT:
                 unmatched.append(
                     {
@@ -344,6 +396,8 @@ def match_coverage(
                 )
             continue
 
+        sessions_by_sn[sn].append((start, {"email": email, "family": family}))
+        labelers_by_sn[sn].add(email)
         window_dur = duration if duration > 0 else float(DEFAULT_WINDOW_DURATION_SEC)
         window_start = start - pad
         window_end = start + timedelta(seconds=window_dur) + pad
@@ -372,6 +426,19 @@ def match_coverage(
             sn_row[reason] += 1
             user["missing_sessions"] += 1
             user["missing_seconds"] += duration
+            _mismatch(
+                {
+                    "email": email,
+                    "family": family,
+                    "timestamp": session.get("timestamp"),
+                    "collar_sn": sn,
+                    "duration_seconds": round(duration, 3),
+                    "reason": reason,
+                },
+                start,
+                sn,
+                family,
+            )
             if len(unmatched) < UNMATCHED_SAMPLE_LIMIT:
                 unmatched.append(
                     {
@@ -395,10 +462,28 @@ def match_coverage(
         ),
         key=lambda u: (-u["matched_seconds"], u["email"]),
     )
+    collar_only_logs: List[Dict[str, Any]] = []
     for blob in files_list:
         _touch_sn(blob.collar_sn)["s3_files"] += 1
         if id(blob) not in used_files:
             by_date[blob.when.date().isoformat()]["collar_only"] += 1
+            on_sn = sessions_by_sn.get(blob.collar_sn) or []
+            nearest = _nearest(
+                blob.when, [(at, item) for at, item in on_sn if item["family"] == blob.family]
+            ) or _nearest(blob.when, on_sn)
+            collar_only_logs.append(
+                {
+                    "collar_sn": blob.collar_sn,
+                    "filename": blob.filename,
+                    "family": blob.family,
+                    "timestamp": blob.timestamp,
+                    "size": blob.size,
+                    "labelers": sorted(labelers_by_sn.get(blob.collar_sn) or []),
+                    # Log time minus closest session start, same sign as nearest_log_delta_sec.
+                    "nearest_session_delta_sec": round(-nearest[0], 1) if nearest else None,
+                    "nearest_session_email": nearest[1]["email"] if nearest else None,
+                }
+            )
     by_sn_out = sorted(
         by_sn.values(),
         key=lambda row: (-row["missing"], -row["sessions"], row["collar_sn"]),
@@ -420,6 +505,8 @@ def match_coverage(
         "by_sn": by_sn_out,
         # Matched and app_only count sessions; collar_only counts AI files no session used.
         "by_date": [{"date": d, **by_date[d]} for d in sorted(by_date)],
+        "mismatched_sessions": mismatched_sessions,
+        "collar_only_logs": collar_only_logs,
         "unmatched_samples": unmatched,
     }
 
