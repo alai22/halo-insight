@@ -262,6 +262,7 @@ def match_coverage(
         lambda: {"matched": 0, "app_only": 0, "collar_only": 0}
     )
     used_files = set()
+    sessions_by_file: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     # Every unmatched session and its closest log on the same collar, for debugging on the dashboard.
     # nearest_log_delta_sec is log time minus session start, so a clock offset shows one sign.
     mismatched_sessions: List[Dict[str, Any]] = []
@@ -406,6 +407,10 @@ def match_coverage(
         day = by_date[start.date().isoformat()]
         if hits:
             used_files.update(id(b) for b in hits)
+            for blob in hits:
+                sessions_by_file[id(blob)].append(
+                    {"email": email, "timestamp": session.get("timestamp"), "family": family}
+                )
             day["matched"] += 1
             totals["matched"] += 1
             totals["matched_seconds"] += duration
@@ -507,6 +512,18 @@ def match_coverage(
         "by_date": [{"date": d, **by_date[d]} for d in sorted(by_date)],
         "mismatched_sessions": mismatched_sessions,
         "collar_only_logs": collar_only_logs,
+        # Every mirrored file with the sessions it matched, for browsing collar-raw/ per collar.
+        "collar_files": [
+            {
+                "collar_sn": blob.collar_sn,
+                "filename": blob.filename,
+                "family": blob.family,
+                "timestamp": blob.timestamp,
+                "size": blob.size,
+                "sessions": sessions_by_file.get(id(blob), []),
+            }
+            for blob in sorted(files_list, key=lambda b: (b.collar_sn, b.when))
+        ],
         "unmatched_samples": unmatched,
     }
 

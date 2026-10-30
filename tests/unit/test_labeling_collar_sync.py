@@ -133,6 +133,12 @@ def test_match_coverage_by_date_splits_matched_app_only_and_collar_only():
     assert log["labelers"] == ["a@x.com"]
     # Closest session is 2026-04-21T18:38:31, so the log is 14h21m29s later.
     assert log["nearest_session_delta_sec"] == 14 * 3600 + 21 * 60 + 29
+    used, unused = coverage["collar_files"]
+    assert used["timestamp"] == "2026-04-21T18:38:31"
+    assert used["sessions"] == [
+        {"email": "a@x.com", "timestamp": "2026-04-21T18:38:31", "family": "activity"}
+    ]
+    assert unused["sessions"] == []
 
 
 def test_clone_snapshot_not_cloned_depends_on_check_vs_copy():

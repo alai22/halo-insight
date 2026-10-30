@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -453,7 +453,7 @@ function CoverageBreakdown({ totals, reasons }) {
 const COLLAR_LIST_LIMIT = 15;
 
 /** One row per collar: sessions split by match reason, plus Azure and S3 file counts. */
-function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll }) {
+function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpenCollar }) {
   if (rows.length === 0) {
     return <p className="text-sm text-gray-500">No labeled collars in the summary yet.</p>;
   }
@@ -479,7 +479,17 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll }) {
               return (
                 <li
                   key={row.collar_sn}
-                  className="grid grid-cols-[9rem_1fr] sm:grid-cols-[9rem_1fr_7rem_9rem] gap-x-3 gap-y-1 items-center py-1.5 text-sm"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onOpenCollar(row.collar_sn)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpenCollar(row.collar_sn);
+                    }
+                  }}
+                  title="Show this collar's files in S3"
+                  className="grid grid-cols-[9rem_1fr] sm:grid-cols-[9rem_1fr_7rem_9rem] gap-x-3 gap-y-1 items-center py-1.5 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded"
                 >
                   <span className="font-mono text-xs text-gray-900 truncate" title={row.collar_sn}>
                     {row.collar_sn}
@@ -942,6 +952,207 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay }) {
   );
 }
 
+const COLLAR_FILES_PAGE = 100;
+
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Side panel listing the AI logs mirrored into collar-raw/, per collar, with the sessions each one matched. */
+function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClose }) {
+  const [usage, setUsage] = useState('all');
+  const [family, setFamily] = useState('all');
+  const [limit, setLimit] = useState(COLLAR_FILES_PAGE);
+  const files = coverage?.collar_files;
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => setLimit(COLLAR_FILES_PAGE), [collar, usage, family]);
+
+  const countsBySn = useMemo(() => {
+    const counts = new Map();
+    (files || []).forEach((f) => counts.set(f.collar_sn, (counts.get(f.collar_sn) || 0) + 1));
+    return counts;
+  }, [files]);
+  const onCollar = useMemo(
+    () => (files || []).filter((f) => !collar || f.collar_sn === collar),
+    [files, collar]
+  );
+  const visible = useMemo(
+    () =>
+      onCollar
+        .filter((f) => usage === 'all' || (usage === 'used') === (f.sessions.length > 0))
+        .filter((f) => family === 'all' || f.family === family)
+        .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))),
+    [onCollar, usage, family]
+  );
+  const used = onCollar.filter((f) => f.sessions.length > 0).length;
+  const row = collar ? collarRows.find((r) => r.collar_sn === collar) : null;
+  const notCopied =
+    row && row.azure_files != null ? Math.max(0, row.azure_files - row.s3_files) : 0;
+  const serials = [...new Set([...countsBySn.keys(), ...collarRows.map((r) => r.collar_sn)])]
+    .filter((sn) => sn !== '_unknown')
+    .sort();
+  const prefix = coverage?.collar_prefix || 'collar-raw/';
+  const segment = (value, current, set, label) => (
+    <button
+      key={value}
+      type="button"
+      onClick={() => set(value)}
+      className={`px-2.5 py-1 ${
+        current === value ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+      }`}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Collar files in S3">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative h-full w-full max-w-3xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
+          <div className="min-w-0">
+            <h3 className="text-lg font-semibold text-gray-900">Collar files in S3</h3>
+            <p className="text-xs text-gray-500 font-mono truncate">
+              {prefix}
+              {collar || '<serial>'}/ai/
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded hover:bg-gray-100 text-gray-500"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-100 flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={collar}
+              onChange={(e) => onChangeCollar(e.target.value)}
+              className="px-2 py-1 text-sm border border-gray-300 rounded-md bg-white font-mono"
+            >
+              <option value="">All collars ({(files || []).length})</option>
+              {serials.map((sn) => (
+                <option key={sn} value={sn}>
+                  {sn} ({countsBySn.get(sn) || 0})
+                </option>
+              ))}
+            </select>
+            <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+              {segment('all', usage, setUsage, 'All')}
+              {segment('used', usage, setUsage, 'Used by a session')}
+              {segment('unused', usage, setUsage, 'Unused')}
+            </div>
+            <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+              {segment('all', family, setFamily, 'Any type')}
+              {segment('activity', family, setFamily, 'Activity')}
+              {segment('gps', family, setFamily, 'GPS')}
+            </div>
+          </div>
+          <p className="text-xs text-gray-500">
+            {onCollar.length} file{onCollar.length === 1 ? '' : 's'} · {used} used by a session ·{' '}
+            {onCollar.length - used} unused
+            {notCopied > 0 ? (
+              <span className="text-amber-800">
+                {' '}
+                · {notCopied} more in Azure not copied yet
+              </span>
+            ) : null}
+            {row && row.azure_files == null ? ' · Azure not checked for this collar' : ''}
+          </p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5">
+          {!files ? (
+            <p className="text-sm text-gray-500 py-4">Refresh to load collar files.</p>
+          ) : visible.length === 0 ? (
+            <p className="text-sm text-gray-500 py-4">
+              {onCollar.length === 0 ? 'No files in S3 for this collar.' : 'No files match these filters.'}
+            </p>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="py-2 pr-4 font-medium">Log time</th>
+                  {!collar ? <th className="py-2 pr-4 font-medium">Collar</th> : null}
+                  <th className="py-2 pr-4 font-medium">Type</th>
+                  <th className="py-2 pr-4 font-medium text-right">Size</th>
+                  <th className="py-2 font-medium">Used by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.slice(0, limit).map((f) => (
+                  <tr key={`${f.collar_sn}/${f.filename}`} className="border-b border-gray-100 align-top">
+                    <td
+                      className="py-1.5 pr-4 font-mono text-xs text-gray-700 whitespace-nowrap"
+                      title={f.filename}
+                    >
+                      {String(f.timestamp).replace('T', ' ')}
+                    </td>
+                    {!collar ? (
+                      <td className="py-1.5 pr-4 font-mono text-xs">
+                        <button
+                          type="button"
+                          onClick={() => onChangeCollar(f.collar_sn)}
+                          className="text-gray-700 hover:text-blue-700 hover:underline"
+                        >
+                          {f.collar_sn}
+                        </button>
+                      </td>
+                    ) : null}
+                    <td className="py-1.5 pr-4 text-gray-600">{f.family}</td>
+                    <td className="py-1.5 pr-4 text-gray-600 text-right tabular-nums whitespace-nowrap">
+                      {formatFileSize(f.size)}
+                    </td>
+                    <td className="py-1.5 text-gray-700">
+                      {f.sessions.length === 0 ? (
+                        <span className="text-gray-400">Unused</span>
+                      ) : (
+                        f.sessions.map((sess) => (
+                          <div key={`${sess.email}-${sess.timestamp}`} className="text-xs">
+                            {sess.email}{' '}
+                            <span className="font-mono text-gray-400">
+                              {String(sess.timestamp).replace('T', ' ')}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {visible.length > limit ? (
+            <button
+              type="button"
+              onClick={() => setLimit((n) => n + COLLAR_FILES_PAGE)}
+              className="my-3 text-xs text-gray-500 hover:text-gray-700 underline decoration-dotted underline-offset-2"
+            >
+              Show {Math.min(COLLAR_FILES_PAGE, visible.length - limit)} more of{' '}
+              {visible.length - limit}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function dogAxisLabel(dog) {
   const name = (dog?.name || '').trim() || 'Unnamed';
   const sn = dog?.collar_sn;
@@ -1172,6 +1383,8 @@ const LabelingDataDashboard = () => {
   const [statusError, setStatusError] = useState(null);
   const [showAllCollars, setShowAllCollars] = useState(false);
   const [mismatchDay, setMismatchDay] = useState(null);
+  // null = closed, '' = all collars, otherwise one serial.
+  const [filesCollar, setFilesCollar] = useState(null);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -2394,6 +2607,8 @@ const LabelingDataDashboard = () => {
                       : 'Azure has files not in S3'
               }
               tone={!clone || azureUnreadable || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
+              onOpen={() => setFilesCollar('')}
+              openLabel="Browse collar files in S3"
             />
           </div>
           <CollarNextStep step={nextStep} />
@@ -2410,9 +2625,20 @@ const LabelingDataDashboard = () => {
             behindCount={behindCollarRows.length}
             showAll={showAllCollars}
             onToggleShowAll={() => setShowAllCollars((v) => !v)}
+            onOpenCollar={setFilesCollar}
           />
         </section>
       </div>
+
+      {filesCollar !== null ? (
+        <CollarFilesDrawer
+          coverage={collarCoverage}
+          collarRows={collarPipelineRows}
+          collar={filesCollar}
+          onChangeCollar={setFilesCollar}
+          onClose={() => setFilesCollar(null)}
+        />
+      ) : null}
 
       <div className="mb-6">
         <ChartCard
@@ -2991,7 +3217,7 @@ const LabelingDataDashboard = () => {
   );
 };
 
-function PipelineStage({ label, value, detail, state, tone = 'ok', action }) {
+function PipelineStage({ label, value, detail, state, tone = 'ok', action, onOpen, openLabel }) {
   const stateClass = tone === 'attention' ? 'text-amber-800' : 'text-emerald-800';
   const dotClass = tone === 'attention' ? 'bg-amber-500' : 'bg-emerald-500';
   return (
@@ -3001,7 +3227,19 @@ function PipelineStage({ label, value, detail, state, tone = 'ok', action }) {
         {action || null}
       </div>
       <div className="flex items-baseline gap-x-2 flex-wrap mt-0.5">
-        <span className="text-xl font-semibold text-gray-900 tabular-nums">{value}</span>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="inline-flex items-center gap-0.5 text-xl font-semibold text-gray-900 tabular-nums hover:text-blue-700"
+            title={openLabel}
+          >
+            {value}
+            <ChevronRight className="h-4 w-4 text-gray-400" />
+          </button>
+        ) : (
+          <span className="text-xl font-semibold text-gray-900 tabular-nums">{value}</span>
+        )}
         {state ? (
           <span className={`inline-flex items-center gap-1.5 text-xs ${stateClass}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
