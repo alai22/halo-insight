@@ -66,6 +66,7 @@ def test_match_coverage_splits_missing_reasons_by_sn():
     assert coverage["totals"]["missing"] == 3
     assert coverage["missing_reasons"] == {
         "no_blobs_for_sn": 1,
+        "no_family_logs": 0,
         "time_gap": 1,
         "unknown_sn": 1,
         "bad_timestamp": 0,
@@ -202,3 +203,29 @@ def test_match_coverage_window_counts_only_files_inside_it():
     assert coverage["totals"]["ai_files"] == 1
     assert [f["timestamp"] for f in coverage["collar_files"]] == ["2026-04-22T00:01:00"]
     assert coverage["collar_only_logs"] == []
+
+
+def test_match_coverage_other_type_only_is_its_own_reason():
+    # The collar only has a GPS log; the activity session should not be told
+    # "no logs on collar", nor get a closest-log gap measured to the GPS file.
+    files = [_file("sn1", "gps", datetime(2026, 10, 29, 12, 11, 0))]
+    sessions = [
+        {
+            "user": "b@x.com",
+            "collar_sn": "sn1",
+            "family": "activity",
+            "timestamp": "2026-10-29T12:12:54",
+            "duration_seconds": 22,
+        }
+    ]
+    coverage = match_coverage(sessions, files, pad_sec=300)
+    assert coverage["missing_reasons"]["no_family_logs"] == 1
+    assert coverage["missing_reasons"]["no_blobs_for_sn"] == 0
+    [row] = coverage["mismatched_sessions"]
+    assert row["reason"] == "no_family_logs"
+    assert "nearest_log_delta_sec" not in row
+    by_sn = {r["collar_sn"]: r for r in coverage["by_sn"]}
+    assert by_sn["sn1"]["no_family_logs"] == 1
+    # The unused GPS log has no GPS session to point at either.
+    [log] = coverage["collar_only_logs"]
+    assert log["nearest_session_delta_sec"] is None

@@ -260,6 +260,7 @@ def match_coverage(
     by_sn: Dict[str, Dict[str, Any]] = {}
     missing_reasons = {
         "no_blobs_for_sn": 0,
+        "no_family_logs": 0,
         "time_gap": 0,
         "unknown_sn": 0,
         "bad_timestamp": 0,
@@ -278,10 +279,9 @@ def match_coverage(
 
     def _mismatch(row: Dict[str, Any], start: Optional[datetime], sn: str, family: str) -> None:
         if start is not None and sn != UNKNOWN_COLLAR_SN:
+            # Same type only: a GPS log is no near-miss for an activity session.
             same = [(b.when, b) for b in by_sn_family.get((sn, family)) or []]
-            nearest = _nearest(start, same) or _nearest(
-                start, ((b.when, b) for b in files_list if b.collar_sn == sn)
-            )
+            nearest = _nearest(start, same)
             if nearest is not None:
                 row["nearest_log_delta_sec"] = round(nearest[0], 1)
                 row["nearest_log"] = nearest[1].filename
@@ -297,6 +297,7 @@ def match_coverage(
                 "missing": 0,
                 "s3_files": 0,
                 "no_blobs_for_sn": 0,
+                "no_family_logs": 0,
                 "time_gap": 0,
                 "unknown_sn": 0,
                 "bad_timestamp": 0,
@@ -426,10 +427,12 @@ def match_coverage(
             user["matched_seconds"] += duration
         else:
             day["app_only"] += 1
-            reason = "no_blobs_for_sn" if not candidates else "time_gap"
-            # candidates empty for family could still have other family files
-            other = any(b.collar_sn == sn for b in files_list)
-            if not other:
+            if candidates:
+                reason = "time_gap"
+            elif any(b.collar_sn == sn for b in files_list):
+                # The collar has logs, but only of the other type (e.g. GPS for activity).
+                reason = "no_family_logs"
+            else:
                 reason = "no_blobs_for_sn"
             totals["missing"] += 1
             totals["missing_seconds"] += duration
@@ -483,7 +486,7 @@ def match_coverage(
             on_sn = sessions_by_sn.get(blob.collar_sn) or []
             nearest = _nearest(
                 blob.when, [(at, item) for at, item in on_sn if item["family"] == blob.family]
-            ) or _nearest(blob.when, on_sn)
+            )
             collar_only_logs.append(
                 {
                     "collar_sn": blob.collar_sn,

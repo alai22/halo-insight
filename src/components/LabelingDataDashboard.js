@@ -249,6 +249,7 @@ function LabelerVarietyChart({ data, height, colorMap, emptyText }) {
 function missingReasonText(row) {
   const parts = [];
   if (row?.no_blobs_for_sn) parts.push(`${row.no_blobs_for_sn} not in S3`);
+  if (row?.no_family_logs) parts.push(`${row.no_family_logs} other log type only`);
   if (row?.time_gap) parts.push(`${row.time_gap} time gap`);
   if (row?.unknown_sn) parts.push(`${row.unknown_sn} unknown serial`);
   if (row?.bad_timestamp) parts.push(`${row.bad_timestamp} bad timestamp`);
@@ -388,6 +389,11 @@ function collarNextStep({
         `${reasons.no_blobs_for_sn} are on collars with no logs in Azure. Those collars have not uploaded ai/ logs yet`
       );
     }
+    if (reasons.no_family_logs) {
+      parts.push(
+        `${reasons.no_family_logs} are on collars whose logs are only the other type, such as GPS logs for an activity session`
+      );
+    }
     if (reasons.time_gap) {
       parts.push(
         `${reasons.time_gap} are on collars that uploaded logs, but none from around the session time`
@@ -453,6 +459,7 @@ function CollarNextStep({ step }) {
 const COVERAGE_SEGMENTS = [
   { key: 'matched', label: 'Matched', color: '#34A853' },
   { key: 'no_blobs_for_sn', label: 'No collar log in S3', color: '#EA4335' },
+  { key: 'no_family_logs', label: 'Other log type only', color: '#A142F4' },
   { key: 'time_gap', label: 'Collar log, wrong time', color: '#FBBC04' },
   { key: 'unknown_sn', label: 'Unknown serial', color: '#9AA0A6' },
   { key: 'bad_timestamp', label: 'Bad timestamp', color: '#5F6368' },
@@ -463,6 +470,7 @@ function CoverageBreakdown({ totals, reasons }) {
   const counts = {
     matched: Number(totals.matched) || 0,
     no_blobs_for_sn: Number(reasons.no_blobs_for_sn) || 0,
+    no_family_logs: Number(reasons.no_family_logs) || 0,
     time_gap: Number(reasons.time_gap) || 0,
     unknown_sn: Number(reasons.unknown_sn) || 0,
     bad_timestamp: Number(reasons.bad_timestamp) || 0,
@@ -764,6 +772,20 @@ const MISMATCH_REASON_LABELS = {
   bad_timestamp: 'Bad timestamp',
 };
 
+const FAMILY_NAMES = { activity: 'activity', gps: 'GPS' };
+
+function familyName(family) {
+  return FAMILY_NAMES[family] || family || 'matching';
+}
+
+function mismatchReasonLabel(row) {
+  if (row.reason === 'no_family_logs') {
+    const other = row.family === 'gps' ? 'activity' : 'GPS';
+    return `No ${familyName(row.family)} logs on collar (${other} only)`;
+  }
+  return MISMATCH_REASON_LABELS[row.reason] || row.reason;
+}
+
 const MISMATCH_PAGE = 50;
 
 /** Signed gap as "+6h 38m" (log after session) or "−2d 3h" (log before). */
@@ -974,7 +996,7 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, sync
                   {isApp ? <th className="py-2 pr-4 font-medium">Why</th> : null}
                   <th
                     className="py-2 font-medium text-right"
-                    title="Log time minus session start. Positive means the log came after."
+                    title="Same-type log or session on the same collar. Log time minus session start; positive means the log came after."
                   >
                     {isApp ? 'Closest log' : 'Closest session'}
                   </th>
@@ -1001,7 +1023,7 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, sync
                     ) : null}
                     {isApp ? (
                       <td className="py-1.5 pr-4 text-gray-600">
-                        {MISMATCH_REASON_LABELS[row.reason] || row.reason}
+                        {mismatchReasonLabel(row)}
                         {waitingOnSyncReason(row, lastAzureMs, syncedSns) ? (
                           <span className="ml-1.5 inline-block px-1.5 rounded bg-amber-100 text-amber-900 text-xs">
                             {WAITING_ON_SYNC_LABELS[waitingOnSyncReason(row, lastAzureMs, syncedSns)]}
@@ -1014,7 +1036,9 @@ function MismatchExplorer({ coverage, selectedDay, onClearDay, lastAzureMs, sync
                       title={(isApp ? row.nearest_log : row.nearest_session_email) || undefined}
                     >
                       {formatGap(row[gapField]) || (
-                        <span className="text-gray-400">none on collar</span>
+                        <span className="text-gray-400">
+                          no {familyName(row.family)} {isApp ? 'logs' : 'sessions'}
+                        </span>
                       )}
                     </td>
                   </tr>
@@ -2298,6 +2322,7 @@ const LabelingDataDashboard = () => {
         s3_files: s3Files,
         azure_files: azureFiles,
         no_blobs_for_sn: Number(base?.no_blobs_for_sn) || 0,
+        no_family_logs: Number(base?.no_family_logs) || 0,
         time_gap: Number(base?.time_gap) || 0,
         unknown_sn: Number(base?.unknown_sn) || 0,
         bad_timestamp: Number(base?.bad_timestamp) || 0,
