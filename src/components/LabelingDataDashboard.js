@@ -295,6 +295,19 @@ const WAITING_ON_SYNC_LABELS = {
   never_synced: 'Collar never synced',
 };
 
+/** Why sessions have no collar log, worded for the next-step breakdown. Colors come from COVERAGE_SEGMENTS. */
+const MISSING_REASON_ROWS = [
+  { key: 'time_gap', label: 'Logs, but none near the session time' },
+  {
+    key: 'no_family_logs',
+    label: 'Only the other log type',
+    hint: 'For example GPS logs for an activity session',
+  },
+  { key: 'no_blobs_for_sn', label: 'No logs from the collar yet', hint: 'It has not uploaded ai/ logs' },
+  { key: 'unknown_sn', label: 'No collar serial in the app data' },
+  { key: 'bad_timestamp', label: 'Unreadable session time' },
+];
+
 /** Decide the one thing to do next for collar data, from server state. */
 function collarNextStep({
   statusLoaded,
@@ -383,28 +396,14 @@ function collarNextStep({
   }
   const missing = Number(totals.missing) || 0;
   if (missing > 0) {
-    const parts = [];
-    if (reasons.no_blobs_for_sn) {
-      parts.push(
-        `${reasons.no_blobs_for_sn} are on collars with no logs in Azure. Those collars have not uploaded ai/ logs yet`
-      );
-    }
-    if (reasons.no_family_logs) {
-      parts.push(
-        `${reasons.no_family_logs} are on collars whose logs are only the other type, such as GPS logs for an activity session`
-      );
-    }
-    if (reasons.time_gap) {
-      parts.push(
-        `${reasons.time_gap} are on collars that uploaded logs, but none from around the session time`
-      );
-    }
-    if (reasons.unknown_sn) parts.push(`${reasons.unknown_sn} have no collar serial in the app data`);
-    if (reasons.bad_timestamp) parts.push(`${reasons.bad_timestamp} have an unreadable session time`);
     return {
       tone: 'info',
-      title: `Azure is copied. ${missing} session${missing === 1 ? '' : 's'} still have no collar log`,
-      body: `${parts.join('. ')}. Syncing again will not change these until the collars upload more logs.`,
+      title: `${missing} session${missing === 1 ? '' : 's'} still have no collar log`,
+      breakdown: MISSING_REASON_ROWS.map((row) => ({ ...row, count: Number(reasons[row.key]) || 0 }))
+        .filter((row) => row.count > 0)
+        .sort((a, b) => b.count - a.count),
+      footnote:
+        'Azure is copied, so syncing again will not change these until the collars upload more logs.',
     };
   }
   return {
@@ -421,7 +420,7 @@ const NEXT_STEP_STYLES = {
   ok: 'bg-emerald-50 border-emerald-200 text-emerald-900',
 };
 
-function CollarNextStep({ step }) {
+function CollarNextStep({ step, onPickReason }) {
   if (step.loading) {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-500 px-1">
@@ -435,10 +434,11 @@ function CollarNextStep({ step }) {
     <div className={`border rounded-lg px-4 py-3 ${NEXT_STEP_STYLES[step.tone]}`}>
       <div className="flex items-start gap-3">
         <Icon className="h-4 w-4 flex-shrink-0 mt-0.5" />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-xs font-medium uppercase tracking-wide opacity-70">Next step</div>
           <div className="text-sm font-semibold mt-0.5">{step.title}</div>
           {step.body ? <p className="text-sm mt-1">{step.body}</p> : null}
+          {step.breakdown?.length ? <MissingReasonBreakdown step={step} onPick={onPickReason} /> : null}
           {step.error ? (
             <div className="mt-2 text-xs">
               <div className="opacity-70 mb-1">
@@ -452,6 +452,45 @@ function CollarNextStep({ step }) {
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Unmatched sessions split by reason: one bar, then a clickable card per reason. */
+function MissingReasonBreakdown({ step, onPick }) {
+  const total = step.breakdown.reduce((sum, row) => sum + row.count, 0);
+  const colorOf = (key) => COVERAGE_SEGMENTS.find((seg) => seg.key === key)?.color || '#9AA0A6';
+  return (
+    <div className="mt-2">
+      <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/60">
+        {step.breakdown.map((row) => (
+          <div
+            key={row.key}
+            style={{ width: `${(row.count / total) * 100}%`, backgroundColor: colorOf(row.key) }}
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-3">
+        {step.breakdown.map((row) => (
+          <button
+            key={row.key}
+            type="button"
+            onClick={() => onPick?.(row.key)}
+            className="text-left rounded-md bg-white/70 hover:bg-white border border-black/5 px-3 py-2"
+            title="List these sessions"
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="h-2 w-2 rounded-full self-center" style={{ backgroundColor: colorOf(row.key) }} />
+              <span className="text-lg font-semibold tabular-nums">{row.count}</span>
+              <span className="text-sm">{row.label}</span>
+            </div>
+            {row.hint ? <div className="text-xs opacity-70 ml-4">{row.hint}</div> : null}
+          </button>
+        ))}
+      </div>
+      {step.footnote ? (
+        <p className="text-xs opacity-80 mt-2">{step.footnote} Click a reason to list its sessions.</p>
+      ) : null}
     </div>
   );
 }
@@ -1034,6 +1073,8 @@ function MismatchExplorer({
   lastAzureMs,
   syncedSns,
   collarInfo,
+  reason,
+  onClearReason,
 }) {
   const [tab, setTab] = useState('app');
   const [query, setQuery] = useState('');
@@ -1056,9 +1097,16 @@ function MismatchExplorer({
     [query, selectedDay]
   );
   const appRows = useMemo(
-    () => filter(sessions || [], ['email', 'collar_sn', 'family', 'reason']),
-    [filter, sessions]
+    () =>
+      filter(sessions || [], ['email', 'collar_sn', 'family', 'reason']).filter(
+        (row) => !reason || row.reason === reason
+      ),
+    [filter, sessions, reason]
   );
+  // A reason picked from the next-step breakdown is about app sessions.
+  useEffect(() => {
+    if (reason) setTab('app');
+  }, [reason]);
   const collarRows = useMemo(
     () => filter(logs || [], ['collar_sn', 'filename', 'family', 'labelers']),
     [filter, logs]
@@ -1116,6 +1164,16 @@ function MismatchExplorer({
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2 pb-1.5">
+          {reason ? (
+            <button
+              type="button"
+              onClick={onClearReason}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-900 text-white text-xs"
+              title="Clear reason filter"
+            >
+              {MISSING_REASON_ROWS.find((row) => row.key === reason)?.label || reason} ×
+            </button>
+          ) : null}
           {selectedDay ? (
             <button
               type="button"
@@ -1786,7 +1844,7 @@ function DateRangeBar({ range, onChange, building, ready, error, onRetry }) {
         ) : building ? (
           <span className="inline-flex items-center gap-1.5">
             <RefreshCw className="h-3 w-3 animate-spin" />
-            Building stats for {describeRange(range)}…
+            Building stats for this range ({describeRange(range)})…
           </span>
         ) : ready && (range.start || range.end) ? (
           `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
@@ -1824,6 +1882,7 @@ const LabelingDataDashboard = () => {
   const [statusError, setStatusError] = useState(null);
   const [showAllCollars, setShowAllCollars] = useState(false);
   const [mismatchDay, setMismatchDay] = useState(null);
+  const [mismatchReason, setMismatchReason] = useState(null);
   const mismatchRef = useRef(null);
   // null = closed, '' = all collars, otherwise one serial.
   const [filesCollar, setFilesCollar] = useState(null);
@@ -3046,7 +3105,7 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-10 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
         <section className="min-w-0">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
@@ -3189,7 +3248,6 @@ const LabelingDataDashboard = () => {
               openLabel="Browse collar files in S3"
             />
           </div>
-          <CollarNextStep step={nextStep} />
         </section>
 
         <div className="xl:col-span-2 min-w-0">
@@ -3217,6 +3275,16 @@ const LabelingDataDashboard = () => {
             ) : null}
           </ChartCard>
         </div>
+      </div>
+
+      <div className="mb-10">
+        <CollarNextStep
+          step={nextStep}
+          onPickReason={(key) => {
+            setMismatchReason(key);
+            mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
       </div>
 
       <div className="mb-4">
@@ -3316,6 +3384,8 @@ const LabelingDataDashboard = () => {
             lastAzureMs={lastAzureMs}
             syncedSns={syncedSns}
             collarInfo={collarInfo}
+            reason={mismatchReason}
+            onClearReason={() => setMismatchReason(null)}
           />
         </ChartCard>
       </div>
