@@ -545,6 +545,118 @@ function CollarSessionBar({ row }) {
   );
 }
 
+const DAILY_SOURCE_SERIES = [
+  { key: 'matched', name: 'Matched', unit: 'sessions', color: '#34A853' },
+  { key: 'app_only', name: 'App only', unit: 'sessions', color: '#EA4335' },
+  { key: 'collar_only', name: 'Collar only', unit: 'collar logs', color: '#4285F4' },
+];
+
+const DAILY_SOURCE_RANGES = [
+  { days: 30, label: '30d' },
+  { days: 90, label: '90d' },
+  { days: null, label: 'All' },
+];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Fill coverage by_date into one row per calendar day, ending today, so quiet days show as gaps. */
+function dailySourceRows(byDate, days) {
+  if (!byDate?.length) return [];
+  const counts = new Map(byDate.map((row) => [row.date, row]));
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const last = Math.max(today, Date.parse(`${byDate[byDate.length - 1].date}T00:00:00Z`));
+  const first = days ? last - (days - 1) * DAY_MS : Date.parse(`${byDate[0].date}T00:00:00Z`);
+  const rows = [];
+  for (let t = first; t <= last; t += DAY_MS) {
+    const date = new Date(t).toISOString().slice(0, 10);
+    const row = counts.get(date) || {};
+    rows.push({
+      date,
+      label: date.slice(5),
+      matched: Number(row.matched) || 0,
+      app_only: Number(row.app_only) || 0,
+      collar_only: Number(row.collar_only) || 0,
+    });
+  }
+  return rows;
+}
+
+/** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
+function DailySourcesChart({ byDate }) {
+  const [days, setDays] = useState(30);
+  const rows = useMemo(() => dailySourceRows(byDate, days), [byDate, days]);
+  if (!byDate) {
+    return <p className="text-sm text-gray-500">Refresh to load daily counts.</p>;
+  }
+  if (!byDate.length) {
+    return <p className="text-sm text-gray-500">No dated sessions or collar logs yet.</p>;
+  }
+  const sum = (key) => rows.reduce((acc, row) => acc + row[key], 0);
+  const matched = sum('matched');
+  const appOnly = sum('app_only');
+  const collarOnly = sum('collar_only');
+  const sessions = matched + appOnly;
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-700">
+          <span>
+            <span className="font-semibold text-gray-900 tabular-nums">
+              {sessions ? Math.round((matched / sessions) * 100) : 0}%
+            </span>{' '}
+            of {sessions} sessions matched
+          </span>
+          <span className="text-gray-500">
+            <span className="tabular-nums">{collarOnly}</span> collar logs with no session
+          </span>
+        </div>
+        <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+          {DAILY_SOURCE_RANGES.map((range) => (
+            <button
+              key={range.label}
+              type="button"
+              onClick={() => setDays(range.days)}
+              className={`px-2.5 py-1 ${
+                days === range.days ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {range.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{ height: 260 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
+            <YAxis tick={{ fontSize: 12 }} allowDecimals={false} width={36} />
+            <Tooltip
+              labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''}
+              formatter={(value, name) => {
+                const series = DAILY_SOURCE_SERIES.find((item) => item.name === name);
+                return [`${value} ${series ? series.unit : ''}`, name];
+              }}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {DAILY_SOURCE_SERIES.map((series, index) => (
+              <Bar
+                key={series.key}
+                dataKey={series.key}
+                name={series.name}
+                stackId="sources"
+                fill={series.color}
+                radius={index === DAILY_SOURCE_SERIES.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 function dogAxisLabel(dog) {
   const name = (dog?.name || '').trim() || 'Unnamed';
   const sn = dog?.collar_sn;
@@ -1197,6 +1309,20 @@ const LabelingDataDashboard = () => {
     stagingHealth &&
       (stackedTrees || chartsBehind || incompleteSessions > 0 || sizeMismatchSessions > 0)
   );
+  // Stacked trees and stale charts need a click; incomplete or mismatched sessions are informational.
+  const stagingHealthActionable = stackedTrees || chartsBehind;
+  const stagingHealthSummary = [
+    stackedTrees ? 'duplicate trees in staging' : null,
+    chartsBehind ? 'charts behind staging' : null,
+    incompleteSessions > 0
+      ? `${incompleteSessions} session${incompleteSessions === 1 ? '' : 's'} incomplete`
+      : null,
+    sizeMismatchSessions > 0
+      ? `${sizeMismatchSessions} size mismatch${sizeMismatchSessions === 1 ? '' : 'es'}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const progressTotal = Number(processInfo?.progress?.total) || 0;
   const progressDone = Number(processInfo?.progress?.done) || 0;
   const progressPct =
@@ -1574,71 +1700,90 @@ const LabelingDataDashboard = () => {
       ) : null}
 
       {showStagingHealth ? (
-        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-950">
-          <div className="font-medium">Staging health</div>
-          {stackedTrees ? (
-            <p className="mt-1">
-              Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
-              {stagingHealth.raw_extracted_files} files and about{' '}
-              {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
-              Process staging folds those copies into the charts. It does not stop the next email
-              from stacking another tree.
-            </p>
-          ) : null}
-          {chartsBehind ? (
-            <p className="mt-2">
-              Charts are behind: output has {outputFiles} files and staging has about {uniqueFiles}{' '}
-              unique. Process staging to refresh them.
-            </p>
-          ) : null}
-          {incompleteSessions > 0 ? (
-            <div className="mt-2">
-              <p>
-                {incompleteSessions} sessions are missing collar_collected, durations, or
-                user_reported in the copy that would be kept. Processing leaves them incomplete.
+        <details
+          open={stagingHealthActionable}
+          className={`group mb-4 px-3 py-2 border rounded-lg text-sm ${
+            stagingHealthActionable
+              ? 'bg-amber-50 border-amber-200 text-amber-950'
+              : 'bg-white border-gray-200 text-gray-700'
+          }`}
+        >
+          <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
+            <AlertCircle
+              className={`h-4 w-4 flex-shrink-0 ${
+                stagingHealthActionable ? 'text-amber-600' : 'text-gray-400'
+              }`}
+            />
+            <span className="font-medium">Staging health</span>
+            <span className="text-xs opacity-80 truncate">{stagingHealthSummary}</span>
+            <span className="ml-auto text-xs opacity-60 group-open:hidden">Show details ▸</span>
+            <span className="ml-auto text-xs opacity-60 hidden group-open:inline">Hide ▾</span>
+          </summary>
+          <div className="pb-1">
+            {stackedTrees ? (
+              <p className="mt-1">
+                Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
+                {stagingHealth.raw_extracted_files} files and about{' '}
+                {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
+                Process staging folds those copies into the charts. It does not stop the next email
+                from stacking another tree.
               </p>
-              {(stagingHealth.incomplete_samples || []).length > 0 ? (
-                <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
-                  {(stagingHealth.incomplete_samples || []).map((sample) => (
-                    <li key={`${sample.email}-${sample.timestamp}-${sample.index}-${sample.message_id}`}>
-                      {sample.email} · {sample.family} · {sample.timestamp} #{sample.index} · missing{' '}
-                      {(sample.missing || []).join(', ') || 'unknown'}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {incompleteSessions > (stagingHealth.incomplete_samples || []).length ? (
-                <p className="mt-1 text-xs text-amber-900/80">
-                  Showing {(stagingHealth.incomplete_samples || []).length} of {incompleteSessions}.
+            ) : null}
+            {chartsBehind ? (
+              <p className="mt-2">
+                Charts are behind: output has {outputFiles} files and staging has about {uniqueFiles}{' '}
+                unique. Process staging to refresh them.
+              </p>
+            ) : null}
+            {incompleteSessions > 0 ? (
+              <div className="mt-2">
+                <p>
+                  {incompleteSessions} sessions are missing collar_collected, durations, or
+                  user_reported in the copy that would be kept. Processing leaves them incomplete.
                 </p>
-              ) : null}
-            </div>
-          ) : null}
-          {sizeMismatchSessions > 0 ? (
-            <p className="mt-2">
-              {sizeMismatchSessions} sessions have different file sizes across emails. Those copies
-              stay in staging until someone inspects them.
-            </p>
-          ) : null}
-          {duplicateRefs > 0 ? (
-            <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
-              <button
-                type="button"
-                onClick={compactStaging}
-                disabled={processing}
-                className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 rounded-lg text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-50 shrink-0"
-              >
-                Remove duplicate copies
-              </button>
-              <p className="text-xs text-amber-900/80">
-                Deletes extra extracted files when a newer email already has the same file at the
-                same size, and deletes raw zips from batches that added nothing new. Promote already
-                skips filenames staging has seen. Make will keep stacking until it uploads only new
-                files.
+                {(stagingHealth.incomplete_samples || []).length > 0 ? (
+                  <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
+                    {(stagingHealth.incomplete_samples || []).map((sample) => (
+                      <li key={`${sample.email}-${sample.timestamp}-${sample.index}-${sample.message_id}`}>
+                        {sample.email} · {sample.family} · {sample.timestamp} #{sample.index} · missing{' '}
+                        {(sample.missing || []).join(', ') || 'unknown'}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {incompleteSessions > (stagingHealth.incomplete_samples || []).length ? (
+                  <p className="mt-1 text-xs text-amber-900/80">
+                    Showing {(stagingHealth.incomplete_samples || []).length} of {incompleteSessions}.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {sizeMismatchSessions > 0 ? (
+              <p className="mt-2">
+                {sizeMismatchSessions} sessions have different file sizes across emails. Those copies
+                stay in staging until someone inspects them.
               </p>
-            </div>
-          ) : null}
-        </div>
+            ) : null}
+            {duplicateRefs > 0 ? (
+              <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                <button
+                  type="button"
+                  onClick={compactStaging}
+                  disabled={processing}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 rounded-lg text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-50 shrink-0"
+                >
+                  Remove duplicate copies
+                </button>
+                <p className="text-xs text-amber-900/80">
+                  Deletes extra extracted files when a newer email already has the same file at the
+                  same size, and deletes raw zips from batches that added nothing new. Promote already
+                  skips filenames staging has seen. Make will keep stacking until it uploads only new
+                  files.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </details>
       ) : null}
 
       {pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
@@ -1928,6 +2073,15 @@ const LabelingDataDashboard = () => {
             onToggleShowAll={() => setShowAllCollars((v) => !v)}
           />
         </section>
+      </div>
+
+      <div className="mb-6">
+        <ChartCard
+          title="App and collar data by day"
+          description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used."
+        >
+          <DailySourcesChart byDate={collarCoverage?.by_date} />
+        </ChartCard>
       </div>
 
       <div className="mb-2">

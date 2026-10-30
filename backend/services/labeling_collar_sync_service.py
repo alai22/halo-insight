@@ -248,6 +248,10 @@ def match_coverage(
         "bad_timestamp": 0,
     }
     unmatched: List[Dict[str, Any]] = []
+    by_date: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {"matched": 0, "app_only": 0, "collar_only": 0}
+    )
+    used_files = set()
 
     def _touch_sn(sn: str) -> Dict[str, Any]:
         return by_sn.setdefault(
@@ -293,6 +297,9 @@ def match_coverage(
         sn_row["sessions"] += 1
 
         if not sn or sn == UNKNOWN_COLLAR_SN:
+            unknown_start = parse_session_timestamp(session.get("timestamp") or "")
+            if unknown_start is not None:
+                by_date[unknown_start.date().isoformat()]["app_only"] += 1
             totals["unknown_sn"] += 1
             totals["missing"] += 1
             totals["missing_seconds"] += duration
@@ -342,13 +349,17 @@ def match_coverage(
         window_end = start + timedelta(seconds=window_dur) + pad
         candidates = by_sn_family.get((sn, family)) or []
         hits = [b for b in candidates if window_start <= b.when <= window_end]
+        day = by_date[start.date().isoformat()]
         if hits:
+            used_files.update(id(b) for b in hits)
+            day["matched"] += 1
             totals["matched"] += 1
             totals["matched_seconds"] += duration
             sn_row["matched"] += 1
             user["matched_sessions"] += 1
             user["matched_seconds"] += duration
         else:
+            day["app_only"] += 1
             reason = "no_blobs_for_sn" if not candidates else "time_gap"
             # candidates empty for family could still have other family files
             other = any(b.collar_sn == sn for b in files_list)
@@ -386,6 +397,8 @@ def match_coverage(
     )
     for blob in files_list:
         _touch_sn(blob.collar_sn)["s3_files"] += 1
+        if id(blob) not in used_files:
+            by_date[blob.when.date().isoformat()]["collar_only"] += 1
     by_sn_out = sorted(
         by_sn.values(),
         key=lambda row: (-row["missing"], -row["sessions"], row["collar_sn"]),
@@ -405,6 +418,8 @@ def match_coverage(
         "missing_reasons": missing_reasons,
         "by_user": users_out,
         "by_sn": by_sn_out,
+        # Matched and app_only count sessions; collar_only counts AI files no session used.
+        "by_date": [{"date": d, **by_date[d]} for d in sorted(by_date)],
         "unmatched_samples": unmatched,
     }
 

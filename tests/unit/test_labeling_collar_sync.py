@@ -81,6 +81,49 @@ def test_match_coverage_splits_missing_reasons_by_sn():
     assert by_sn["_unknown"]["sessions"] == 1
 
 
+def test_match_coverage_by_date_splits_matched_app_only_and_collar_only():
+    files = [
+        _file("sn1", "activity", datetime(2026, 4, 21, 18, 38, 31)),
+        _file("sn1", "activity", datetime(2026, 4, 22, 9, 0, 0)),
+    ]
+    sessions = [
+        {
+            "user": "a@x.com",
+            "collar_sn": "sn1",
+            "family": "activity",
+            "timestamp": "2026-04-21T18:38:31",
+            "duration_seconds": 10,
+        },
+        {
+            "user": "a@x.com",
+            "collar_sn": "sn1",
+            "family": "activity",
+            "timestamp": "2026-04-21T12:00:00",
+            "duration_seconds": 5,
+        },
+        {
+            "user": "a@x.com",
+            "collar_sn": "_unknown",
+            "family": "activity",
+            "timestamp": "2026-04-20T08:00:00",
+            "duration_seconds": 3,
+        },
+        {
+            "user": "a@x.com",
+            "collar_sn": "sn1",
+            "family": "activity",
+            "timestamp": "not a time",
+            "duration_seconds": 3,
+        },
+    ]
+    coverage = match_coverage(sessions, files, pad_sec=60)
+    assert coverage["by_date"] == [
+        {"date": "2026-04-20", "matched": 0, "app_only": 1, "collar_only": 0},
+        {"date": "2026-04-21", "matched": 1, "app_only": 1, "collar_only": 0},
+        {"date": "2026-04-22", "matched": 0, "app_only": 0, "collar_only": 1},
+    ]
+
+
 def test_clone_snapshot_not_cloned_depends_on_check_vs_copy():
     rows = [
         {
