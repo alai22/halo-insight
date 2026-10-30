@@ -37,6 +37,8 @@ AI_LOG_TS_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})_(?P<h>\d{2})-(?P<m>\d{2}
 INDEX_KEY_SUFFIX = "labeling-jobs/session_collar_index_v1.json"
 DEFAULT_WINDOW_DURATION_SEC = 15 * 60
 UNMATCHED_SAMPLE_LIMIT = 25
+ERROR_SAMPLE_LIMIT = 3
+ERROR_SAMPLE_CHARS = 300
 QUERY_REDACT_RE = re.compile(r"\?[^ \n]+")
 
 
@@ -61,6 +63,50 @@ def resolve_azure_container_url(
 
 def azure_configured() -> bool:
     return bool(resolve_azure_container_url())
+
+
+# Ordered: the first matching kind wins.
+_AZURE_ERROR_KINDS = (
+    (
+        "address",
+        (
+            "nodename nor servname",
+            "name or service not known",
+            "failed to resolve",
+            "getaddrinfo",
+            "temporary failure in name resolution",
+        ),
+    ),
+    ("container", ("containernotfound", "resourcenotfound", "does not exist")),
+    (
+        "access",
+        (
+            "authenticationfailed",
+            "authorizationfailure",
+            "authorizationpermissionmismatch",
+            "signature",
+            "not authorized",
+            "expired",
+            "403",
+        ),
+    ),
+)
+
+
+def classify_azure_error(text: str) -> str:
+    """
+    Bucket an Azure error message so the UI can say what to fix.
+
+    address: the account URL does not resolve (often a template placeholder).
+    container: the container in the URL does not exist.
+    access: the SAS was refused (expired, missing List/Read, wrong container).
+    other: anything else.
+    """
+    lowered = (text or "").lower()
+    for kind, needles in _AZURE_ERROR_KINDS:
+        if any(needle in lowered for needle in needles):
+            return kind
+    return "other"
 
 
 def redact_secrets(text: str, extra: Optional[str] = None) -> str:
@@ -371,6 +417,7 @@ def empty_clone_row(sn: str) -> Dict[str, Any]:
         "copied": 0,
         "skipped": 0,
         "errors": 0,
+        "list_errors": 0,
     }
 
 
@@ -386,13 +433,17 @@ def build_clone_snapshot(
     *,
     inventory_only: bool,
     generated_at: Optional[str] = None,
+    error_rows: Optional[Iterable[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Summarize an Azure listing against S3.
 
-    Per row: collar_sn, azure_files, s3_files, copied, skipped, errors.
+    Per row: collar_sn, azure_files, s3_files, copied, skipped, errors, list_errors.
     On an inventory check, copied means "not in S3 or a different size".
     After a copy, copied means "just written", so not_cloned is the error count.
+    list_errors marks collars whose Azure folder could not be listed at all.
+    error_rows: report errors; a few redacted samples and their kind are kept
+    so the dashboard can show why Azure could not be read.
     """
     normalized: List[Dict[str, Any]] = []
     for row in rows:
@@ -404,6 +455,7 @@ def build_clone_snapshot(
                 "copied": int(row.get("copied") or 0),
                 "skipped": int(row.get("skipped") or 0),
                 "errors": int(row.get("errors") or 0),
+                "list_errors": int(row.get("list_errors") or 0),
             }
         )
     normalized.sort(key=lambda row: row["collar_sn"])
@@ -413,6 +465,20 @@ def build_clone_snapshot(
     skipped = sum(row["skipped"] for row in normalized)
     errors = sum(row["errors"] for row in normalized)
     not_cloned = (copied + errors) if inventory_only else errors
+    unreadable = sum(1 for row in normalized if row["list_errors"] > 0)
+    samples: List[Dict[str, str]] = []
+    kinds: Dict[str, int] = defaultdict(int)
+    for item in error_rows or []:
+        text = str(item.get("error") or "")
+        kinds[classify_azure_error(text)] += 1
+        if len(samples) < ERROR_SAMPLE_LIMIT:
+            sample = {"error": text[:ERROR_SAMPLE_CHARS]}
+            if item.get("sn"):
+                sample["sn"] = item["sn"]
+            if item.get("key"):
+                sample["key"] = item["key"]
+            samples.append(sample)
+    error_kind = max(kinds, key=kinds.get) if kinds else None
     return {
         "generated_at": generated_at
         or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -423,8 +489,38 @@ def build_clone_snapshot(
         "skipped_unchanged": skipped,
         "errors": errors,
         "not_cloned": not_cloned,
+        "collars": len(normalized),
+        "collars_unreadable": unreadable,
+        "error_kind": error_kind,
+        "error_samples": samples,
         "by_sn": normalized,
     }
+
+
+def sync_done_message(report: Dict[str, Any], inventory_only: bool) -> str:
+    """One-line status for a finished sync or Azure check."""
+    clone = report.get("clone") or {}
+    totals = (report.get("coverage") or {}).get("totals") or {}
+    collars = int(clone.get("collars") or report.get("sns_count") or 0)
+    unreadable = int(clone.get("collars_unreadable") or 0)
+    if collars and unreadable == collars:
+        return (
+            f"Could not read Azure for any of the {collars} labeled collars — "
+            "nothing was copied. See the Azure error on the page."
+        )
+    unreadable_note = (
+        f" Azure could not be read for {unreadable} of {collars} collars." if unreadable else ""
+    )
+    if inventory_only:
+        return (
+            f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
+            f"files in Azure, {clone.get('not_cloned', 0)} not in S3.{unreadable_note}"
+        )
+    return (
+        f"Collar sync done — copied {report.get('copied', 0)} files, "
+        f"{totals.get('matched', 0)} sessions matched, {totals.get('missing', 0)} missing."
+        f"{unreadable_note}"
+    )
 
 
 class LabelingCollarSyncService:
@@ -659,6 +755,7 @@ class LabelingCollarSyncService:
                 blobs = list(azure.list_blobs(name_starts_with=prefix))
             except Exception as exc:  # noqa: BLE001
                 stats[sn]["errors"] += 1
+                stats[sn]["list_errors"] += 1
                 report.errors.append({"sn": sn, "error": redact_secrets(str(exc))})
                 logger.warning("Failed listing Azure %s: %s", prefix, redact_secrets(str(exc)))
                 continue
@@ -738,7 +835,7 @@ class LabelingCollarSyncService:
                 continue
             stats.setdefault(sn, empty_clone_row(sn))["s3_files"] = int(row.get("s3_files") or 0)
         report.clone = build_clone_snapshot(
-            stats.values(), inventory_only=inventory_only
+            stats.values(), inventory_only=inventory_only, error_rows=report.errors
         )
         if not dry_run:
             self.persist_index(report.coverage, report.clone)

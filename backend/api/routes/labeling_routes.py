@@ -19,6 +19,7 @@ from backend.services.labeling_collar_sync_service import (
     LabelingCollarSyncService,
     azure_configured,
     redact_secrets,
+    sync_done_message,
 )
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.services.ml_processed_inventory import MlProcessedInventory, ml_object_key_allowed
@@ -716,23 +717,7 @@ def labeling_sync_collar():
                         inventory_only=inventory_only,
                     )
                     _cache_clear()
-                    matched = ((report.get("coverage") or {}).get("totals") or {}).get(
-                        "matched", 0
-                    )
-                    missing = ((report.get("coverage") or {}).get("totals") or {}).get(
-                        "missing", 0
-                    )
-                    clone = report.get("clone") or {}
-                    if inventory_only:
-                        done_message = (
-                            f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
-                            f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
-                        )
-                    else:
-                        done_message = (
-                            f"Collar sync done — copied {report.get('copied', 0)} files, "
-                            f"{matched} sessions matched, {missing} missing"
-                        )
+                    done_message = sync_done_message(report, inventory_only)
                     _set_process_state(
                         running=False,
                         job="sync-collar",
@@ -775,14 +760,7 @@ def labeling_sync_collar():
                 inventory_only=inventory_only,
             )
             _cache_clear()
-            clone = report.get("clone") or {}
-            if inventory_only:
-                done_message = (
-                    f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
-                    f"files in Azure, {clone.get('not_cloned', 0)} not in S3"
-                )
-            else:
-                done_message = f"Done — copied {report.get('copied', 0)} files"
+            done_message = sync_done_message(report, inventory_only)
             state = _set_process_state(
                 running=False,
                 job="sync-collar",

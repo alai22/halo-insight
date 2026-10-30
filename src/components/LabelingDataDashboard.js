@@ -253,6 +253,178 @@ function missingReasonText(row) {
   return parts.join(' · ') || '—';
 }
 
+const AZURE_ERROR_ADVICE = {
+  address:
+    'The Azure account URL does not resolve. Check LABELING_AZURE_SAS_URL and LABELING_AZURE_BLOB_URL on the server. A template value like ACCOUNT/CONTAINER in LABELING_AZURE_SAS_URL wins over the token, so delete it or replace it.',
+  access:
+    'Azure refused the SAS token. Check that it has not expired and that its access policy grants Read and List on this container.',
+  container: 'The container named in the Azure URL does not exist. Check the container name.',
+  other: 'The error below is what Azure returned.',
+};
+
+/** Decide the one thing to do next for collar data, from server state. */
+function collarNextStep({ azureConfigured, clone, totals, reasons }) {
+  if (!azureConfigured) {
+    return {
+      tone: 'error',
+      title: 'Azure is not configured on the server',
+      body: 'Set LABELING_AZURE_BLOB_URL and LABELING_AZURE_SAS_TOKEN (or one LABELING_AZURE_SAS_URL) on the server, restart it, then click Check Azure.',
+    };
+  }
+  if (!clone) {
+    return {
+      tone: 'attention',
+      title: 'Azure has not been checked yet',
+      body: 'Click Check Azure to list the collar logs for the labeled collars. It does not copy anything.',
+    };
+  }
+  const collars = Number(clone.collars ?? (clone.by_sn || []).length) || 0;
+  const legacyUnreadable =
+    clone.collars_unreadable == null && (clone.errors || 0) > 0 && !(clone.azure_files || 0);
+  const unreadable = legacyUnreadable ? collars : Number(clone.collars_unreadable) || 0;
+  if (unreadable > 0) {
+    const sample = (clone.error_samples || [])[0] || null;
+    return {
+      tone: 'error',
+      title:
+        unreadable === collars
+          ? `Azure could not be read for any of the ${collars} labeled collars`
+          : `Azure could not be read for ${unreadable} of ${collars} labeled collars`,
+      body: `${
+        legacyUnreadable
+          ? 'Nothing was listed, so nothing could be copied. Click Check Azure again to record the exact error.'
+          : AZURE_ERROR_ADVICE[clone.error_kind] || AZURE_ERROR_ADVICE.other
+      } After fixing it, restart the server and click Check Azure.`,
+      error: sample ? sample.error : null,
+      errorSn: sample ? sample.sn : null,
+    };
+  }
+  const notCloned = Number(clone.not_cloned) || 0;
+  if (notCloned > 0) {
+    return {
+      tone: 'attention',
+      title: `${notCloned} collar log${notCloned === 1 ? '' : 's'} in Azure ${notCloned === 1 ? 'is' : 'are'} not in S3 yet`,
+      body: 'Click Sync collar data to copy them. Sessions match once their collar log is in S3.',
+    };
+  }
+  const missing = Number(totals.missing) || 0;
+  if (missing > 0) {
+    const parts = [];
+    if (reasons.no_blobs_for_sn) {
+      parts.push(
+        `${reasons.no_blobs_for_sn} are on collars with no logs in Azure. Those collars have not uploaded ai/ logs yet`
+      );
+    }
+    if (reasons.time_gap) {
+      parts.push(
+        `${reasons.time_gap} are on collars that uploaded logs, but none from around the session time`
+      );
+    }
+    if (reasons.unknown_sn) parts.push(`${reasons.unknown_sn} have no collar serial in the app data`);
+    if (reasons.bad_timestamp) parts.push(`${reasons.bad_timestamp} have an unreadable session time`);
+    return {
+      tone: 'info',
+      title: `Azure is copied. ${missing} session${missing === 1 ? '' : 's'} still have no collar log`,
+      body: `${parts.join('. ')}. Syncing again will not change these until the collars upload more logs.`,
+    };
+  }
+  return {
+    tone: 'ok',
+    title: 'Every labeled session has collar data',
+    body: 'Azure and S3 match, and each session found a collar log near its time.',
+  };
+}
+
+const NEXT_STEP_STYLES = {
+  error: 'bg-red-50 border-red-200 text-red-900',
+  attention: 'bg-amber-50 border-amber-200 text-amber-900',
+  info: 'bg-sky-50 border-sky-200 text-sky-900',
+  ok: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+};
+
+function CollarNextStep({ step }) {
+  const Icon = step.tone === 'ok' ? CheckCircle2 : AlertCircle;
+  return (
+    <div className={`border rounded-lg p-4 mb-6 ${NEXT_STEP_STYLES[step.tone]}`}>
+      <div className="flex items-start gap-3">
+        <Icon className="h-5 w-5 flex-shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase tracking-wide opacity-70">
+            Collar data · next step
+          </div>
+          <div className="font-semibold mt-0.5">{step.title}</div>
+          <p className="text-sm mt-1">{step.body}</p>
+          {step.error ? (
+            <div className="mt-2 text-xs">
+              <div className="opacity-70 mb-1">
+                Azure error{step.errorSn ? ` for ${step.errorSn}` : ''}:
+              </div>
+              <pre className="whitespace-pre-wrap break-all font-mono bg-white/70 border border-black/10 rounded p-2">
+                {step.error}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const COVERAGE_SEGMENTS = [
+  { key: 'matched', label: 'Matched', color: '#34A853' },
+  { key: 'no_blobs_for_sn', label: 'No collar log in S3', color: '#EA4335' },
+  { key: 'time_gap', label: 'Collar log, wrong time', color: '#FBBC04' },
+  { key: 'unknown_sn', label: 'Unknown serial', color: '#9AA0A6' },
+  { key: 'bad_timestamp', label: 'Bad timestamp', color: '#5F6368' },
+];
+
+/** One bar of all labeled sessions: matched versus each reason they did not match. */
+function CoverageBreakdown({ totals, reasons }) {
+  const counts = {
+    matched: Number(totals.matched) || 0,
+    no_blobs_for_sn: Number(reasons.no_blobs_for_sn) || 0,
+    time_gap: Number(reasons.time_gap) || 0,
+    unknown_sn: Number(reasons.unknown_sn) || 0,
+    bad_timestamp: Number(reasons.bad_timestamp) || 0,
+  };
+  const total = Number(totals.sessions) || Object.values(counts).reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  const pct = (n) => Math.round((n / total) * 100);
+  return (
+    <div className="mb-4">
+      <div className="flex items-baseline justify-between text-sm mb-1">
+        <span className="text-gray-700">
+          <span className="font-semibold text-gray-900">{counts.matched}</span> of {total} sessions
+          matched ({pct(counts.matched)}%)
+        </span>
+        <span className="text-xs text-gray-500">
+          {formatSecondsShort(totals.matched_seconds)} matched ·{' '}
+          {formatSecondsShort(totals.missing_seconds)} not
+        </span>
+      </div>
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-gray-100">
+        {COVERAGE_SEGMENTS.filter((seg) => counts[seg.key] > 0).map((seg) => (
+          <div
+            key={seg.key}
+            style={{ width: `${(counts[seg.key] / total) * 100}%`, backgroundColor: seg.color }}
+            title={`${seg.label}: ${counts[seg.key]}`}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mt-2">
+        {COVERAGE_SEGMENTS.filter((seg) => seg.key === 'matched' || counts[seg.key] > 0).map(
+          (seg) => (
+            <span key={seg.key} className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: seg.color }} />
+              {seg.label}: {counts[seg.key]}
+            </span>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
 function dogAxisLabel(dog) {
   const name = (dog?.name || '').trim() || 'Unnamed';
   const sn = dog?.collar_sn;
@@ -1089,7 +1261,8 @@ const LabelingDataDashboard = () => {
       if (!sn || seen.has(sn)) return;
       seen.add(sn);
       const snap = cloneBySn[sn] || null;
-      const azureFiles = snap ? Number(snap.azure_files) || 0 : null;
+      const azureFiles =
+        snap && !(Number(snap.list_errors) > 0) ? Number(snap.azure_files) || 0 : null;
       const s3Files = Number(base?.s3_files ?? snap?.s3_files) || 0;
       const notCloned = snap
         ? inventoryOnly
@@ -1135,6 +1308,13 @@ const LabelingDataDashboard = () => {
   const behindChartRows = behindCollarRows.slice(0, 15);
   const behindChartHeight = Math.max(180, behindChartRows.length * 36 + 48);
   const missingReasons = collarCoverage?.missing_reasons || {};
+  const nextStep = collarNextStep({
+    azureConfigured,
+    clone,
+    totals: collarTotals,
+    reasons: missingReasons,
+  });
+  const azureUnreadable = nextStep.tone === 'error';
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -1554,11 +1734,13 @@ const LabelingDataDashboard = () => {
           value={clone ? clone.azure_files ?? 0 : '—'}
           detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
           state={
-            clone?.generated_at
-              ? `Checked ${formatUpdatedAt(clone.generated_at)}`
-              : 'Not checked yet'
+            azureUnreadable && clone
+              ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
+              : clone?.generated_at
+                ? `Checked ${formatUpdatedAt(clone.generated_at)}`
+                : 'Not checked yet'
           }
-          tone={clone ? 'ok' : 'attention'}
+          tone={clone && !azureUnreadable ? 'ok' : 'attention'}
           action={
             <button
               type="button"
@@ -1593,13 +1775,17 @@ const LabelingDataDashboard = () => {
           state={
             !clone
               ? 'Not compared to Azure yet'
-              : (clone.not_cloned || 0) === 0
-                ? 'Caught up'
-                : 'Azure has files not in S3'
+              : azureUnreadable
+                ? 'Blocked until Azure can be read'
+                : (clone.not_cloned || 0) === 0
+                  ? 'Caught up'
+                  : 'Azure has files not in S3'
           }
-          tone={!clone || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
+          tone={!clone || azureUnreadable || (clone.not_cloned || 0) > 0 ? 'attention' : 'ok'}
         />
       </div>
+
+      <CollarNextStep step={nextStep} />
 
       <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
@@ -1734,15 +1920,12 @@ const LabelingDataDashboard = () => {
           Joined to collar dumps in S3
         </h3>
         <p className="text-sm text-gray-500 mb-3">
-          Labeled minutes that already have a matching file in{' '}
-          <span className="font-mono text-xs">collar-raw/</span> (green) versus minutes with no
-          matching S3 file (red).
+          A session matches when its collar has a log in{' '}
+          <span className="font-mono text-xs">collar-raw/</span> from around the session time.
+          The chart below splits each labeler&apos;s minutes into matched (green) and not
+          matched (red).
         </p>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mb-4">
-          <span>Not in S3: {missingReasons.no_blobs_for_sn || 0}</span>
-          <span>Time gap: {missingReasons.time_gap || 0}</span>
-          <span>Unknown serial: {missingReasons.unknown_sn || 0}</span>
-        </div>
+        <CoverageBreakdown totals={collarTotals} reasons={missingReasons} />
         {collarUserChart.length === 0 ? (
           <p className="text-sm text-gray-500">
             No labeled sessions to join yet. Process staging, then Sync collar data.

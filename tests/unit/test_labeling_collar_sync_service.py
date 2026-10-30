@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from backend.services.labeling_collar_sync_service import (
     CollarAiFile,
     LabelingCollarSyncService,
+    classify_azure_error,
     match_coverage,
     parse_ai_log_filename,
     redact_secrets,
     resolve_azure_container_url,
+    sync_done_message,
 )
 from backend.services.labeling_data_analyzer import LabelingDataAnalyzer
 
@@ -258,6 +260,78 @@ def test_sync_copies_ai_only_and_skips_unchanged():
     assert "collar-raw/24h4290312rt/logs/20260702_211344_console.log" not in s3.objects
     assert report["coverage"]["totals"]["matched"] == 1
     assert "labeling-jobs/session_collar_index_v1.json" in s3.objects
+    assert report["clone"]["collars_unreadable"] == 0
+    assert report["clone"]["error_samples"] == []
+    assert report["clone"]["error_kind"] is None
+
+
+class _UnreadableAzure(_FakeAzure):
+    def list_blobs(self, name_starts_with=""):
+        raise RuntimeError(
+            "<urllib3.connection.HTTPSConnection object>: Failed to resolve "
+            "'ACCOUNT.blob.core.windows.net' ([Errno 8] nodename nor servname provided)"
+        )
+
+
+def test_sync_reports_why_azure_could_not_be_read():
+    s3 = _FakeS3(
+        {
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_collar_collected.txt": (
+                b"21:13:40.000: Collar SN: 24h4290312rt\n"
+            ),
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_durations.txt": (
+                b'{"Standing (10)": "00:02:00.0000000"}\n'
+            ),
+        }
+    )
+    svc = LabelingCollarSyncService(
+        bucket_name="test-bucket",
+        extracted_prefix="extracted-txt/",
+        collar_prefix="collar-raw/",
+        s3_client=s3,
+        azure_client=_UnreadableAzure({}),
+    )
+    report = svc.sync(dry_run=False, workers=1)
+    clone = report["clone"]
+    assert report["listed"] == 0
+    assert clone["collars"] == 1
+    assert clone["collars_unreadable"] == 1
+    assert clone["error_kind"] == "address"
+    assert clone["error_samples"][0]["sn"] == "24h4290312rt"
+    assert "Failed to resolve" in clone["error_samples"][0]["error"]
+    assert sync_done_message(report, inventory_only=False).startswith(
+        "Could not read Azure for any of the 1 labeled collars"
+    )
+
+
+def test_classify_azure_error():
+    assert classify_azure_error("Failed to resolve 'x.blob.core.windows.net'") == "address"
+    assert (
+        classify_azure_error("Server failed to authenticate the request. ErrorCode:AuthenticationFailed")
+        == "access"
+    )
+    assert classify_azure_error("ErrorCode:AuthorizationPermissionMismatch") == "access"
+    assert classify_azure_error("ErrorCode:ContainerNotFound") == "container"
+    assert classify_azure_error("connection reset") == "other"
+
+
+def test_sync_done_message_partial_and_full():
+    report = {
+        "copied": 4,
+        "listed": 4,
+        "clone": {"collars": 3, "collars_unreadable": 1, "azure_files": 4, "not_cloned": 0},
+        "coverage": {"totals": {"matched": 2, "missing": 1}},
+    }
+    assert sync_done_message(report, inventory_only=False) == (
+        "Collar sync done — copied 4 files, 2 sessions matched, 1 missing. "
+        "Azure could not be read for 1 of 3 collars."
+    )
+    assert sync_done_message(report, inventory_only=True) == (
+        "Azure check done — 4 files in Azure, 0 not in S3. "
+        "Azure could not be read for 1 of 3 collars."
+    )
 
 
 def test_analyzer_emits_session_rows():
