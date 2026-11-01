@@ -23,7 +23,10 @@ def _user(email, sessions, seconds, collars=()):
         "email": email,
         "sessions": sessions,
         "total_duration_seconds": seconds,
-        "collars": [{"collar_sn": sn, "sessions": n} for sn, n in collars],
+        "collars": [
+            {"collar_sn": c[0], "sessions": c[1], "total_duration_seconds": c[2] if len(c) > 2 else 0}
+            for c in collars
+        ],
     }
 
 
@@ -71,7 +74,7 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
     assert "Indoor/outdoor: 2 sessions · 10m" in text
     # Each line thanks the dogs, with their person in brackets; the top labeler gets the trophy.
     assert "• :dog: Mochi (Brandon Rivera): 3 sessions · 30m :trophy:" in text
-    assert "• :dog: Rocky (lindsey): 2 sessions · 10m" in text
+    assert "• :dog: Rocky (lindsey@x.com): 2 sessions · 10m" in text
     assert "Good dogs on the job" not in text
     assert "3 days in a row" in text
     assert "we passed *500 labeled sessions*" in text
@@ -341,17 +344,22 @@ def test_one_failing_channel_does_not_stop_the_others(monkeypatch):
     assert "not_in_channel" in saved["last_error"]
 
 
-def test_group_sender_is_named_as_the_shared_inbox_not_a_collar_owner():
+def test_group_sender_is_split_per_collar_with_a_name_fallback_chain():
     day = {
         **_family(
-            18,
-            2412,
+            20,
+            2520,
             users=[
                 _user(
                     "ai_logs@halocollar.com",
-                    18,
-                    2412,
-                    [("26h5230414rt", 12), ("25h5425925vm", 2), ("26h5220121th", 4)],
+                    20,
+                    2520,
+                    [
+                        ("26h5230414rt", 12, 1314),  # no owner row: collar serial
+                        ("25h5425925vm", 2, 708),  # owner email only
+                        ("26h5220121th", 4, 390),  # owner name
+                        ("_unknown", 2, 108),  # no serial: shared inbox
+                    ],
                 )
             ],
         ),
@@ -361,18 +369,36 @@ def test_group_sender_is_named_as_the_shared_inbox_not_a_collar_owner():
         "2026-10-30",
         day,
         {**_family(100, 0), "gps": _family(0, 0)},
-        owner_names={"26h5220121th": "Adrian Lai"},
+        owner_names={"26h5220121th": "Jenny & Adrian"},
         days=7,
         group_senders={"ai_logs@halocollar.com"},
+        owner_emails={"25h5425925vm": "someone@yahoo.com"},
     )
-    assert "• ai_logs@ shared inbox: 18 sessions · 40m" in text
-    assert "Adrian Lai" not in text
+    assert "• collar 26h5230414rt: 12 sessions · 22m :trophy:" in text
+    assert "• someone@yahoo.com: 2 sessions · 12m" in text
+    assert "• Jenny & Adrian: 4 sessions · 6m" in text
+    assert "• ai_logs@ shared inbox: 2 sessions · 2m" in text
+
+
+def test_direct_labeler_prefers_the_name_on_their_email():
+    day = {
+        **_family(3, 600, users=[_user("victor@vmo3.com", 3, 600, [("24h4290375rt", 3, 600)])]),
+        "gps": _family(0, 0),
+    }
+    text = build_daily_report(
+        "2026-10-30",
+        day,
+        {**_family(10, 0), "gps": _family(0, 0)},
+        owner_names={"24h4290375rt": "Someone Else"},
+        names_by_email={"victor@vmo3.com": "Victor O"},
+    )
+    assert "• Victor O: 3 sessions · 10m" in text
 
 
 def test_shout_out_without_known_dogs_names_just_the_person():
     day = {**_family(4, 600, users=[_user("a@x.com", 4, 600, [("sn9", 4)])]), "gps": _family(0, 0)}
     text = build_daily_report("2026-10-30", day, {**_family(10, 0), "gps": _family(0, 0)})
-    assert "• a: 4 sessions · 10m" in text
+    assert "• a@x.com: 4 sessions · 10m" in text
 
 
 def test_several_dogs_on_one_line_are_capped():
@@ -380,4 +406,4 @@ def test_several_dogs_on_one_line_are_capped():
     dogs = [{"name": f"Dog{i}", "collar_sn": f"sn{i}"} for i in range(5)]
     day = {**_family(15, 900, users=[_user("a@x.com", 15, 900, collars)], dogs=dogs), "gps": _family(0, 0)}
     text = build_daily_report("2026-10-30", day, {**_family(20, 0), "gps": _family(0, 0)})
-    assert "• :dog: Dog0, Dog1, Dog2 +2 (a): 15 sessions · 15m" in text
+    assert "• :dog: Dog0, Dog1, Dog2 +2 (a@x.com): 15 sessions · 15m" in text

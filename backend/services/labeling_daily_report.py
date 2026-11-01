@@ -49,8 +49,16 @@ def format_minutes(seconds: float) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m"
 
 
+def _sort_labelers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(rows, key=lambda r: (-r["seconds"], -r["sessions"], r["email"]))
+
+
+def _busiest_first(collars: Dict[str, Dict[str, float]]) -> List[str]:
+    return [sn for sn, _ in sorted(collars.items(), key=lambda item: -item[1]["sessions"])]
+
+
 def _merge_labelers(day_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Posture and GPS labelers combined by email."""
+    """Posture and GPS labelers combined by email, with sessions and seconds per collar."""
     merged: Dict[str, Dict[str, Any]] = {}
     for users in (day_data.get("users") or [], (day_data.get("gps") or {}).get("users") or []):
         for user in users:
@@ -61,28 +69,61 @@ def _merge_labelers(day_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             row["sessions"] += int(user.get("sessions") or 0)
             row["seconds"] += float(user.get("total_duration_seconds") or 0)
             for collar in user.get("collars") or []:
-                sn = collar.get("collar_sn")
-                row["collars"][sn] = row["collars"].get(sn, 0) + int(collar.get("sessions") or 0)
-    return sorted(merged.values(), key=lambda r: (-r["seconds"], -r["sessions"], r["email"]))
+                stats = row["collars"].setdefault(
+                    collar.get("collar_sn"), {"sessions": 0, "seconds": 0.0}
+                )
+                stats["sessions"] += int(collar.get("sessions") or 0)
+                stats["seconds"] += float(collar.get("total_duration_seconds") or 0)
+    return _sort_labelers(list(merged.values()))
+
+
+def _split_group_senders(
+    labelers: List[Dict[str, Any]], group_senders: Optional[set]
+) -> List[Dict[str, Any]]:
+    """A group sender is several people, so it gets one row per collar instead of one row."""
+    if not group_senders:
+        return labelers
+    out: List[Dict[str, Any]] = []
+    for labeler in labelers:
+        if (labeler["email"] or "").lower() not in group_senders or not labeler["collars"]:
+            out.append(labeler)
+            continue
+        for sn, stats in labeler["collars"].items():
+            out.append({
+                "email": labeler["email"],
+                "group_collar": sn,
+                "sessions": stats["sessions"],
+                "seconds": stats["seconds"],
+                "collars": {sn: stats},
+            })
+    return _sort_labelers(out)
 
 
 def labeler_name(
     labeler: Dict[str, Any],
     owner_names: Dict[str, str],
-    group_senders: Optional[set] = None,
+    owner_emails: Optional[Dict[str, str]] = None,
+    names_by_email: Optional[Dict[str, str]] = None,
 ) -> str:
     """
-    Owner name of the collar they labeled most, else the part of the email before @.
-    A group sender is several people, so it is named as the shared inbox, not after a collar.
+    The friendliest name we have, falling back to more technical ones:
+    owner name, then email, then collar serial, then the shared inbox.
     """
-    email = (labeler["email"] or "").lower()
-    if group_senders and email in group_senders:
+    email = labeler["email"] or ""
+    if "group_collar" in labeler:
+        sn = labeler["group_collar"]
+        if sn and sn != "_unknown":
+            key = serial_key(sn)
+            return owner_names.get(key) or (owner_emails or {}).get(key) or f"collar {sn}"
         return f"{email.split('@', 1)[0]}@ shared inbox"
-    for sn, _ in sorted(labeler["collars"].items(), key=lambda item: -item[1]):
+    name = (names_by_email or {}).get(email.lower())
+    if name:
+        return name
+    for sn in _busiest_first(labeler["collars"]):
         name = owner_names.get(serial_key(sn))
         if name:
             return name
-    return (labeler["email"] or "someone").split("@", 1)[0]
+    return email or "someone"
 
 
 def _dog_names(day_data: Dict[str, Any]) -> List[str]:
@@ -110,7 +151,7 @@ def _dogs_by_collar(day_data: Dict[str, Any]) -> Dict[str, str]:
 def labeler_dogs(labeler: Dict[str, Any], dogs_by_collar: Dict[str, str]) -> List[str]:
     """Dogs on the labeler's collars, busiest collar first."""
     names: List[str] = []
-    for sn, _ in sorted(labeler["collars"].items(), key=lambda item: -item[1]):
+    for sn in _busiest_first(labeler["collars"]):
         name = dogs_by_collar.get(serial_key(sn))
         if name and name not in names:
             names.append(name)
@@ -168,6 +209,8 @@ def build_daily_report(
     dashboard_url: Optional[str] = None,
     days: int = 1,
     group_senders: Optional[set] = None,
+    owner_emails: Optional[Dict[str, str]] = None,
+    names_by_email: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Slack mrkdwn for the days-long period ending on day (one day by default).
@@ -198,7 +241,7 @@ def build_daily_report(
             f"*{format_minutes(all_seconds)}* of data. Thank you! :sparkles:{link}"
         )
 
-    labelers = _merge_labelers(day_data)
+    labelers = _split_group_senders(_merge_labelers(day_data), group_senders)
     dogs = _dog_names(day_data)
     lines = [
         f":tada: *Labeling recap for {pretty_day}*",
@@ -224,7 +267,7 @@ def build_daily_report(
     dogs_by_collar = _dogs_by_collar(day_data)
     for index, labeler in enumerate(labelers[:SHOUT_OUT_LIMIT]):
         trophy = " :trophy:" if index == 0 and len(labelers) > 1 else ""
-        person = labeler_name(labeler, owner_names, group_senders)
+        person = labeler_name(labeler, owner_names, owner_emails, names_by_email)
         their_dogs = labeler_dogs(labeler, dogs_by_collar)
         shown = ", ".join(their_dogs[:DOGS_PER_LINE])
         if len(their_dogs) > DOGS_PER_LINE:

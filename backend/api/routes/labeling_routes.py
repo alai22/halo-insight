@@ -997,11 +997,13 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         _compute_window_summary(window)
         with _WINDOW_CACHE_LOCK:
             cached = _WINDOW_CACHE.get(key)
-    owners = {
-        row["collar_sn"]: row["owner"]
-        for row in _load_collar_owners().get("owners") or []
-        if row.get("owner")
-    }
+    owner_rows = _load_collar_owners().get("owners") or []
+    owners = {row["collar_sn"]: row["owner"] for row in owner_rows if row.get("owner")}
+    owner_emails = {row["collar_sn"]: row["email"] for row in owner_rows if row.get("email")}
+    names_by_email: Dict[str, str] = {}
+    for row in owner_rows:
+        if row.get("email") and row.get("owner"):
+            names_by_email.setdefault(row["email"].lower(), row["owner"])
     group_senders = {
         s.strip().lower() for s in (Config.LABELING_GROUP_SENDERS or "").split(",") if s.strip()
     }
@@ -1013,6 +1015,8 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         Config.APP_BASE_URL,
         days=days,
         group_senders=group_senders,
+        owner_emails=owner_emails,
+        names_by_email=names_by_email,
     )
 
 
