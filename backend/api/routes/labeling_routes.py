@@ -794,6 +794,13 @@ def _configure_analyzer(analyzer: LabelingDataAnalyzer) -> LabelingDataAnalyzer:
         for row in _load_collar_owners().get("owners") or []
         if row.get("email")
     }
+    analyzer.labeler_aliases = {
+        src.strip().lower(): dst.strip().lower()
+        for src, sep, dst in (
+            pair.partition("=") for pair in (Config.LABELING_LABELER_ALIASES or "").split(",")
+        )
+        if sep and src.strip() and dst.strip()
+    }
     return analyzer
 
 

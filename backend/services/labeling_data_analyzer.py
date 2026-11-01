@@ -392,6 +392,8 @@ class LabelingDataAnalyzer:
         # whose sessions are credited to their collar's owner, by serial key → owner email.
         self.group_senders: set = set()
         self.owner_emails: Dict[str, str] = {}
+        # Labeler emails counted as another person's, lowercase from → to.
+        self.labeler_aliases: Dict[str, str] = {}
 
         if not self.bucket_name:
             raise ValueError("LABELING_S3_BUCKET_NAME is not configured")
@@ -482,9 +484,10 @@ class LabelingDataAnalyzer:
     ) -> Tuple[List[SessionFileRef], Dict[Tuple[str, str], str]]:
         """
         Sessions filed under a group sender are credited to their collar's owner, when the
-        owner list has an email for that collar. Others are left as they are.
+        owner list has an email for that collar. Then labeler aliases apply, so one person's
+        second address counts as theirs. Others are left as they are.
         """
-        if not self.group_senders or not self.owner_emails:
+        if not (self.group_senders and self.owner_emails) and not self.labeler_aliases:
             return files, session_collar
         credited: List[SessionFileRef] = []
         remapped: Dict[Tuple[str, str], str] = {}
@@ -497,9 +500,10 @@ class LabelingDataAnalyzer:
                 else None
             )
             user = owner or ref.user
+            user = self.labeler_aliases.get(user.lower(), user)
             if sn:
                 remapped[(user, session_id)] = sn
-            credited.append(replace_ref(ref, user=user) if owner else ref)
+            credited.append(replace_ref(ref, user=user) if user != ref.user else ref)
         return credited, remapped
 
     def _analyze_file_set(

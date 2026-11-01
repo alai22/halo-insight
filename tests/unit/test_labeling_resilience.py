@@ -436,9 +436,15 @@ def test_configure_analyzer_reads_group_senders_and_owner_emails(monkeypatch):
     class _A:
         pass
 
+    monkeypatch.setattr(
+        routes.Config,
+        "LABELING_LABELER_ALIASES",
+        "JenniferPeterson400@yahoo.com=alai@halocollar.com, junk, =x@y.com",
+    )
     analyzer = routes._configure_analyzer(_A())
     assert analyzer.group_senders == {"ai_logs@halocollar.com", "other@x.com"}
     assert analyzer.owner_emails == {"sn1": "jenny@yahoo.com"}
+    assert analyzer.labeler_aliases == {"jenniferpeterson400@yahoo.com": "alai@halocollar.com"}
 
 
 def test_saving_owners_rebuilds_the_summary(monkeypatch):

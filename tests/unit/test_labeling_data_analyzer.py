@@ -339,3 +339,40 @@ def test_group_sender_sessions_are_credited_to_the_collar_owner():
     assert users == {"jenny@yahoo.com", "ai_logs@halocollar.com", "brivera@halocollar.com"}
     jenny = [s for s in result["sessions"] if s["user"] == "jenny@yahoo.com"]
     assert [s["collar_sn"] for s in jenny] == ["25h5425925vm"]
+
+
+def test_labeler_aliases_apply_to_direct_and_collar_credited_sessions():
+    from backend.services.labeling_data_analyzer import SessionFileRef
+
+    def ref(user, sn, ts):
+        return SessionFileRef(
+            key=f"x/{user}/{sn}/{ts}.txt", user=user, filename=f"{ts}.txt",
+            timestamp=ts, index=0, kind="durations", size=11, collar_sn=sn,
+        )
+
+    files = [
+        ref("jenniferpeterson400@yahoo.com", "26h5220121th", "2026-10-25T10:00:00"),  # sent directly
+        ref("ai_logs@halocollar.com", "25h5425925vm", "2026-10-26T10:00:00"),  # via the group
+        ref("victor@vmo3.com", "24h4290375rt", "2026-10-27T10:00:00"),  # untouched
+    ]
+
+    class _S3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            class _B:
+                def read(self):
+                    return b"Durations:\n"
+
+            return {"Body": _B()}
+
+    analyzer = LabelingDataAnalyzer(bucket_name="alias-test", prefix="x/", s3_client=_S3())
+    analyzer.group_senders = {"ai_logs@halocollar.com"}
+    analyzer.owner_emails = {"25h5425925vm": "jenniferpeterson400@yahoo.com"}
+    analyzer.labeler_aliases = {"jenniferpeterson400@yahoo.com": "alai@halocollar.com"}
+    result = analyzer.analyze(include_content=True, files=files)
+    by_user = {}
+    for session in result["sessions"]:
+        by_user.setdefault(session["user"], []).append(session["collar_sn"])
+    assert by_user == {
+        "alai@halocollar.com": ["26h5220121th", "25h5425925vm"],
+        "victor@vmo3.com": ["24h4290375rt"],
+    }
