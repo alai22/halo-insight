@@ -891,7 +891,7 @@ function SlackRecapPanel({ onClose }) {
         <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-800">
           {preview && !preview.configured ? (
             <p className="mb-3 text-xs text-amber-800">
-              Slack is not set up yet: set LABELING_REPORT_SLACK_CHANNEL and a bot token on the server.
+              Slack is not set up yet: set LABELING_REPORT_SLACK_WEBHOOK_URL on the server.
             </p>
           ) : null}
           {preview?.last_error ? (

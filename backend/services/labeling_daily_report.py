@@ -198,6 +198,17 @@ def build_daily_report(
     return "\n".join(lines) + link
 
 
+def post_to_slack_webhook(url: str, text: str) -> None:
+    """Post one message to an incoming webhook. Errors never include the URL, a secret."""
+    try:
+        resp = requests.post(url, json={"text": text, "unfurl_links": False}, timeout=15)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Slack webhook request failed: {type(exc).__name__}") from None
+    if resp.status_code != 200:
+        raise RuntimeError(f"Slack webhook returned {resp.status_code}: {resp.text[:100]}")
+    logger.info("Labeling daily report posted via webhook chars=%s", len(text))
+
+
 def post_to_slack(token: str, channel: str, text: str) -> Dict[str, Any]:
     """Post one message; returns Slack's response. Raises on transport or API errors."""
     resp = requests.post(

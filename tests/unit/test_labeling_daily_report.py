@@ -121,3 +121,31 @@ def test_send_skips_a_day_already_posted_and_starts_otherwise(monkeypatch):
     assert response.status_code == 202
     assert sent == ["2026-10-31"]
     routes._REPORT_RUNNING["day"] = None
+
+
+def test_webhook_is_used_when_set_and_its_url_never_appears_in_errors(monkeypatch):
+    from backend.services import labeling_daily_report as report
+
+    posted = []
+
+    class _Resp:
+        status_code = 200
+        text = "ok"
+
+    monkeypatch.setattr(report.requests, "post", lambda url, json, timeout: posted.append((url, json)) or _Resp())
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/secret")
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_CHANNEL", None)
+    assert routes._report_configured() is True
+    routes._post_report("hello")
+    assert posted == [("https://hooks.slack.com/services/T/B/secret", {"text": "hello", "unfurl_links": False})]
+
+    def _boom(url, json, timeout):
+        raise report.requests.ConnectionError(f"cannot reach {url}")
+
+    monkeypatch.setattr(report.requests, "post", _boom)
+    try:
+        routes._post_report("hello")
+    except RuntimeError as exc:
+        assert "secret" not in str(exc)
+    else:
+        raise AssertionError("expected a failure")

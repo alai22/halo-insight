@@ -30,7 +30,12 @@ from backend.services.labeling_collar_sync_service import (
     redact_secrets,
     sync_done_message,
 )
-from backend.services.labeling_daily_report import build_daily_report, post_to_slack, report_day
+from backend.services.labeling_daily_report import (
+    build_daily_report,
+    post_to_slack,
+    post_to_slack_webhook,
+    report_day,
+)
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.services.ml_processed_inventory import MlProcessedInventory, ml_object_key_allowed
 from backend.utils.config import Config
@@ -828,6 +833,21 @@ def _report_token() -> Optional[str]:
     return Config.LABELING_REPORT_SLACK_TOKEN or Config.SLACK_BOT_TOKEN
 
 
+def _report_configured() -> bool:
+    """A webhook URL, or a channel plus a bot token."""
+    return bool(
+        Config.LABELING_REPORT_SLACK_WEBHOOK_URL
+        or (Config.LABELING_REPORT_SLACK_CHANNEL and _report_token())
+    )
+
+
+def _post_report(text: str) -> None:
+    if Config.LABELING_REPORT_SLACK_WEBHOOK_URL:
+        post_to_slack_webhook(Config.LABELING_REPORT_SLACK_WEBHOOK_URL, text)
+    else:
+        post_to_slack(_report_token(), Config.LABELING_REPORT_SLACK_CHANNEL, text)
+
+
 def _report_state() -> Dict[str, Any]:
     try:
         return json.loads(
@@ -884,7 +904,7 @@ def _send_daily_report(day: str) -> None:
     state = _report_state()
     try:
         text = _build_report_text(day, allow_scan=True)
-        post_to_slack(_report_token(), Config.LABELING_REPORT_SLACK_CHANNEL, text)
+        _post_report(text)
         state.update({
             "last_posted_day": day,
             "last_posted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -929,7 +949,7 @@ def labeling_daily_report_preview():
         "data": {
             "day": day,
             "text": text,
-            "configured": bool(Config.LABELING_REPORT_SLACK_CHANNEL and _report_token()),
+            "configured": _report_configured(),
             "last_posted_day": state.get("last_posted_day"),
             "last_posted_at": state.get("last_posted_at"),
             "last_error": state.get("last_error"),
@@ -947,10 +967,10 @@ def labeling_send_daily_report():
     """
     if not _report_request_authorized():
         return jsonify({"success": False, "error": "Not authorized"}), 401
-    if not (Config.LABELING_REPORT_SLACK_CHANNEL and _report_token()):
+    if not _report_configured():
         return jsonify({
             "success": False,
-            "error": "Set LABELING_REPORT_SLACK_CHANNEL and a Slack bot token on the server.",
+            "error": "Set LABELING_REPORT_SLACK_WEBHOOK_URL on the server.",
         }), 400
     body = request.get_json(silent=True) or {}
     day = str(body.get("date") or "").strip() or report_day(Config.LABELING_REPORT_TIMEZONE)

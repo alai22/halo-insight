@@ -262,6 +262,9 @@ class Config:
     PRODUCT_NOTION_ALLOWED_DATABASE_IDS: str = os.getenv('PRODUCT_NOTION_ALLOWED_DATABASE_IDS', '')
 
     # Daily labeling recap posted to Slack (see docs/LABELING_DAILY_REPORT.md)
+    # Incoming webhook URL (preferred: can only post to its one channel)
+    LABELING_REPORT_SLACK_WEBHOOK_URL: Optional[str] = os.getenv('LABELING_REPORT_SLACK_WEBHOOK_URL')
+    # Or a channel ID plus a bot token, used when no webhook URL is set
     LABELING_REPORT_SLACK_CHANNEL: Optional[str] = os.getenv('LABELING_REPORT_SLACK_CHANNEL')
     # Bot token with chat:write; falls back to SLACK_BOT_TOKEN
     LABELING_REPORT_SLACK_TOKEN: Optional[str] = os.getenv('LABELING_REPORT_SLACK_TOKEN')
