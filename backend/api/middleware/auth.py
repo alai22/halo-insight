@@ -30,11 +30,8 @@ def require_auth(f):
             # Session not available (no secret key) - check for token header
             pass
         
-        # Fallback: Check for auth token in headers (temporary workaround)
-        auth_token = request.headers.get('X-Auth-Token')
-        if auth_token:
-            # Simple validation - token exists means user logged in
-            # In production with proper FLASK_SECRET_KEY, this won't be needed
+        # Fallback: a signed token issued by /api/auth/password-login
+        if AuthService.verify_auth_token(request.headers.get('X-Auth-Token')):
             logger.debug(f"Authenticated via token header for {request.path}")
             return f(*args, **kwargs)
         
@@ -80,4 +77,56 @@ def require_admin_auth(f):
             'message': 'Please log in with admin credentials to access this resource'
         }), 401
     
+    return decorated_function
+
+
+LABELING_VIEWER_ROLE = 'labeling_viewer'
+
+# The only API calls a labeling viewer may make: read-only labeling stats and login.
+_VIEWER_ALLOWED = {
+    ('GET', '/api/labeling/status'),
+    ('GET', '/api/labeling/summary'),
+    ('GET', '/api/labeling/collar-owners'),
+    ('GET', '/api/auth/status'),
+    ('GET', '/api/auth/admin-status'),
+    ('POST', '/api/auth/logout'),
+}
+
+
+def is_labeling_viewer() -> bool:
+    """True when the session belongs to an outside labeling viewer."""
+    try:
+        return session.get('role') == LABELING_VIEWER_ROLE
+    except RuntimeError:
+        return False
+
+
+def restrict_labeling_viewers():
+    """
+    before_request hook: a labeling viewer gets 403 on every API call outside
+    _VIEWER_ALLOWED, whatever decorator (or none) the route has.
+    """
+    if not request.path.startswith('/api/') or not is_labeling_viewer():
+        return None
+    if (request.method, request.path.rstrip('/')) in _VIEWER_ALLOWED:
+        return None
+    if request.method == 'OPTIONS':
+        return None
+    logger.warning(f"Labeling viewer blocked from {request.method} {request.path}")
+    return jsonify({
+        'error': 'Not available',
+        'message': 'This account can only view labeling stats.'
+    }), 403
+
+
+def require_labeling_read(f):
+    """Admins, or a labeling viewer for read-only labeling routes."""
+    admin_only = require_admin_auth(f)
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if is_labeling_viewer():
+            return f(*args, **kwargs)
+        return admin_only(*args, **kwargs)
+
     return decorated_function

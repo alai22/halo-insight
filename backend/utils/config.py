@@ -329,6 +329,9 @@ class Config:
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     # Admin email(s) for Google SSO admin access (comma-separated for multiple admins)
     ADMIN_EMAIL: Optional[str] = os.getenv('ADMIN_EMAIL', '')
+    # Outside people who may log in by email link to view labeling stats only
+    # (comma-separated emails, e.g. a contractor). They see no other tool and run no jobs.
+    LABELING_VIEWER_EMAILS: str = os.getenv('LABELING_VIEWER_EMAILS', '')
     # Domains allowed for magic link and Google SSO (comma-separated, no @)
     # Example: halocollar.com,softeq.com
     ALLOWED_EMAIL_DOMAINS: str = os.getenv('ALLOWED_EMAIL_DOMAINS', 'halocollar.com')
@@ -339,6 +342,12 @@ class Config:
         parts = {d.strip().lower() for d in cls.ALLOWED_EMAIL_DOMAINS.split(',') if d.strip()}
         return frozenset(parts) if parts else frozenset({'halocollar.com'})
     
+    @classmethod
+    def is_labeling_viewer_email(cls, email: str) -> bool:
+        """True for an email listed in LABELING_VIEWER_EMAILS."""
+        viewers = [e.strip().lower() for e in cls.LABELING_VIEWER_EMAILS.split(',') if e.strip()]
+        return bool(email) and email.strip().lower() in viewers
+
     @classmethod
     def is_admin_email(cls, email: str) -> bool:
         """Check if email is an admin email"""

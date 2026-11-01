@@ -7,6 +7,7 @@ from __future__ import annotations
 import gzip
 import hmac
 import json
+from functools import wraps
 import re
 import threading
 import time
@@ -17,7 +18,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import boto3
 from flask import Blueprint, jsonify, request, session
 
-from backend.api.middleware.auth import require_admin_auth
+from backend.api.middleware.auth import (
+    is_labeling_viewer,
+    require_admin_auth,
+    require_labeling_read,
+)
 from backend.services.labeling_data_analyzer import (
     LabelingDataAnalyzer,
     file_snapshot_payload,
@@ -783,7 +788,7 @@ def _staging_inventory() -> Dict[str, Any]:
 
 
 @labeling_bp.route("/status", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
 def labeling_status():
     """Staging vs processed output inventory + process job state."""
     try:
@@ -958,7 +963,7 @@ def _rebuild_summary_in_background() -> None:
 
 
 @labeling_bp.route("/collar-owners", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
 def labeling_collar_owners():
     """The collar → owner list. Empty until someone saves one."""
     body = _load_collar_owners()
@@ -1899,8 +1904,28 @@ def labeling_process():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+def _without_pay_for_viewers(f):
+    """Labeling viewers (outside contractors) never receive labeler pay eligibility."""
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        result = f(*args, **kwargs)
+        if not is_labeling_viewer():
+            return result
+        response, status = (result if isinstance(result, tuple) else (result, None))
+        body = response.get_json(silent=True)
+        overview = ((body or {}).get("data") or {}).get("overview")
+        if isinstance(overview, dict) and "compensation" in overview:
+            overview.pop("compensation")
+            response.set_data(json.dumps(body))
+        return (response, status) if status is not None else response
+
+    return decorated
+
+
 @labeling_bp.route("/summary", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
+@_without_pay_for_viewers
 def labeling_summary():
     """
     Summarize processed labeling exports under extracted-txt/.
@@ -1916,13 +1941,18 @@ def labeling_summary():
                    (inclusive) are counted. Built and cached apart from the full summary.
     """
     try:
-        refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        # Viewers read what is there; only admins start a rescan.
+        refresh = (
+            request.args.get("refresh", "").lower() in ("1", "true", "yes")
+            and not is_labeling_viewer()
+        )
         try:
             ttl = int(request.args.get("ttl", _DEFAULT_CACHE_TTL_SEC))
         except ValueError:
             ttl = _DEFAULT_CACHE_TTL_SEC
 
-        ttl_sec = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+        # A tiny ttl would make every poll start a rescan; viewers get the default.
+        ttl_sec = ttl if ttl > 0 and not is_labeling_viewer() else _DEFAULT_CACHE_TTL_SEC
         window = _parse_window(request.args)
         if window is not None:
             return _window_summary_response(window, refresh, ttl_sec)

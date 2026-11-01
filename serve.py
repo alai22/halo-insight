@@ -55,6 +55,13 @@ def before_request():
         g.service_container = None
 
 
+# API routes are copied from api_app below, so its before_request hooks do not run
+# here. Outside labeling viewers reach read-only labeling stats and nothing else.
+from backend.api.middleware.auth import restrict_labeling_viewers
+
+app.before_request(restrict_labeling_viewers)
+
+
 @app.route("/health")
 def liveness():
     """ALB and Docker probe this path. Keep it local and always HTTP 200."""

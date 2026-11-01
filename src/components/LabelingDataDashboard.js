@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -1684,7 +1684,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
         <ChartCard
           title="Top people"
           description="Owners and labelers, ranked by labeled time. The list Slack posts."
-          action={<EditLabelersButton onClick={onEditLabelers} />}
+          action={onEditLabelers ? <EditLabelersButton onClick={onEditLabelers} /> : null}
         >
           <ShoutOutList
             empty="Nobody labeled in this range."
@@ -1797,7 +1797,7 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
       <ChartCard
         title="Progress by person"
         description={`Green labels have ${minLabel} or more. Amber ones are started but short; the time shown is what they have so far.`}
-        action={<EditLabelersButton onClick={onEditLabelers} />}
+        action={onEditLabelers ? <EditLabelersButton onClick={onEditLabelers} /> : null}
       >
         {people.length === 0 ? (
           <p className="text-sm text-gray-500">Nobody here in this range.</p>
@@ -3086,8 +3086,10 @@ function describeBlockingJob(job) {
   return parts.join(' · ');
 }
 
-/** Start and end date for every stat on the page, with quick presets. */
+/** Start and end date for every stat on the page: a compact button that opens presets. */
 function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRetry }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
   const today = localDayOffset(0);
   const presets = [
     { label: 'All time', start: '', end: '' },
@@ -3096,69 +3098,117 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
     { label: 'This year', start: `${today.slice(0, 4)}-01-01`, end: '' },
   ];
   const active = presets.find((p) => p.start === range.start && p.end === range.end);
-  const inputClass = 'px-2 py-1 text-sm border border-gray-300 rounded-md bg-white';
+  const label = active ? active.label : describeRange(range);
+  const inputClass = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md bg-white';
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
-      <span className="text-sm font-medium text-gray-700">Date range</span>
-      <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
-        {presets.map((preset) => (
-          <button
-            key={preset.label}
-            type="button"
-            onClick={() => onChange({ start: preset.start, end: preset.end })}
-            className={`px-2.5 py-1 ${
-              active === preset ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            {preset.label}
-          </button>
-        ))}
-      </div>
-      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-        From
-        <input
-          type="date"
-          value={range.start}
-          max={range.end || undefined}
-          onChange={(e) => onChange({ ...range, start: e.target.value })}
-          className={inputClass}
-        />
-      </label>
-      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-        To
-        <input
-          type="date"
-          value={range.end}
-          min={range.start || undefined}
-          onChange={(e) => onChange({ ...range, end: e.target.value })}
-          className={inputClass}
-        />
-      </label>
-      <span className="text-xs text-gray-500 ml-auto">
-        {error ? (
-          <span className="inline-flex items-center gap-2 text-amber-800">
-            <AlertCircle className="h-3 w-3" />
-            {error}
-            <button type="button" onClick={onRetry} className="underline hover:text-amber-950">
-              Retry
-            </button>
-          </span>
-        ) : building ? (
-          <span className="inline-flex items-center gap-1.5">
-            <RefreshCw className="h-3 w-3 animate-spin" />
-            {waitingOn
-              ? `Range stats wait for ${waitingOn}`
-              : `Building stats for this range (${describeRange(range)})…`}
-          </span>
-        ) : ready && (range.start || range.end) ? (
-          `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
-        ) : null}
-      </span>
+    <div ref={rootRef} className="relative inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50"
+        title={building ? waitingOn ? `Range stats wait for ${waitingOn}` : 'Building stats for this range…' : undefined}
+      >
+        {building && !error ? (
+          <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+        ) : error ? (
+          <AlertCircle className="h-4 w-4 text-amber-600" />
+        ) : (
+          <Calendar className="h-4 w-4 text-gray-500" />
+        )}
+        {label}
+        <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full mt-2 z-30 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+          <div className="flex flex-col">
+            {presets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  onChange({ start: preset.start, end: preset.end });
+                  setOpen(false);
+                }}
+                className={`text-left px-2.5 py-1.5 rounded-md text-sm ${
+                  active === preset ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 text-xs text-gray-500">
+              From
+              <input
+                type="date"
+                value={range.start}
+                max={range.end || undefined}
+                onChange={(e) => onChange({ ...range, start: e.target.value })}
+                className={inputClass}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-gray-500">
+              To
+              <input
+                type="date"
+                value={range.end}
+                min={range.start || undefined}
+                onChange={(e) => onChange({ ...range, end: e.target.value })}
+                className={inputClass}
+              />
+            </label>
+          </div>
+          <p className="mt-3 text-xs text-gray-500">
+            {error ? (
+              <span className="text-amber-800">
+                {error}{' '}
+                <button type="button" onClick={onRetry} className="underline hover:text-amber-950">
+                  Retry
+                </button>
+              </span>
+            ) : building ? (
+              waitingOn ? `Range stats wait for ${waitingOn}.` : `Building stats ${describeRange(range)}…`
+            ) : ready && (range.start || range.end) ? (
+              `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
+            ) : (
+              'Every session and collar log.'
+            )}
+          </p>
+        </div>
+      ) : null}
+      {error ? (
+        <button type="button" onClick={onRetry} className="text-xs text-amber-800 underline hover:text-amber-950">
+          Retry range
+        </button>
+      ) : null}
     </div>
   );
 }
 
-const LabelingDataDashboard = () => {
+/**
+ * readOnly: a labeling viewer (outside contractor). Shows the stats only: no jobs,
+ * editors, Slack recap or pay. The server enforces the same limits.
+ */
+const LabelingDataDashboard = ({ readOnly = false }) => {
   const stored = useMemo(() => readStoredSummary(), []);
   const [range, setRange] = useState(() => readStoredRange());
   const rangeActive = Boolean(range.start || range.end);
@@ -3209,7 +3259,13 @@ const LabelingDataDashboard = () => {
     return map;
   }, [collarOwners]);
   const [recapOpen, setRecapOpen] = useState(false);
-  const [tab, setTabState] = useState(readInitialTab);
+  const visibleTabs = useMemo(
+    () => (readOnly ? LABELING_TABS.filter((t) => t.key !== 'compensation') : LABELING_TABS),
+    [readOnly]
+  );
+  const [tabState, setTabState] = useState(readInitialTab);
+  // A viewer who lands on #compensation sees the Overview instead.
+  const tab = visibleTabs.some((t) => t.key === tabState) ? tabState : 'overview';
   // Which model the Contributors charts show.
   const [contribModel, setContribModel] = useState('activity');
   const setTab = useCallback((key) => {
@@ -3328,7 +3384,7 @@ const LabelingDataDashboard = () => {
     const requestKey = rangeKeyRef.current;
     try {
       const response = await axios.get('/api/labeling/summary', {
-        params: { ...rangeParams, ...(refresh ? { refresh: 1 } : {}) },
+        params: { ...rangeParams, ...(refresh && !readOnly ? { refresh: 1 } : {}) },
       });
       if (requestKey !== rangeKeyRef.current) return true;
       if (response.data.success && response.data.error) {
@@ -3380,7 +3436,7 @@ const LabelingDataDashboard = () => {
       setLoading(false);
     }
     return true;
-  }, [rangeParams, rangeActive]);
+  }, [rangeParams, rangeActive, readOnly]);
 
   const processStaging = useCallback(async () => {
     setError(null);
@@ -3617,12 +3673,12 @@ const LabelingDataDashboard = () => {
   // Auto-promote tiny quarantine batches on load; larger ones need a click.
   useEffect(() => {
     const pending = status?.pending_forwards;
-    if (statusFromCache || !pending || autoPromoteAttemptedRef.current) return;
+    if (readOnly || statusFromCache || !pending || autoPromoteAttemptedRef.current) return;
     if (processing || processInfo?.running) return;
     if (!pending.auto_promote || !(pending.pending_count > 0)) return;
     autoPromoteAttemptedRef.current = true;
     promoteForwards({ silent: true });
-  }, [status?.pending_forwards, statusFromCache, processing, processInfo?.running, promoteForwards]);
+  }, [readOnly, status?.pending_forwards, statusFromCache, processing, processInfo?.running, promoteForwards]);
 
   // If server returned a stale snapshot, poll briefly so background rescan can land
   useEffect(() => {
@@ -4184,7 +4240,25 @@ const LabelingDataDashboard = () => {
             ) : null}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+          <DateRangeBar
+            range={range}
+            onChange={changeRange}
+            building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
+            waitingOn={describeBlockingJob(summaryBlockedBy)}
+            ready={dataMatchesRange}
+            error={rangeError}
+            onRetry={() => {
+              setRangeError(null);
+              fetchSummary({ refresh: true });
+            }}
+          />
+          {readOnly ? (
+            <span className="text-xs text-gray-500 border border-gray-200 rounded-full px-2.5 py-1 bg-white">
+              View only
+            </span>
+          ) : (
+          <>
           <button
             type="button"
             onClick={processStaging}
@@ -4232,6 +4306,8 @@ const LabelingDataDashboard = () => {
             <MessageSquare className="h-4 w-4" />
             Slack recap
           </button>
+          </>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -4247,26 +4323,13 @@ const LabelingDataDashboard = () => {
         </div>
       </div>
 
-      <DateRangeBar
-        range={range}
-        onChange={changeRange}
-        building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
-        waitingOn={describeBlockingJob(summaryBlockedBy)}
-        ready={dataMatchesRange}
-        error={rangeError}
-        onRetry={() => {
-          setRangeError(null);
-          fetchSummary({ refresh: true });
-        }}
-      />
-
       {error && data ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
           Couldn’t refresh summary ({error}). Showing last results.
         </div>
       ) : null}
 
-      {pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
+      {!readOnly && pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
         <div className="mb-4 p-3 bg-violet-50 border border-violet-200 rounded-lg text-sm text-violet-950 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="font-medium">Forwarded quarantine ready to promote</div>
@@ -4293,7 +4356,7 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      {(pendingForwards?.unresolved || []).length > 0 ? (
+      {!readOnly && (pendingForwards?.unresolved || []).length > 0 ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
           {(pendingForwards.unresolved || []).length} forward batch(es) have no recoverable
           original From in meta/body — add <span className="font-mono">Email Body</span> in Make or
@@ -4447,7 +4510,7 @@ const LabelingDataDashboard = () => {
       ) : null}
 
       <div className="mb-6 flex gap-1 border-b border-gray-200" role="tablist">
-        {LABELING_TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.key}
             type="button"
@@ -4474,15 +4537,15 @@ const LabelingDataDashboard = () => {
           nextStep={nextStep}
           onOpenHealth={() => setTab('health')}
           typeOverrides={typeOverrides}
-          onEditLabelers={() => setLabelersOpen(true)}
+          onEditLabelers={readOnly ? null : () => setLabelersOpen(true)}
         />
       ) : null}
 
-      {tab === 'compensation' ? (
+      {tab === 'compensation' && !readOnly ? (
         <CompensationTab data={data} typeOverrides={typeOverrides} onEditLabelers={() => setLabelersOpen(true)} />
       ) : null}
 
-      {labelersOpen ? (
+      {labelersOpen && !readOnly ? (
         <LabelerTypesEditor
           people={data?.overview?.compensation?.people || []}
           overrides={typeOverrides}
@@ -4558,7 +4621,7 @@ const LabelingDataDashboard = () => {
                     stay in staging until someone inspects them.
                   </p>
                 ) : null}
-                {duplicateRefs > 0 ? (
+                {duplicateRefs > 0 && !readOnly ? (
                   <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
                     <button
                       type="button"
@@ -4651,7 +4714,7 @@ const LabelingDataDashboard = () => {
                   }
                   tone={clone && !azureUnreadable ? 'ok' : 'attention'}
                   action={
-                    <button
+                    readOnly ? null : <button
                       type="button"
                       onClick={checkAzure}
                       disabled={processing || !azureConfigured}
@@ -4700,7 +4763,7 @@ const LabelingDataDashboard = () => {
                       : 'ok'
                   }
                   action={
-                    <button
+                    readOnly ? null : <button
                       type="button"
                       onClick={syncCollar}
                       disabled={processing || !azureConfigured}
@@ -4817,7 +4880,7 @@ const LabelingDataDashboard = () => {
           <section className="min-w-0 bg-white border border-gray-200 rounded-lg p-5 mb-6">
             <div className="flex items-baseline justify-between gap-3">
               <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
-              <button
+              {readOnly ? null : <button
                 type="button"
                 onClick={() => setOwnersOpen(true)}
                 className="text-xs text-blue-700 hover:text-blue-900"
@@ -4833,7 +4896,7 @@ const LabelingDataDashboard = () => {
                       ).length
                     } without one`
                   : ''}
-              </button>
+              </button>}
             </div>
             <p className="text-sm text-gray-500 mb-3">
               Labeled sessions per collar and whether each found a collar log. Collars that are
@@ -5034,9 +5097,9 @@ const LabelingDataDashboard = () => {
         />
       ) : null}
 
-      {recapOpen ? <SlackRecapPanel onClose={() => setRecapOpen(false)} /> : null}
+      {recapOpen && !readOnly ? <SlackRecapPanel onClose={() => setRecapOpen(false)} /> : null}
 
-      {ownersOpen ? (
+      {ownersOpen && !readOnly ? (
         <CollarOwnersEditor
           owners={collarOwners}
           updatedAt={collarOwnersUpdatedAt}
