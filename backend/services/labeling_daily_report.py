@@ -59,6 +59,14 @@ def _busiest_first(collars: Dict[str, Dict[str, float]]) -> List[str]:
     return [sn for sn, _ in sorted(collars.items(), key=lambda item: -item[1]["sessions"])]
 
 
+def _add_labels(into: Dict[str, float], rows: Any) -> None:
+    """Add activity rows ({label, seconds}) to a label -> seconds map."""
+    for row in rows or []:
+        label = row.get("label")
+        if label:
+            into[label] = into.get(label, 0.0) + float(row.get("seconds") or 0)
+
+
 def _merge_labelers(day_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Posture and GPS labelers combined by email, with sessions and seconds per collar."""
     merged: Dict[str, Dict[str, Any]] = {}
@@ -66,16 +74,18 @@ def _merge_labelers(day_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         for user in users:
             email = user.get("email") or ""
             row = merged.setdefault(
-                email, {"email": email, "sessions": 0, "seconds": 0.0, "collars": {}}
+                email, {"email": email, "sessions": 0, "seconds": 0.0, "collars": {}, "labels": {}}
             )
             row["sessions"] += int(user.get("sessions") or 0)
             row["seconds"] += float(user.get("total_duration_seconds") or 0)
+            _add_labels(row["labels"], user.get("activities"))
             for collar in user.get("collars") or []:
                 stats = row["collars"].setdefault(
-                    collar.get("collar_sn"), {"sessions": 0, "seconds": 0.0}
+                    collar.get("collar_sn"), {"sessions": 0, "seconds": 0.0, "labels": {}}
                 )
                 stats["sessions"] += int(collar.get("sessions") or 0)
                 stats["seconds"] += float(collar.get("total_duration_seconds") or 0)
+                _add_labels(stats["labels"], collar.get("activities"))
     return _sort_labelers(list(merged.values()))
 
 
@@ -97,8 +107,39 @@ def _split_group_senders(
                 "sessions": stats["sessions"],
                 "seconds": stats["seconds"],
                 "collars": {sn: stats},
+                "labels": dict(stats.get("labels") or {}),
             })
     return _sort_labelers(out)
+
+
+def _merge_same_person(labelers: List[Dict[str, Any]], name_of) -> List[Dict[str, Any]]:
+    """
+    One row per name. Someone who sends from their own email and also through a shared
+    inbox (for their collar) would otherwise be thanked twice.
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    for labeler in labelers:
+        person = name_of(labeler)
+        row = merged.get(person.lower())
+        if row is None:
+            merged[person.lower()] = {
+                **labeler,
+                "person": person,
+                "collars": dict(labeler["collars"]),
+                "labels": dict(labeler.get("labels") or {}),
+            }
+            continue
+        row["sessions"] += labeler["sessions"]
+        row["seconds"] += labeler["seconds"]
+        for label, seconds in (labeler.get("labels") or {}).items():
+            row["labels"][label] = row["labels"].get(label, 0.0) + seconds
+        for sn, stats in labeler["collars"].items():
+            mine = row["collars"].get(sn) or {"sessions": 0, "seconds": 0.0}
+            row["collars"][sn] = {
+                "sessions": mine["sessions"] + stats["sessions"],
+                "seconds": mine["seconds"] + stats["seconds"],
+            }
+    return _sort_labelers(list(merged.values()))
 
 
 def labeler_name(
@@ -224,12 +265,15 @@ def recap_data(
     seconds = period["activity_seconds"] + period["gps_seconds"]
     all_sessions = overall["activity_sessions"] + overall["gps_sessions"]
     all_seconds = overall["activity_seconds"] + overall["gps_seconds"]
-    labelers = _split_group_senders(_merge_labelers(day_data), group_senders)
+    labelers = _merge_same_person(
+        _split_group_senders(_merge_labelers(day_data), group_senders),
+        lambda labeler: labeler_name(labeler, owner_names, owner_emails, names_by_email),
+    )
     dogs_by_collar = _dogs_by_collar(day_data)
     leaderboard = []
     for index, labeler in enumerate(labelers):
         leaderboard.append({
-            "person": labeler_name(labeler, owner_names, owner_emails, names_by_email),
+            "person": labeler["person"],
             "dogs": labeler_dogs(labeler, dogs_by_collar),
             "sessions": labeler["sessions"],
             "seconds": round(labeler["seconds"], 1),
@@ -263,6 +307,51 @@ def recap_data(
             if period_bound
             else None
         ),
+    }
+
+
+# A 5-button remote goes to anyone with REMOTE_MIN_SECONDS in each of REMOTE_MIN_LABELS
+# different labels (postures and environments both count).
+REMOTE_MIN_SECONDS = 120
+REMOTE_MIN_LABELS = 9
+
+
+def remote_eligibility(
+    data: Dict[str, Any],
+    owner_names: Optional[Dict[str, str]] = None,
+    group_senders: Optional[set] = None,
+    owner_emails: Optional[Dict[str, str]] = None,
+    names_by_email: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Who has earned a remote, and how close everyone else is, from a summary."""
+    owner_names = owner_names or {}
+    labelers = _merge_same_person(
+        _split_group_senders(_merge_labelers(data), group_senders),
+        lambda labeler: labeler_name(labeler, owner_names, owner_emails, names_by_email),
+    )
+    dogs_by_collar = _dogs_by_collar(data)
+    people = []
+    for labeler in labelers:
+        labels = sorted(labeler.get("labels", {}).items(), key=lambda item: -item[1])
+        qualified = [{"label": k, "seconds": round(v, 1)} for k, v in labels if v >= REMOTE_MIN_SECONDS]
+        close = [
+            {"label": k, "seconds": round(v, 1)} for k, v in labels if 0 < v < REMOTE_MIN_SECONDS
+        ]
+        people.append({
+            "person": labeler["person"],
+            "dogs": labeler_dogs(labeler, dogs_by_collar),
+            "sessions": labeler["sessions"],
+            "seconds": round(labeler["seconds"], 1),
+            "qualified": qualified,
+            "close": close,
+            "eligible": len(qualified) >= REMOTE_MIN_LABELS,
+        })
+    people.sort(key=lambda p: (not p["eligible"], -len(p["qualified"]), -p["seconds"]))
+    return {
+        "min_seconds": REMOTE_MIN_SECONDS,
+        "min_labels": REMOTE_MIN_LABELS,
+        "eligible": sum(1 for p in people if p["eligible"]),
+        "people": people,
     }
 
 

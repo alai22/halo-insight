@@ -36,6 +36,7 @@ from backend.services.labeling_daily_report import (
     period_change,
     period_start,
     recap_data,
+    remote_eligibility,
     post_to_slack,
     post_to_slack_webhook,
     report_day,
@@ -846,12 +847,14 @@ def _attach_overview(
         ).isoformat()
         start = window[0] if window and window[0] != _OPEN_START else None
         end = window[1] if window and window[1] != _OPEN_END else today
-        recap = recap_data(end, data, all_data, start=start, **_recap_lookups())
+        lookups = _recap_lookups()
+        recap = recap_data(end, data, all_data, start=start, **lookups)
         change_start = start or (date.fromisoformat(end) - timedelta(days=6)).isoformat()
         data["overview"] = {
             "recap": recap,
             "change": period_change(all_data, change_start, end),
             "change_is_last_7_days": start is None,
+            "compensation": remote_eligibility(data, **lookups),
         }
     except Exception as exc:  # noqa: BLE001 - the rest of the summary still works
         logger.warning("Labeling overview failed: %s", exc)

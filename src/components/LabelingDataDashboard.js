@@ -1,5 +1,6 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
@@ -1150,6 +1151,7 @@ const LABELING_TABS = [
   { key: 'health', label: 'Data health' },
   { key: 'contributors', label: 'Contributors' },
   { key: 'coverage', label: 'Coverage' },
+  { key: 'compensation', label: 'Compensation' },
 ];
 const TAB_STORAGE_KEY = 'halo_labeling_tab_v1';
 
@@ -1197,17 +1199,25 @@ function StatTile({ label, value, children }) {
   );
 }
 
-/** Labeled sessions per day, stacked by model, filled so quiet days show as gaps. */
-function SessionsPerDayChart({ data, start, end }) {
-  const rows = useMemo(() => {
+/** Views for the Overview chart; days are filled so quiet days show as gaps. */
+const OVER_TIME_VIEWS = [
+  { key: 'day', label: 'Per day' },
+  { key: 'week', label: 'Per week' },
+  { key: 'total', label: 'Running total' },
+];
+
+/** Sessions per day or week by model, or labeled hours accumulating over the range. */
+function LabeledOverTimeChart({ data, start, end }) {
+  const days = useMemo(() => {
     const counts = new Map();
     [
       ['activity', data?.by_date || []],
       ['gps', data?.gps?.by_date || []],
-    ].forEach(([family, days]) =>
-      days.forEach((d) => {
-        const row = counts.get(d.date) || { activity: 0, gps: 0 };
+    ].forEach(([family, rows]) =>
+      rows.forEach((d) => {
+        const row = counts.get(d.date) || { activity: 0, gps: 0, activitySec: 0, gpsSec: 0 };
         row[family] += Number(d.sessions) || 0;
+        row[`${family}Sec`] += Number(d.duration_seconds) || 0;
         counts.set(d.date, row);
       })
     );
@@ -1218,24 +1228,99 @@ function SessionsPerDayChart({ data, start, end }) {
     const out = [];
     for (let t = first; t <= last; t += DAY_MS) {
       const date = new Date(t).toISOString().slice(0, 10);
-      out.push({ date, label: date.slice(5), ...(counts.get(date) || { activity: 0, gps: 0 }) });
+      out.push({ date, ...(counts.get(date) || { activity: 0, gps: 0, activitySec: 0, gpsSec: 0 }) });
     }
     return out;
   }, [data, start, end]);
-  if (!rows.length) return <p className="text-sm text-gray-500">No labeled sessions in this range.</p>;
+  // Daily bars turn into slivers past a few months, so long ranges open on weeks.
+  const [view, setView] = useState(null);
+  const shown = view || (days.length > 90 ? 'week' : 'day');
+
+  const rows = useMemo(() => {
+    if (shown === 'day') return days.map((d) => ({ ...d, label: d.date.slice(5) }));
+    if (shown === 'week') {
+      const weeks = new Map();
+      days.forEach((d) => {
+        const t = Date.parse(`${d.date}T00:00:00Z`);
+        const monday = new Date(t - ((new Date(t).getUTCDay() + 6) % 7) * DAY_MS).toISOString().slice(0, 10);
+        const row = weeks.get(monday) || { date: `Week of ${monday}`, label: monday.slice(5), activity: 0, gps: 0 };
+        row.activity += d.activity;
+        row.gps += d.gps;
+        weeks.set(monday, row);
+      });
+      return [...weeks.values()];
+    }
+    let activity = 0;
+    let gps = 0;
+    return days.map((d) => {
+      activity += d.activitySec;
+      gps += d.gpsSec;
+      return {
+        date: d.date,
+        label: d.date.slice(5),
+        activity: Math.round((activity / 3600) * 10) / 10,
+        gps: Math.round((gps / 3600) * 10) / 10,
+      };
+    });
+  }, [days, shown]);
+
+  if (!days.length) return <p className="text-sm text-gray-500">No labeled sessions in this range.</p>;
+  const total = shown === 'total';
   return (
-    <div style={{ height: 220 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
-          <YAxis tick={{ fontSize: 12 }} allowDecimals={false} width={32} />
-          <Tooltip labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="activity" name="Activity" stackId="s" fill="#34A853" />
-          <Bar dataKey="gps" name="Indoor/outdoor" stackId="s" fill="#4285F4" radius={[2, 2, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <p className="text-xs text-gray-500">
+          {total
+            ? start
+              ? `Hours labeled since ${start}, stacked by model.`
+              : 'Hours of labeled data in the dataset, stacked by model.'
+            : `Labeled sessions each ${shown}, by model.`}
+        </p>
+        <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+          {OVER_TIME_VIEWS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setView(option.key)}
+              className={`px-2.5 py-1 ${
+                shown === option.key ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{ height: 240 }} className="[&_*:focus]:outline-none">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={24} />
+            <YAxis
+              tick={{ fontSize: 12 }}
+              allowDecimals={total}
+              width={40}
+              tickFormatter={total ? (v) => `${v}h` : undefined}
+            />
+            <Tooltip
+              labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''}
+              formatter={total ? (v, name) => [`${v} h`, name] : undefined}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {total ? (
+              <>
+                <Area type="monotone" dataKey="activity" name="Activity" stackId="t" stroke="#34A853" fill="#34A853" fillOpacity={0.25} />
+                <Area type="monotone" dataKey="gps" name="Indoor/outdoor" stackId="t" stroke="#4285F4" fill="#4285F4" fillOpacity={0.25} />
+              </>
+            ) : (
+              <>
+                <Bar dataKey="activity" name="Activity" stackId="s" fill="#34A853" maxBarSize={28} />
+                <Bar dataKey="gps" name="Indoor/outdoor" stackId="s" fill="#4285F4" maxBarSize={28} radius={[2, 2, 0, 0]} />
+              </>
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
@@ -1279,7 +1364,10 @@ function shareTakeaway(rows) {
 }
 
 /** The recap for the selected range, in plain language, with one simple chart. */
+const SHOUT_OUT_ROWS = 10;
+
 function OverviewTab({ data, nextStep, onOpenHealth }) {
+  const [showAllShoutOuts, setShowAllShoutOuts] = useState(false);
   const overview = data?.overview;
   if (!overview) {
     return (
@@ -1390,7 +1478,12 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+      <ChartCard title="Labeled over time" description="Is data coming in, and how fast is the dataset growing?">
+        <LabeledOverTimeChart data={data} start={recap.start} end={allTime ? null : recap.end} />
+      </ChartCard>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+        <div className="xl:col-span-2 min-w-0">
         <ChartCard
           title="Shout-outs"
           description="The good dogs and their people, ranked by labeled time. The same list the Slack recap posts."
@@ -1399,7 +1492,7 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
             <p className="text-sm text-gray-500">Nobody labeled in this range.</p>
           ) : (
             <ul className="divide-y divide-gray-100">
-              {recap.leaderboard.map((row, index) => (
+              {(showAllShoutOuts ? recap.leaderboard : recap.leaderboard.slice(0, SHOUT_OUT_ROWS)).map((row, index) => (
                 <li key={`${row.person}-${index}`} className="flex items-center gap-3 py-2 text-sm">
                   <span className="w-6 text-center">
                     {row.medal ? SLACK_EMOJI[row.medal.replace(/:/g, '')] : ''}
@@ -1422,20 +1515,146 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
               ))}
             </ul>
           )}
+          {recap.leaderboard.length > SHOUT_OUT_ROWS ? (
+            <button
+              type="button"
+              onClick={() => setShowAllShoutOuts((v) => !v)}
+              className="mt-2 text-xs text-gray-600 underline"
+            >
+              {showAllShoutOuts ? 'Show top 10' : `Show all ${recap.leaderboard.length}`}
+            </button>
+          ) : null}
         </ChartCard>
-        <ChartCard title="Sessions per day" description="Is data coming in? Labeled sessions each day, by model.">
-          <SessionsPerDayChart data={data} start={recap.start} end={allTime ? null : recap.end} />
+        </div>
+        <ChartCard
+          title="What we need more of"
+          description="The least-labeled postures and environments in this range. Ask labelers to focus here."
+        >
+          <div className="space-y-5">
+            <NeedsMoreList title="Postures (activity model)" rows={data?.all_activities || []} />
+            <NeedsMoreList title="Environments (indoor/outdoor model)" rows={data?.gps?.all_activities || []} />
+          </div>
         </ChartCard>
+      </div>
+    </div>
+  );
+}
+
+/** Who has earned a 5-button remote: 2+ minutes in each of 9 labels, both models counted. */
+function CompensationTab({ data }) {
+  const comp = data?.overview?.compensation;
+  const [copied, setCopied] = useState(false);
+  if (!comp) {
+    return (
+      <p className="text-sm text-gray-500">
+        Click Refresh to load compensation. It appears once the summary has been rebuilt.
+      </p>
+    );
+  }
+  const recap = data.overview.recap;
+  const minLabel = `${Math.round(comp.min_seconds / 60)} minutes`;
+  const eligible = comp.people.filter((p) => p.eligible);
+  const copyEligible = () => {
+    const text = eligible
+      .map((p) => `${p.person}${p.dogs.length ? ` (${p.dogs.join(', ')})` : ''}: ${p.qualified.length} labels`)
+      .join('\n');
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-gray-900">5-button remote</h2>
+          <p className="text-sm text-gray-600 mt-1 max-w-3xl">
+            Anyone with at least <strong>{minLabel}</strong> in each of <strong>{comp.min_labels}</strong>{' '}
+            different labels earns one. Postures and environments both count (indoor, outdoor, walking,
+            running, potty and so on). Counted over{' '}
+            {recap.start ? `${formatShortDay(recap.start)} – ${formatShortDay(recap.end)}` : 'all time'}; change
+            it with the date range above.
+          </p>
+        </div>
+        {eligible.length ? (
+          <button
+            type="button"
+            onClick={copyEligible}
+            className="text-xs px-3 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50"
+          >
+            {copied ? 'Copied' : `Copy ${eligible.length} eligible`}
+          </button>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile label="Eligible" value={comp.eligible} />
+        <StatTile label="Labelers" value={comp.people.length} />
+        <StatTile
+          label="One or two labels away"
+          value={comp.people.filter((p) => !p.eligible && p.qualified.length >= comp.min_labels - 2).length}
+        />
       </div>
 
       <ChartCard
-        title="What we need more of"
-        description="The least-labeled postures and environments in this range. Ask labelers to focus here."
+        title="Progress by person"
+        description={`Green labels have ${minLabel} or more. Amber ones are started but short; the time shown is what they have so far.`}
       >
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <NeedsMoreList title="Postures (activity model)" rows={data?.all_activities || []} />
-          <NeedsMoreList title="Environments (indoor/outdoor model)" rows={data?.gps?.all_activities || []} />
-        </div>
+        {comp.people.length === 0 ? (
+          <p className="text-sm text-gray-500">Nobody labeled in this range.</p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {comp.people.map((p, index) => {
+              const pct = Math.min(100, (p.qualified.length / comp.min_labels) * 100);
+              const short = comp.min_labels - p.qualified.length;
+              return (
+                <li key={`${p.person}-${index}`} className="py-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="flex-1 min-w-0 text-sm">
+                      {p.dogs.length ? (
+                        <span className="font-medium text-gray-900">
+                          🐶 {p.dogs.slice(0, 3).join(', ')}
+                          {p.dogs.length > 3 ? ` +${p.dogs.length - 3}` : ''}{' '}
+                        </span>
+                      ) : null}
+                      <span className={p.dogs.length ? 'text-gray-500' : 'font-medium text-gray-900'}>
+                        {p.dogs.length ? `(${p.person})` : p.person}
+                      </span>
+                    </span>
+                    <span className="w-40 h-2 rounded-full bg-gray-100 overflow-hidden">
+                      <span
+                        className={`block h-full ${p.eligible ? 'bg-green-500' : 'bg-amber-400'}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </span>
+                    <span className="w-14 text-right text-sm tabular-nums text-gray-700">
+                      {p.qualified.length}/{comp.min_labels}
+                    </span>
+                    <span
+                      className={`w-28 text-center text-xs px-2 py-0.5 rounded-full ${
+                        p.eligible ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-gray-50 text-gray-600 border border-gray-200'
+                      }`}
+                    >
+                      {p.eligible ? '🎁 Eligible' : `${short} more label${short === 1 ? '' : 's'}`}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {p.qualified.map((l) => (
+                      <span key={l.label} className="text-xs px-2 py-0.5 rounded bg-green-50 text-green-800">
+                        {displayLabel(l.label)}
+                      </span>
+                    ))}
+                    {p.close.map((l) => (
+                      <span key={l.label} className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-800">
+                        {displayLabel(l.label)} · {formatSecondsShort(l.seconds)}
+                      </span>
+                    ))}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </ChartCard>
     </div>
   );
@@ -2515,10 +2734,12 @@ function LabelerTable({ rows }) {
 
 function formatSecondsShort(seconds) {
   const s = Number(seconds) || 0;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  const mins = Math.floor(s / 60);
-  const rem = s - mins * 60;
-  if (mins < 60) return `${mins}m ${rem.toFixed(0)}s`;
+  if (s < 59.95) return `${s.toFixed(1)}s`;
+  // Round first so 779.6s reads "13m 0s", not "12m 60s".
+  const whole = Math.round(s);
+  const mins = Math.floor(whole / 60);
+  const rem = whole - mins * 60;
+  if (mins < 60) return `${mins}m ${rem}s`;
   const hours = Math.floor(mins / 60);
   const remMins = mins % 60;
   return `${hours}h ${remMins}m`;
@@ -3949,6 +4170,8 @@ const LabelingDataDashboard = () => {
       {tab === 'overview' ? (
         <OverviewTab data={data} nextStep={nextStep} onOpenHealth={() => setTab('health')} />
       ) : null}
+
+      {tab === 'compensation' ? <CompensationTab data={data} /> : null}
 
       {tab === 'health' ? (
         <>

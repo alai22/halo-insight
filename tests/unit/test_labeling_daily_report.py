@@ -446,3 +446,74 @@ def test_recap_data_gives_the_dashboard_the_same_leaderboard_as_slack():
     assert recap["session_milestone"] == 500
     # All time has no period to have pushed past a milestone.
     assert recap_data("2026-10-30", day, day)["session_milestone"] is None
+
+
+def test_same_person_via_own_email_and_shared_inbox_is_one_row():
+    from backend.services.labeling_daily_report import recap_data
+
+    day = {
+        **_family(
+            9,
+            900,
+            users=[
+                _user("brandon@x.com", 5, 600, [("sn1", 5, 600)]),
+                _user("ai_logs@halocollar.com", 4, 300, [("sn1", 3, 200), ("sn2", 1, 100)]),
+            ],
+            dogs=[{"name": "Dixon", "collar_sn": "sn1"}, {"name": "Rex", "collar_sn": "sn2"}],
+        ),
+        "gps": _family(0, 0),
+    }
+    recap = recap_data(
+        "2026-10-30",
+        day,
+        day,
+        start="2026-10-30",
+        owner_names={"sn1": "Brandon Rivera", "sn2": "Ken E"},
+        group_senders={"ai_logs@halocollar.com"},
+    )
+    assert recap["labelers"] == 2
+    assert [(r["person"], r["dogs"], r["sessions"], r["seconds"]) for r in recap["leaderboard"]] == [
+        ("Brandon Rivera", ["Dixon"], 8, 800.0),
+        ("Ken E", ["Rex"], 1, 100.0),
+    ]
+
+
+def _labeled(email, collar, labels):
+    seconds = sum(labels.values())
+    acts = [{"label": k, "seconds": v} for k, v in labels.items()]
+    return {
+        "email": email,
+        "sessions": len(labels),
+        "total_duration_seconds": seconds,
+        "activities": acts,
+        "collars": [
+            {"collar_sn": collar, "sessions": len(labels), "total_duration_seconds": seconds, "activities": acts}
+        ],
+    }
+
+
+def test_remote_needs_two_minutes_in_nine_labels_across_both_models():
+    from backend.services.labeling_daily_report import remote_eligibility
+
+    postures = {f"Posture{i}": 120 for i in range(6)}
+    data = {
+        **_family(0, 0, users=[
+            _labeled("a@x.com", "sn1", postures),
+            _labeled("b@x.com", "sn2", {**{f"Posture{i}": 300 for i in range(8)}, "Potty": 119}),
+        ]),
+        # a@ also labels three environments through the shared inbox on their collar.
+        "gps": _family(0, 0, users=[
+            _labeled("ai_logs@halocollar.com", "sn1", {"Indoor": 200, "Outdoor": 130, "Door": 125}),
+        ]),
+    }
+    result = remote_eligibility(
+        data,
+        owner_names={"sn1": "Ana", "sn2": "Ben"},
+        group_senders={"ai_logs@halocollar.com"},
+    )
+    assert result["eligible"] == 1
+    ana, ben = result["people"]
+    assert (ana["person"], ana["eligible"], len(ana["qualified"])) == ("Ana", True, 9)
+    # Eight labels at 2 minutes or more; Potty is a second short.
+    assert (ben["person"], ben["eligible"], len(ben["qualified"])) == ("Ben", False, 8)
+    assert ben["close"] == [{"label": "Potty", "seconds": 119}]
