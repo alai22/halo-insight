@@ -10,7 +10,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,7 +33,9 @@ from backend.services.labeling_collar_sync_service import (
 )
 from backend.services.labeling_daily_report import (
     build_daily_report,
+    period_change,
     period_start,
+    recap_data,
     post_to_slack,
     post_to_slack_webhook,
     report_day,
@@ -241,6 +243,7 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     analyzer = _configure_analyzer(LabelingDataAnalyzer())
     raw = analyzer.analyze(include_content=True)
     data = _attach_collar_coverage(format_ui_summary(raw), raw)
+    _attach_overview(data, data)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     _persist_file_snapshot(file_snapshot_payload(analyzer), entry["generated_at"])
@@ -349,6 +352,11 @@ def _compute_window_summary(window: Tuple[str, str]) -> None:
     )
     data = _attach_collar_coverage(format_ui_summary(raw), raw, window)
     data["window"] = _window_label(window)
+    # Streaks, milestones and the change compare against the all-time summary.
+    full = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
+        _DEFAULT_CACHE_TTL_SEC
+    )
+    _attach_overview(data, full["data"] if full else data, window)
     key = f"{window[0]}..{window[1]}"
     with _WINDOW_CACHE_LOCK:
         _WINDOW_CACHE.pop(key, None)
@@ -804,6 +812,51 @@ def _configure_analyzer(analyzer: LabelingDataAnalyzer) -> LabelingDataAnalyzer:
     return analyzer
 
 
+def _recap_lookups() -> Dict[str, Any]:
+    """Owner names, owner emails, names by email and group senders, for naming labelers."""
+    owner_rows = _load_collar_owners().get("owners") or []
+    names_by_email: Dict[str, str] = {}
+    for row in owner_rows:
+        if row.get("email") and row.get("owner"):
+            names_by_email.setdefault(row["email"].lower(), row["owner"])
+    return {
+        "owner_names": {r["collar_sn"]: r["owner"] for r in owner_rows if r.get("owner")},
+        "owner_emails": {r["collar_sn"]: r["email"] for r in owner_rows if r.get("email")},
+        "names_by_email": names_by_email,
+        "group_senders": {
+            s.strip().lower()
+            for s in (Config.LABELING_GROUP_SENDERS or "").split(",")
+            if s.strip()
+        },
+    }
+
+
+def _attach_overview(
+    data: Dict[str, Any],
+    all_data: Dict[str, Any],
+    window: Optional[Tuple[str, str]] = None,
+) -> None:
+    """
+    The dashboard Overview: the recap for the summary's period, plus the change from the
+    same-length period before (the last 7 days vs the 7 before, for all time).
+    """
+    try:
+        today = (
+            date.fromisoformat(report_day(Config.LABELING_REPORT_TIMEZONE)) + timedelta(days=1)
+        ).isoformat()
+        start = window[0] if window and window[0] != _OPEN_START else None
+        end = window[1] if window and window[1] != _OPEN_END else today
+        recap = recap_data(end, data, all_data, start=start, **_recap_lookups())
+        change_start = start or (date.fromisoformat(end) - timedelta(days=6)).isoformat()
+        data["overview"] = {
+            "recap": recap,
+            "change": period_change(all_data, change_start, end),
+            "change_is_last_7_days": start is None,
+        }
+    except Exception as exc:  # noqa: BLE001 - the rest of the summary still works
+        logger.warning("Labeling overview failed: %s", exc)
+
+
 def _rebuild_summary_from_snapshot() -> None:
     """Re-aggregate the all-time summary from the file snapshot, without reading S3 files."""
     snapshot = _load_file_snapshot()
@@ -814,6 +867,7 @@ def _rebuild_summary_from_snapshot() -> None:
     analyzer.text_overrides = snapshot.get("texts") or {}
     raw = analyzer.analyze(include_content=True, files=files_from_snapshot(snapshot))
     data = _attach_collar_coverage(format_ui_summary(raw), raw)
+    _attach_overview(data, data)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, _DEFAULT_CACHE_TTL_SEC)
     _persist_summary_cache(data, entry["generated_at"], _DEFAULT_CACHE_TTL_SEC)
     _window_cache_clear()
@@ -997,26 +1051,13 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         _compute_window_summary(window)
         with _WINDOW_CACHE_LOCK:
             cached = _WINDOW_CACHE.get(key)
-    owner_rows = _load_collar_owners().get("owners") or []
-    owners = {row["collar_sn"]: row["owner"] for row in owner_rows if row.get("owner")}
-    owner_emails = {row["collar_sn"]: row["email"] for row in owner_rows if row.get("email")}
-    names_by_email: Dict[str, str] = {}
-    for row in owner_rows:
-        if row.get("email") and row.get("owner"):
-            names_by_email.setdefault(row["email"].lower(), row["owner"])
-    group_senders = {
-        s.strip().lower() for s in (Config.LABELING_GROUP_SENDERS or "").split(",") if s.strip()
-    }
     return build_daily_report(
         day,
         cached["payload"],
         entry["data"],
-        owners,
-        Config.APP_BASE_URL,
+        dashboard_url=Config.APP_BASE_URL,
         days=days,
-        group_senders=group_senders,
-        owner_emails=owner_emails,
-        names_by_email=names_by_email,
+        **_recap_lookups(),
     )
 
 

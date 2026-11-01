@@ -1145,6 +1145,302 @@ function SlackRecapPanel({ onClose }) {
   );
 }
 
+const LABELING_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'health', label: 'Data health' },
+  { key: 'contributors', label: 'Contributors' },
+  { key: 'coverage', label: 'Coverage' },
+];
+const TAB_STORAGE_KEY = 'halo_labeling_tab_v1';
+
+/** The tab from the URL hash, else the last one used in this browser, else Overview. */
+function readInitialTab() {
+  const keys = LABELING_TABS.map((t) => t.key);
+  const fromHash = (window.location.hash || '').replace('#', '');
+  if (keys.includes(fromHash)) return fromHash;
+  try {
+    const stored = localStorage.getItem(TAB_STORAGE_KEY);
+    if (keys.includes(stored)) return stored;
+  } catch {
+    // ignore private mode
+  }
+  return 'overview';
+}
+
+function formatShortDay(day) {
+  const d = new Date(`${day}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? day
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** "▲ 12 vs Oct 17–23" style change, green up, amber down. */
+function ChangeLine({ current, previous, format = (v) => v, label }) {
+  if (previous == null) return null;
+  const diff = current - previous;
+  if (!diff) return <div className="text-xs text-gray-500">Same as {label}</div>;
+  const up = diff > 0;
+  return (
+    <div className={`text-xs ${up ? 'text-emerald-700' : 'text-amber-700'}`}>
+      {up ? '▲' : '▼'} {format(Math.abs(diff))} vs {label}
+    </div>
+  );
+}
+
+function StatTile({ label, value, children }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg px-4 py-3">
+      <div className="text-xs uppercase tracking-wide text-gray-500">{label}</div>
+      <div className="text-2xl font-semibold text-gray-900 tabular-nums">{value}</div>
+      {children}
+    </div>
+  );
+}
+
+/** Labeled sessions per day, stacked by model, filled so quiet days show as gaps. */
+function SessionsPerDayChart({ data, start, end }) {
+  const rows = useMemo(() => {
+    const counts = new Map();
+    [
+      ['activity', data?.by_date || []],
+      ['gps', data?.gps?.by_date || []],
+    ].forEach(([family, days]) =>
+      days.forEach((d) => {
+        const row = counts.get(d.date) || { activity: 0, gps: 0 };
+        row[family] += Number(d.sessions) || 0;
+        counts.set(d.date, row);
+      })
+    );
+    const dates = [...counts.keys()].filter((d) => /^\d{4}-/.test(d)).sort();
+    if (!dates.length) return [];
+    const first = Date.parse(`${start || dates[0]}T00:00:00Z`);
+    const last = Date.parse(`${end || dates[dates.length - 1]}T00:00:00Z`);
+    const out = [];
+    for (let t = first; t <= last; t += DAY_MS) {
+      const date = new Date(t).toISOString().slice(0, 10);
+      out.push({ date, label: date.slice(5), ...(counts.get(date) || { activity: 0, gps: 0 }) });
+    }
+    return out;
+  }, [data, start, end]);
+  if (!rows.length) return <p className="text-sm text-gray-500">No labeled sessions in this range.</p>;
+  return (
+    <div style={{ height: 220 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
+          <YAxis tick={{ fontSize: 12 }} allowDecimals={false} width={32} />
+          <Tooltip labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="activity" name="Activity" stackId="s" fill="#34A853" />
+          <Bar dataKey="gps" name="Indoor/outdoor" stackId="s" fill="#4285F4" radius={[2, 2, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/** The three least-labeled labels of one model, from rows that include zero minutes. */
+function NeedsMoreList({ title, rows }) {
+  const total = rows.reduce((sum, r) => sum + (Number(r.seconds) || 0), 0);
+  const lowest = [...rows].sort((a, b) => (a.seconds || 0) - (b.seconds || 0)).slice(0, 3);
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{title}</div>
+      {lowest.length === 0 ? (
+        <p className="text-sm text-gray-500">No labels yet.</p>
+      ) : (
+        <ul className="text-sm space-y-0.5">
+          {lowest.map((row) => (
+            <li key={row.label} className="flex justify-between gap-3">
+              <span className="text-gray-900">{displayLabel(row.label)}</span>
+              <span className="text-gray-500 tabular-nums">
+                {formatSecondsShort(row.seconds)}
+                {total ? ` · ${Math.round(((row.seconds || 0) / total) * 100)}%` : ''}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** "Standing has 41% of the time; Lying has 2%." from activity rows, for a card's first line. */
+function shareTakeaway(rows) {
+  const labeled = (rows || []).filter((r) => (Number(r.seconds) || 0) > 0);
+  const total = labeled.reduce((sum, r) => sum + Number(r.seconds), 0);
+  if (labeled.length < 2 || !total) return '';
+  const sorted = [...labeled].sort((a, b) => b.seconds - a.seconds);
+  const pct = (r) => Math.round((r.seconds / total) * 100);
+  const top = sorted[0];
+  const low = sorted[sorted.length - 1];
+  return `${displayLabel(top.label)} has ${pct(top)}% of the time; ${displayLabel(low.label)} has ${pct(low)}%.`;
+}
+
+/** The recap for the selected range, in plain language, with one simple chart. */
+function OverviewTab({ data, nextStep, onOpenHealth }) {
+  const overview = data?.overview;
+  if (!overview) {
+    return (
+      <p className="text-sm text-gray-500">
+        Click Refresh to load the overview. It appears once the summary has been rebuilt.
+      </p>
+    );
+  }
+  const { recap, change } = overview;
+  const allTime = !recap.start;
+  const rangeLabel = allTime
+    ? 'All time'
+    : `${formatShortDay(recap.start)} – ${formatShortDay(recap.end)}`;
+  const prevLabel = allTime
+    ? 'the 7 days before'
+    : `${formatShortDay(change.previous_start)} – ${formatShortDay(change.previous_end)}`;
+  const minutes = (s) => formatSecondsShort(s);
+  const attention =
+    nextStep && !nextStep.loading && nextStep.tone !== 'ok' ? nextStep : null;
+  // Errors and attention need action; info notes (e.g. collars not uploading yet) are FYI.
+  const urgent = attention && (attention.tone === 'error' || attention.tone === 'attention');
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-gray-900">Labeling recap · {rangeLabel}</h2>
+        <p className="text-sm text-gray-600 mt-1">
+          {recap.sessions ? (
+            <>
+              <strong>{recap.sessions} sessions</strong> and <strong>{minutes(recap.seconds)}</strong>{' '}
+              of labeled data from <strong>{recap.labelers} labelers</strong>
+              {recap.dogs.length ? (
+                <>
+                  {' '}
+                  and <strong>{recap.dogs.length} dogs</strong>
+                </>
+              ) : null}
+              . Activity: {recap.activity.sessions} sessions · {minutes(recap.activity.seconds)}.
+              Indoor/outdoor: {recap.gps.sessions} sessions · {minutes(recap.gps.seconds)}.
+            </>
+          ) : (
+            'No labeled sessions in this range.'
+          )}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile label="Sessions" value={recap.sessions}>
+          {allTime ? (
+            <div className="text-xs text-gray-500">Last 7 days: {change.current.sessions}</div>
+          ) : null}
+          <ChangeLine current={change.current.sessions} previous={change.previous.sessions} label={prevLabel} />
+        </StatTile>
+        <StatTile label="Labeled time" value={minutes(recap.seconds)}>
+          {allTime ? (
+            <div className="text-xs text-gray-500">Last 7 days: {minutes(change.current.seconds)}</div>
+          ) : null}
+          <ChangeLine
+            current={change.current.seconds}
+            previous={change.previous.seconds}
+            format={minutes}
+            label={prevLabel}
+          />
+        </StatTile>
+        <StatTile label="Labelers" value={recap.labelers}>
+          {allTime ? (
+            <div className="text-xs text-gray-500">Last 7 days: {change.current.labelers}</div>
+          ) : null}
+          <ChangeLine current={change.current.labelers} previous={change.previous.labelers} label={prevLabel} />
+        </StatTile>
+        <StatTile label="Dogs" value={recap.dogs.length}>
+          {recap.streak >= 3 ? (
+            <div className="text-xs text-gray-500">🔥 {recap.streak} days in a row with data</div>
+          ) : null}
+        </StatTile>
+      </div>
+
+      {recap.session_milestone || recap.hours_milestone ? (
+        <div className="flex flex-wrap gap-2 text-sm">
+          {recap.session_milestone ? (
+            <span className="px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-900">
+              🏆 Passed {recap.session_milestone.toLocaleString()} labeled sessions
+            </span>
+          ) : null}
+          {recap.hours_milestone ? (
+            <span className="px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-900">
+              ⏱️ Over {recap.hours_milestone.toLocaleString()} hours of labeled data
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {attention ? (
+        <div
+          className={`flex flex-wrap items-center gap-3 rounded-lg border px-4 py-2 text-sm ${
+            urgent
+              ? 'border-amber-200 bg-amber-50 text-amber-900'
+              : 'border-gray-200 bg-white text-gray-600'
+          }`}
+        >
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          <span className="flex-1">
+            <span className="font-medium">{urgent ? 'Needs attention:' : 'Collar data:'}</span>{' '}
+            {attention.title}
+          </span>
+          <button type="button" onClick={onOpenHealth} className="text-xs underline">
+            Open Data health
+          </button>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+        <ChartCard
+          title="Shout-outs"
+          description="The good dogs and their people, ranked by labeled time. The same list the Slack recap posts."
+        >
+          {recap.leaderboard.length === 0 ? (
+            <p className="text-sm text-gray-500">Nobody labeled in this range.</p>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {recap.leaderboard.map((row, index) => (
+                <li key={`${row.person}-${index}`} className="flex items-center gap-3 py-2 text-sm">
+                  <span className="w-6 text-center">
+                    {row.medal ? SLACK_EMOJI[row.medal.replace(/:/g, '')] : ''}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    {row.dogs.length ? (
+                      <span className="font-medium text-gray-900">
+                        🐶 {row.dogs.slice(0, 3).join(', ')}
+                        {row.dogs.length > 3 ? ` +${row.dogs.length - 3}` : ''}{' '}
+                      </span>
+                    ) : null}
+                    <span className={row.dogs.length ? 'text-gray-500' : 'font-medium text-gray-900'}>
+                      {row.dogs.length ? `(${row.person})` : row.person}
+                    </span>
+                  </span>
+                  <span className="text-gray-600 tabular-nums whitespace-nowrap">
+                    {row.sessions} sessions · {minutes(row.seconds)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </ChartCard>
+        <ChartCard title="Sessions per day" description="Is data coming in? Labeled sessions each day, by model.">
+          <SessionsPerDayChart data={data} start={recap.start} end={allTime ? null : recap.end} />
+        </ChartCard>
+      </div>
+
+      <ChartCard
+        title="What we need more of"
+        description="The least-labeled postures and environments in this range. Ask labelers to focus here."
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <NeedsMoreList title="Postures (activity model)" rows={data?.all_activities || []} />
+          <NeedsMoreList title="Environments (indoor/outdoor model)" rows={data?.gps?.all_activities || []} />
+        </div>
+      </ChartCard>
+    </div>
+  );
+}
+
 const COLLAR_LIST_LIMIT = 15;
 
 /** One row per collar: sessions split by match reason, plus Azure and S3 file counts. */
@@ -2453,6 +2749,19 @@ const LabelingDataDashboard = () => {
     return map;
   }, [collarOwners]);
   const [recapOpen, setRecapOpen] = useState(false);
+  const [tab, setTabState] = useState(readInitialTab);
+  // Which model the Contributors charts show.
+  const [contribModel, setContribModel] = useState('activity');
+  const setTab = useCallback((key) => {
+    setTabState(key);
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, key);
+      // replaceState keeps the router's ?mode= untouched.
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${key}`);
+    } catch {
+      // ignore
+    }
+  }, []);
   // The commit running on the server, from /health (set by deploy.sh).
   const [build, setBuild] = useState(null);
   const [processReport, setProcessReport] = useState(null);
@@ -3271,6 +3580,10 @@ const LabelingDataDashboard = () => {
     waitingOnSync,
   });
   const azureUnreadable = nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured';
+  // Shown as a dot on the Data health tab, so problems aren't hidden behind the Overview.
+  const healthNeedsAttention =
+    (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
+    stagingHealthActionable;
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -3429,93 +3742,6 @@ const LabelingDataDashboard = () => {
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
           Couldn’t refresh summary ({error}). Showing last results.
         </div>
-      ) : null}
-
-      {showStagingHealth ? (
-        <details
-          open={stagingHealthActionable}
-          className={`group mb-4 px-3 py-2 border rounded-lg text-sm ${
-            stagingHealthActionable
-              ? 'bg-amber-50 border-amber-200 text-amber-950'
-              : 'bg-white border-gray-200 text-gray-700'
-          }`}
-        >
-          <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
-            <AlertCircle
-              className={`h-4 w-4 flex-shrink-0 ${
-                stagingHealthActionable ? 'text-amber-600' : 'text-gray-400'
-              }`}
-            />
-            <span className="font-medium">Staging health</span>
-            <span className="text-xs opacity-80 truncate">{stagingHealthSummary}</span>
-            <span className="ml-auto text-xs opacity-60 group-open:hidden">Show details ▸</span>
-            <span className="ml-auto text-xs opacity-60 hidden group-open:inline">Hide ▾</span>
-          </summary>
-          <div className="pb-1">
-            {stackedTrees ? (
-              <p className="mt-1">
-                Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
-                {stagingHealth.raw_extracted_files} files and about{' '}
-                {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
-                Process staging folds those copies into the charts. It does not stop the next email
-                from stacking another tree.
-              </p>
-            ) : null}
-            {chartsBehind ? (
-              <p className="mt-2">
-                Charts are behind: output has {outputFiles} files and staging has about {uniqueFiles}{' '}
-                unique. Process staging to refresh them.
-              </p>
-            ) : null}
-            {incompleteSessions > 0 ? (
-              <div className="mt-2">
-                <p>
-                  {incompleteSessions} sessions are missing collar_collected, durations, or
-                  user_reported in the copy that would be kept. Processing leaves them incomplete.
-                </p>
-                {(stagingHealth.incomplete_samples || []).length > 0 ? (
-                  <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
-                    {(stagingHealth.incomplete_samples || []).map((sample) => (
-                      <li key={`${sample.email}-${sample.timestamp}-${sample.index}-${sample.message_id}`}>
-                        {sample.email} · {sample.family} · {sample.timestamp} #{sample.index} · missing{' '}
-                        {(sample.missing || []).join(', ') || 'unknown'}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {incompleteSessions > (stagingHealth.incomplete_samples || []).length ? (
-                  <p className="mt-1 text-xs text-amber-900/80">
-                    Showing {(stagingHealth.incomplete_samples || []).length} of {incompleteSessions}.
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-            {sizeMismatchSessions > 0 ? (
-              <p className="mt-2">
-                {sizeMismatchSessions} sessions have different file sizes across emails. Those copies
-                stay in staging until someone inspects them.
-              </p>
-            ) : null}
-            {duplicateRefs > 0 ? (
-              <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
-                <button
-                  type="button"
-                  onClick={compactStaging}
-                  disabled={processing}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 rounded-lg text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-50 shrink-0"
-                >
-                  Remove duplicate copies
-                </button>
-                <p className="text-xs text-amber-900/80">
-                  Deletes extra extracted files when a newer email already has the same file at the
-                  same size, and deletes raw zips from batches that added nothing new. Promote already
-                  skips filenames staging has seen. Make will keep stacking until it uploads only new
-                  files.
-                </p>
-              </div>
-            ) : null}
-          </div>
-        </details>
       ) : null}
 
       {pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
@@ -3698,345 +3924,563 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
-        <section className="min-w-0">
-          <div className="flex items-baseline justify-between gap-2">
-            <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
-            {statusFromCache ? (
-              <span
-                className={`inline-flex items-center gap-1.5 text-xs ${
-                  statusError ? 'text-amber-800' : 'text-gray-400'
-                }`}
-                title={statusError || undefined}
-              >
-                {statusError ? (
-                  <>
-                    <AlertCircle className="h-3 w-3" />
-                    Couldn’t refresh · showing last results
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                    Showing last results · refreshing
-                  </>
-                )}
-              </span>
-            ) : null}
-          </div>
-          <p className="text-sm text-gray-500 mb-3">
-            App labels in staging, whether they are summarized, and whether Azure collar logs for
-            those collars are cloned into S3.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-1 gap-px bg-gray-200 border border-gray-200 rounded-lg overflow-hidden mb-4">
-            <PipelineStage
-              label="App data"
-              value={status?.staging_extracted_files ?? 0}
-              detail={`${status?.staging_batches ?? 0} batches${
-                pendingForwards?.pending_count
-                  ? ` · ${pendingForwards.pending_count} forwards waiting`
-                  : ''
-              }`}
-              state={
-                unprocessedEmails.length
-                  ? 'Ready to summarize'
-                  : pendingForwards?.pending_count
-                    ? 'Forwards waiting to promote'
-                    : 'No new labelers waiting'
-              }
-              tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
-            />
-            <PipelineStage
-              label="Summarized"
-              value={status?.output_files ?? totals.files ?? 0}
-              detail={
-                generatedAt ? `Summary ${formatUpdatedAt(generatedAt)}` : 'Summary not loaded yet'
-              }
-              state={
-                unprocessedEmails.length ? 'Staging not in the summary' : 'Current'
-              }
-              tone={unprocessedEmails.length ? 'attention' : 'ok'}
-            />
-            <PipelineStage
-              label="Azure"
-              value={clone ? clone.azure_files ?? 0 : '—'}
-              detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
-              state={
-                azureUnreadable && clone
-                  ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
-                  : clone?.generated_at
-                    ? `Checked ${formatUpdatedAt(clone.generated_at)}`
-                    : 'Not checked yet'
-              }
-              tone={clone && !azureUnreadable ? 'ok' : 'attention'}
-              action={
-                <button
-                  type="button"
-                  onClick={checkAzure}
-                  disabled={processing || !azureConfigured}
-                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
-                  title={
-                    azureConfigured
-                      ? 'List Azure ai/ logs for labeled collars without copying'
-                      : 'Set LABELING_AZURE_SAS_URL on the server'
-                  }
-                >
-                  {azureCheckRunning ? (
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <DownloadCloud className="h-3 w-3" />
-                  )}
-                  {azureCheckRunning ? 'Checking…' : 'Check Azure'}
-                </button>
-              }
-            />
-            <PipelineStage
-              label="Cloned to S3"
-              value={collarTotals.ai_files ?? 0}
-              detail={
-                !clone
-                  ? 'Sync or check Azure to compare'
-                  : `Azure read ${formatAge(clone.generated_at)} · ${
-                      clone.inventory_only
-                        ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
-                        : `copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
-                    }`
-              }
-              state={
-                !clone
-                  ? 'Not compared to Azure yet'
-                  : azureUnreadable
-                    ? 'Blocked until Azure can be read'
-                    : (clone.not_cloned || 0) > 0
-                      ? 'Azure has files not in S3'
-                      : waitingOnSyncTotal > 0
-                        ? `${waitingOnSyncTotal} unmatched session${waitingOnSyncTotal === 1 ? '' : 's'} newer than this`
-                        : 'Caught up'
-              }
-              tone={
-                !clone || azureUnreadable || (clone.not_cloned || 0) > 0 || waitingOnSyncTotal > 0
-                  ? 'attention'
-                  : 'ok'
-              }
-              action={
-                <button
-                  type="button"
-                  onClick={syncCollar}
-                  disabled={processing || !azureConfigured}
-                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
-                  title={
-                    azureConfigured
-                      ? COLLAR_SYNC_HINT
-                      : 'Set LABELING_AZURE_SAS_URL on the server'
-                  }
-                >
-                  {syncingCollar && !azureCheckRunning ? (
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <DownloadCloud className="h-3 w-3" />
-                  )}
-                  {syncingCollar && !azureCheckRunning ? 'Syncing…' : 'Sync now'}
-                </button>
-              }
-              onOpen={() => setFilesCollar('')}
-              openLabel="Browse collar files in S3"
-            />
-          </div>
-        </section>
-
-        <div className="xl:col-span-2 min-w-0">
-          <ChartCard
-            title="App and collar data by day"
-            description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used. Click a day to list its mismatches below."
+      <div className="mb-6 flex gap-1 border-b border-gray-200" role="tablist">
+        {LABELING_TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-sm border-b-2 -mb-px ${
+              tab === t.key
+                ? 'border-gray-900 text-gray-900 font-medium'
+                : 'border-transparent text-gray-500 hover:text-gray-800'
+            }`}
           >
-            <DailySourcesChart
-              byDate={collarCoverage?.by_date}
-              selectedDay={mismatchDay}
-              onSelectDay={setMismatchDay}
-              lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
-              dataWindow={data?.window}
-              model={mismatchModel}
-              onModelChange={setMismatchModel}
+            {t.label}
+            {t.key === 'health' && healthNeedsAttention ? (
+              <span className="ml-1.5 inline-block h-2 w-2 rounded-full bg-amber-500 align-middle" />
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' ? (
+        <OverviewTab data={data} nextStep={nextStep} onOpenHealth={() => setTab('health')} />
+      ) : null}
+
+      {tab === 'health' ? (
+        <>
+          {showStagingHealth ? (
+            <details
+              open={stagingHealthActionable}
+              className={`group mb-4 px-3 py-2 border rounded-lg text-sm ${
+                stagingHealthActionable
+                  ? 'bg-amber-50 border-amber-200 text-amber-950'
+                  : 'bg-white border-gray-200 text-gray-700'
+              }`}
+            >
+              <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
+                <AlertCircle
+                  className={`h-4 w-4 flex-shrink-0 ${
+                    stagingHealthActionable ? 'text-amber-600' : 'text-gray-400'
+                  }`}
+                />
+                <span className="font-medium">Staging health</span>
+                <span className="text-xs opacity-80 truncate">{stagingHealthSummary}</span>
+                <span className="ml-auto text-xs opacity-60 group-open:hidden">Show details ▸</span>
+                <span className="ml-auto text-xs opacity-60 hidden group-open:inline">Hide ▾</span>
+              </summary>
+              <div className="pb-1">
+                {stackedTrees ? (
+                  <p className="mt-1">
+                    Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
+                    {stagingHealth.raw_extracted_files} files and about{' '}
+                    {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
+                    Process staging folds those copies into the charts. It does not stop the next email
+                    from stacking another tree.
+                  </p>
+                ) : null}
+                {chartsBehind ? (
+                  <p className="mt-2">
+                    Charts are behind: output has {outputFiles} files and staging has about {uniqueFiles}{' '}
+                    unique. Process staging to refresh them.
+                  </p>
+                ) : null}
+                {incompleteSessions > 0 ? (
+                  <div className="mt-2">
+                    <p>
+                      {incompleteSessions} sessions are missing collar_collected, durations, or
+                      user_reported in the copy that would be kept. Processing leaves them incomplete.
+                    </p>
+                    {(stagingHealth.incomplete_samples || []).length > 0 ? (
+                      <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
+                        {(stagingHealth.incomplete_samples || []).map((sample) => (
+                          <li key={`${sample.email}-${sample.timestamp}-${sample.index}-${sample.message_id}`}>
+                            {sample.email} · {sample.family} · {sample.timestamp} #{sample.index} · missing{' '}
+                            {(sample.missing || []).join(', ') || 'unknown'}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {incompleteSessions > (stagingHealth.incomplete_samples || []).length ? (
+                      <p className="mt-1 text-xs text-amber-900/80">
+                        Showing {(stagingHealth.incomplete_samples || []).length} of {incompleteSessions}.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {sizeMismatchSessions > 0 ? (
+                  <p className="mt-2">
+                    {sizeMismatchSessions} sessions have different file sizes across emails. Those copies
+                    stay in staging until someone inspects them.
+                  </p>
+                ) : null}
+                {duplicateRefs > 0 ? (
+                  <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={compactStaging}
+                      disabled={processing}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 rounded-lg text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-50 shrink-0"
+                    >
+                      Remove duplicate copies
+                    </button>
+                    <p className="text-xs text-amber-900/80">
+                      Deletes extra extracted files when a newer email already has the same file at the
+                      same size, and deletes raw zips from batches that added nothing new. Promote already
+                      skips filenames staging has seen. Make will keep stacking until it uploads only new
+                      files.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6 items-start">
+            <section className="min-w-0">
+              <div className="flex items-baseline justify-between gap-2">
+                <h2 className="text-xl font-semibold text-gray-900">Data pipeline</h2>
+                {statusFromCache ? (
+                  <span
+                    className={`inline-flex items-center gap-1.5 text-xs ${
+                      statusError ? 'text-amber-800' : 'text-gray-400'
+                    }`}
+                    title={statusError || undefined}
+                  >
+                    {statusError ? (
+                      <>
+                        <AlertCircle className="h-3 w-3" />
+                        Couldn’t refresh · showing last results
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        Showing last results · refreshing
+                      </>
+                    )}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-sm text-gray-500 mb-3">
+                App labels in staging, whether they are summarized, and whether Azure collar logs for
+                those collars are cloned into S3.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-1 gap-px bg-gray-200 border border-gray-200 rounded-lg overflow-hidden mb-4">
+                <PipelineStage
+                  label="App data"
+                  value={status?.staging_extracted_files ?? 0}
+                  detail={`${status?.staging_batches ?? 0} batches${
+                    pendingForwards?.pending_count
+                      ? ` · ${pendingForwards.pending_count} forwards waiting`
+                      : ''
+                  }`}
+                  state={
+                    unprocessedEmails.length
+                      ? 'Ready to summarize'
+                      : pendingForwards?.pending_count
+                        ? 'Forwards waiting to promote'
+                        : 'No new labelers waiting'
+                  }
+                  tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
+                />
+                <PipelineStage
+                  label="Summarized"
+                  value={status?.output_files ?? totals.files ?? 0}
+                  detail={
+                    generatedAt ? `Summary ${formatUpdatedAt(generatedAt)}` : 'Summary not loaded yet'
+                  }
+                  state={
+                    unprocessedEmails.length ? 'Staging not in the summary' : 'Current'
+                  }
+                  tone={unprocessedEmails.length ? 'attention' : 'ok'}
+                />
+                <PipelineStage
+                  label="Azure"
+                  value={clone ? clone.azure_files ?? 0 : '—'}
+                  detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
+                  state={
+                    azureUnreadable && clone
+                      ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
+                      : clone?.generated_at
+                        ? `Checked ${formatUpdatedAt(clone.generated_at)}`
+                        : 'Not checked yet'
+                  }
+                  tone={clone && !azureUnreadable ? 'ok' : 'attention'}
+                  action={
+                    <button
+                      type="button"
+                      onClick={checkAzure}
+                      disabled={processing || !azureConfigured}
+                      className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                      title={
+                        azureConfigured
+                          ? 'List Azure ai/ logs for labeled collars without copying'
+                          : 'Set LABELING_AZURE_SAS_URL on the server'
+                      }
+                    >
+                      {azureCheckRunning ? (
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <DownloadCloud className="h-3 w-3" />
+                      )}
+                      {azureCheckRunning ? 'Checking…' : 'Check Azure'}
+                    </button>
+                  }
+                />
+                <PipelineStage
+                  label="Cloned to S3"
+                  value={collarTotals.ai_files ?? 0}
+                  detail={
+                    !clone
+                      ? 'Sync or check Azure to compare'
+                      : `Azure read ${formatAge(clone.generated_at)} · ${
+                          clone.inventory_only
+                            ? `${clone.not_cloned ?? 0} not in S3 · ${clone.skipped_unchanged ?? 0} already there`
+                            : `copied ${clone.copied ?? 0} · ${clone.skipped_unchanged ?? 0} unchanged · ${clone.errors ?? 0} errors`
+                        }`
+                  }
+                  state={
+                    !clone
+                      ? 'Not compared to Azure yet'
+                      : azureUnreadable
+                        ? 'Blocked until Azure can be read'
+                        : (clone.not_cloned || 0) > 0
+                          ? 'Azure has files not in S3'
+                          : waitingOnSyncTotal > 0
+                            ? `${waitingOnSyncTotal} unmatched session${waitingOnSyncTotal === 1 ? '' : 's'} newer than this`
+                            : 'Caught up'
+                  }
+                  tone={
+                    !clone || azureUnreadable || (clone.not_cloned || 0) > 0 || waitingOnSyncTotal > 0
+                      ? 'attention'
+                      : 'ok'
+                  }
+                  action={
+                    <button
+                      type="button"
+                      onClick={syncCollar}
+                      disabled={processing || !azureConfigured}
+                      className="inline-flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                      title={
+                        azureConfigured
+                          ? COLLAR_SYNC_HINT
+                          : 'Set LABELING_AZURE_SAS_URL on the server'
+                      }
+                    >
+                      {syncingCollar && !azureCheckRunning ? (
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <DownloadCloud className="h-3 w-3" />
+                      )}
+                      {syncingCollar && !azureCheckRunning ? 'Syncing…' : 'Sync now'}
+                    </button>
+                  }
+                  onOpen={() => setFilesCollar('')}
+                  openLabel="Browse collar files in S3"
+                />
+              </div>
+            </section>
+
+            <div className="xl:col-span-2 min-w-0">
+              <ChartCard
+                title="App and collar data by day"
+                description="Matched and app-only count labeled sessions. Collar-only counts AI logs from labeled collars that no session used. Click a day to list its mismatches below."
+              >
+                <DailySourcesChart
+                  byDate={collarCoverage?.by_date}
+                  selectedDay={mismatchDay}
+                  onSelectDay={setMismatchDay}
+                  lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
+                  dataWindow={data?.window}
+                  model={mismatchModel}
+                  onModelChange={setMismatchModel}
+                />
+                {mismatchDay ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }
+                    className="mt-2 text-xs text-blue-700 hover:text-blue-900"
+                  >
+                    See mismatches on {mismatchDay} ↓
+                  </button>
+                ) : null}
+              </ChartCard>
+            </div>
+          </div>
+
+          <div className="mb-10">
+            <CollarNextStep
+              step={nextStep}
+              onPickReason={(key) => {
+                setMismatchReason(key);
+                mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
             />
-            {mismatchDay ? (
+          </div>
+
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Collar and app matching</h2>
+            <p className="text-sm text-gray-500">
+              Binary <span className="font-mono text-xs">&lt;sn&gt;/ai/*.log</span> from Azure, joined
+              to labeled sessions by collar SN + timestamp
+              {status?.collar_sync?.last_index_at
+                ? ` · last sync ${formatUpdatedAt(status.collar_sync.last_index_at)}`
+                : ''}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <SummaryCard
+              icon={CheckCircle2}
+              label="Sessions with collar data"
+              value={collarTotals.matched ?? 0}
+              hint={
+                collarTotals.sessions
+                  ? `${collarTotals.sessions} labeled sessions`
+                  : 'Run Sync collar data'
+              }
+            />
+            <SummaryCard
+              icon={AlertCircle}
+              label="Missing dumps"
+              value={collarTotals.missing ?? 0}
+              hint={
+                collarTotals.unknown_sn
+                  ? `${collarTotals.unknown_sn} with no SN`
+                  : null
+              }
+            />
+            <SummaryCard
+              icon={FolderOpen}
+              label="AI files in S3"
+              value={collarTotals.ai_files ?? 0}
+              hint={collarTotals.sns ? `${collarTotals.sns} collars` : null}
+            />
+            <SummaryCard
+              icon={Clock}
+              label="Matched duration"
+              value={formatSecondsShort(collarTotals.matched_seconds)}
+              hint={
+                collarTotals.missing_seconds
+                  ? `${formatSecondsShort(collarTotals.missing_seconds)} unmatched`
+                  : null
+              }
+            />
+          </div>
+
+          <section className="min-w-0 bg-white border border-gray-200 rounded-lg p-5 mb-6">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
               <button
                 type="button"
-                onClick={() =>
-                  mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }
-                className="mt-2 text-xs text-blue-700 hover:text-blue-900"
+                onClick={() => setOwnersOpen(true)}
+                className="text-xs text-blue-700 hover:text-blue-900"
               >
-                See mismatches on {mismatchDay} ↓
+                Edit owners
+                {collarPipelineRows.some(
+                  (row) => row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
+                )
+                  ? ` · ${
+                      collarPipelineRows.filter(
+                        (row) =>
+                          row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
+                      ).length
+                    } without one`
+                  : ''}
               </button>
-            ) : null}
-          </ChartCard>
-        </div>
-      </div>
-
-      <div className="mb-10">
-        <CollarNextStep
-          step={nextStep}
-          onPickReason={(key) => {
-            setMismatchReason(key);
-            mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-        />
-      </div>
-
-      <div className="mb-4">
-        <h2 className="text-xl font-semibold text-gray-900">Collar and app matching</h2>
-        <p className="text-sm text-gray-500">
-          Binary <span className="font-mono text-xs">&lt;sn&gt;/ai/*.log</span> from Azure, joined
-          to labeled sessions by collar SN + timestamp
-          {status?.collar_sync?.last_index_at
-            ? ` · last sync ${formatUpdatedAt(status.collar_sync.last_index_at)}`
-            : ''}
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <SummaryCard
-          icon={CheckCircle2}
-          label="Sessions with collar data"
-          value={collarTotals.matched ?? 0}
-          hint={
-            collarTotals.sessions
-              ? `${collarTotals.sessions} labeled sessions`
-              : 'Run Sync collar data'
-          }
-        />
-        <SummaryCard
-          icon={AlertCircle}
-          label="Missing dumps"
-          value={collarTotals.missing ?? 0}
-          hint={
-            collarTotals.unknown_sn
-              ? `${collarTotals.unknown_sn} with no SN`
-              : null
-          }
-        />
-        <SummaryCard
-          icon={FolderOpen}
-          label="AI files in S3"
-          value={collarTotals.ai_files ?? 0}
-          hint={collarTotals.sns ? `${collarTotals.sns} collars` : null}
-        />
-        <SummaryCard
-          icon={Clock}
-          label="Matched duration"
-          value={formatSecondsShort(collarTotals.matched_seconds)}
-          hint={
-            collarTotals.missing_seconds
-              ? `${formatSecondsShort(collarTotals.missing_seconds)} unmatched`
-              : null
-          }
-        />
-      </div>
-
-      <section className="min-w-0 bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <div className="flex items-baseline justify-between gap-3">
-          <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
-          <button
-            type="button"
-            onClick={() => setOwnersOpen(true)}
-            className="text-xs text-blue-700 hover:text-blue-900"
-          >
-            Edit owners
-            {collarPipelineRows.some(
-              (row) => row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
-            )
-              ? ` · ${
-                  collarPipelineRows.filter(
-                    (row) =>
-                      row.collar_sn !== '_unknown' && !collarInfo.get(serialKey(row.collar_sn))?.owner
-                  ).length
-                } without one`
-              : ''}
-          </button>
-        </div>
-        <p className="text-sm text-gray-500 mb-3">
-          Labeled sessions per collar and whether each found a collar log. Collars that are
-          behind come first.
-        </p>
-        <CollarCoverageList
-          rows={collarPipelineRows}
-          behindCount={behindCollarRows.length}
-          showAll={showAllCollars}
-          onToggleShowAll={() => setShowAllCollars((v) => !v)}
-          onOpenCollar={setFilesCollar}
-          collarInfo={collarInfo}
-        />
-      </section>
-
-      <div ref={mismatchRef} className="mb-6 scroll-mt-4">
-        <ChartCard
-          title="Mismatches"
-          description="App sessions with no collar log, and collar logs no session used. Click a day in the chart above to narrow this list."
-        >
-          <MismatchExplorer
-            coverage={collarCoverage}
-            selectedDay={mismatchDay}
-            onClearDay={() => setMismatchDay(null)}
-            lastAzureMs={lastAzureMs}
-            syncedSns={syncedSns}
-            collarInfo={collarInfo}
-            reason={mismatchReason}
-            onClearReason={() => setMismatchReason(null)}
-            model={mismatchModel}
-            onClearModel={() => setMismatchModel('both')}
-          />
-        </ChartCard>
-      </div>
-
-      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          Joined to collar dumps in S3
-        </h3>
-        <p className="text-sm text-gray-500 mb-3">
-          A session matches when its collar has a log in{' '}
-          <span className="font-mono text-xs">collar-raw/</span> from around the session time.
-          The chart below splits each labeler&apos;s minutes into matched (green) and not
-          matched (red).
-        </p>
-        <CoverageBreakdown totals={collarTotals} reasons={missingReasons} />
-        {collarUserChart.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            No labeled sessions to join yet. Process staging, then Sync collar data.
-          </p>
-        ) : (
-          <>
-            <div style={{ height: collarUserChartHeight }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={collarUserChart}
-                  layout="vertical"
-                  margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 12 }}
-                    tickFormatter={(v) => formatSecondsShort(v)}
-                  />
-                  <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
-                  <Tooltip
-                    formatter={(value, name, props) => [
-                      `${formatSecondsShort(value)} · ${
-                        name === 'matched'
-                          ? props.payload.matchedSessions
-                          : props.payload.missingSessions
-                      } sessions`,
-                      name === 'matched' ? 'Matched' : 'Missing',
-                    ]}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="matched" name="matched" stackId="cov" fill="#34A853" />
-                  <Bar dataKey="missing" name="missing" stackId="cov" fill="#EA4335" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
             </div>
-          </>
-        )}
-      </div>
+            <p className="text-sm text-gray-500 mb-3">
+              Labeled sessions per collar and whether each found a collar log. Collars that are
+              behind come first.
+            </p>
+            <CollarCoverageList
+              rows={collarPipelineRows}
+              behindCount={behindCollarRows.length}
+              showAll={showAllCollars}
+              onToggleShowAll={() => setShowAllCollars((v) => !v)}
+              onOpenCollar={setFilesCollar}
+              collarInfo={collarInfo}
+            />
+          </section>
+
+          <div ref={mismatchRef} className="mb-6 scroll-mt-4">
+            <ChartCard
+              title="Mismatches"
+              description="App sessions with no collar log, and collar logs no session used. Click a day in the chart above to narrow this list."
+            >
+              <MismatchExplorer
+                coverage={collarCoverage}
+                selectedDay={mismatchDay}
+                onClearDay={() => setMismatchDay(null)}
+                lastAzureMs={lastAzureMs}
+                syncedSns={syncedSns}
+                collarInfo={collarInfo}
+                reason={mismatchReason}
+                onClearReason={() => setMismatchReason(null)}
+                model={mismatchModel}
+                onClearModel={() => setMismatchModel('both')}
+              />
+            </ChartCard>
+          </div>
+
+          <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">
+              Joined to collar dumps in S3
+            </h3>
+            <p className="text-sm text-gray-500 mb-3">
+              A session matches when its collar has a log in{' '}
+              <span className="font-mono text-xs">collar-raw/</span> from around the session time.
+              The chart below splits each labeler&apos;s minutes into matched (green) and not
+              matched (red).
+            </p>
+            <CoverageBreakdown totals={collarTotals} reasons={missingReasons} />
+            {collarUserChart.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No labeled sessions to join yet. Process staging, then Sync collar data.
+              </p>
+            ) : (
+              <>
+                <div style={{ height: collarUserChartHeight }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={collarUserChart}
+                      layout="vertical"
+                      margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis
+                        type="number"
+                        tick={{ fontSize: 12 }}
+                        tickFormatter={(v) => formatSecondsShort(v)}
+                      />
+                      <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 12 }} />
+                      <Tooltip
+                        formatter={(value, name, props) => [
+                          `${formatSecondsShort(value)} · ${
+                            name === 'matched'
+                              ? props.payload.matchedSessions
+                              : props.payload.missingSessions
+                          } sessions`,
+                          name === 'matched' ? 'Matched' : 'Missing',
+                        ]}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="matched" name="matched" stackId="cov" fill="#34A853" />
+                      <Bar dataKey="missing" name="missing" stackId="cov" fill="#EA4335" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+          </div>
+
+          <details className="mt-8 group">
+            <summary className="cursor-pointer list-none text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
+              <span className="underline decoration-dotted underline-offset-2">Pipeline & source details</span>
+              <span className="text-gray-400 group-open:hidden">▸</span>
+              <span className="text-gray-400 hidden group-open:inline">▾</span>
+            </summary>
+            <div className="mt-3 p-4 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 space-y-2">
+              <div>
+                <span className="text-gray-500">Source:</span>{' '}
+                <span className="font-mono text-xs">
+                  s3://{data?.bucket}/{data?.prefix}
+                </span>
+                {cached ? (
+                  <span className="ml-2 text-xs text-gray-400">
+                    {stale ? '(stale cache)' : '(cached)'}
+                  </span>
+                ) : null}
+              </div>
+              {status ? (
+                <>
+                  <div>
+                    <span className="text-gray-500">Staging:</span>{' '}
+                    <span className="font-mono">{status.staging_extracted_files ?? 0}</span> extracted
+                    files in <span className="font-mono">{status.staging_batches ?? 0}</span> Gmail
+                    batches
+                    {status.staging_by_family
+                      ? ` · activity ${status.staging_by_family.activity || 0} · gps ${status.staging_by_family.gps || 0}`
+                      : ''}
+                    {status.staging_by_email
+                      ? ` (${Object.entries(status.staging_by_email)
+                          .map(([email, n]) => `${email}: ${n}`)
+                          .join(' · ')})`
+                      : ''}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Output:</span>{' '}
+                    <span className="font-mono">{status.output_files ?? 0}</span> files under{' '}
+                    <span className="font-mono text-xs">{status.output_prefix}</span>
+                    {status.output_by_family
+                      ? ` · activity ${status.output_by_family.activity || 0} · gps ${status.output_by_family.gps || 0}`
+                      : ''}
+                    {(status.output_emails || []).length
+                      ? ` (${status.output_emails.join(', ')})`
+                      : ' (empty — click Process staging)'}
+                  </div>
+                  {status.staging_health ? (
+                    <div>
+                      Health: ~{status.staging_health.unique_files_after_dedupe} unique /{' '}
+                      {status.staging_health.raw_extracted_files} raw
+                      {status.staging_health.duplicate_ratio
+                        ? ` (${status.staging_health.duplicate_ratio}x)`
+                        : ''}
+                      {status.staging_health.incomplete_sessions
+                        ? ` · incomplete ${status.staging_health.incomplete_sessions}`
+                        : ''}
+                    </div>
+                  ) : null}
+                  {status.pending_forwards ? (
+                    <div>
+                      Forwards: {status.pending_forwards.pending_count || 0} pending
+                      {status.pending_forwards.already_promoted?.length
+                        ? ` · ${status.pending_forwards.already_promoted.length} already promoted`
+                        : ''}
+                      {status.pending_forwards.unresolved?.length
+                        ? ` · ${status.pending_forwards.unresolved.length} unresolved`
+                        : ''}
+                      {status.forward_batches
+                        ? ` · ${status.forward_batches} quarantine batch(es)`
+                        : ''}
+                    </div>
+                  ) : null}
+                  {processReport ? (
+                    <div className="text-xs text-gray-500">
+                      {processReport.promoted ? (
+                        <>
+                          Last promote: {processReport.promoted.length} batch(es), skipped{' '}
+                          {(processReport.skipped || []).length}, errors{' '}
+                          {(processReport.errors || []).length}
+                        </>
+                      ) : processReport.extracted_duplicates_planned != null ? (
+                        <>
+                          Last compact: removed {processReport.extracted_duplicates_removed ?? 0}{' '}
+                          extracted copies, raw objects {processReport.raw_objects_removed ?? 0}, kept{' '}
+                          {processReport.unique_filenames ?? 0} filenames
+                        </>
+                      ) : (
+                        <>
+                          Last process: copied {processReport.copied}, sessions {processReport.sessions},
+                          unknown SN {processReport.unknown_sn_sessions}, errors{' '}
+                          {(processReport.errors || []).length}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="text-xs text-gray-400">Pipeline status not loaded yet.</div>
+              )}
+            </div>
+          </details>
+        </>
+      ) : null}
 
       {filesCollar !== null ? (
         <CollarFilesDrawer
@@ -4062,467 +4506,365 @@ const LabelingDataDashboard = () => {
         />
       ) : null}
 
-      <div className="mb-4">
-        <h2 className="text-xl font-semibold text-gray-900">Contributors</h2>
-        <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-          Who labeled, how much, and when it arrived.
-        </p>
-      </div>
-
-      <div className={hasGps ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8' : 'mb-8'}>
-        <div>
-          <div className="text-base font-semibold text-gray-900">Posture</div>
-          <p className="text-sm text-gray-500 mb-3">
-            From <span className="font-mono text-xs">activity_session_*</span>
-          </p>
-          <div className={hasGps ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-2 md:grid-cols-4 gap-4'}>
-            <SummaryCard
-              icon={Users}
-              label="Processed users"
-              value={totals.users ?? 0}
-              hint={
-                stagingEmails.length > (totals.users ?? 0)
-                  ? `${stagingEmails.length} in staging`
-                  : null
-              }
-            />
-            <SummaryCard icon={Dog} label="Unique dogs" value={totals.dogs ?? 0} />
-            <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
-            <SummaryCard icon={FolderOpen} label="Files" value={totals.files ?? 0} />
-            <SummaryCard
-              icon={Clock}
-              label="Labeled duration"
-              value={totals.duration_human || formatSecondsShort(totals.duration_seconds)}
-            />
-          </div>
-        </div>
-        {hasGps ? (
-          <div>
-            <div className="text-base font-semibold text-gray-900">Indoor / outdoor</div>
-            <p className="text-sm text-gray-500 mb-3">
-              From <span className="font-mono text-xs">gps_session_*</span>
+      {tab === 'contributors' ? (
+        <>
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Contributors</h2>
+            <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+              Who labeled, how much, and when it arrived.
             </p>
-            <div className="grid grid-cols-2 gap-3">
-              <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
-              <SummaryCard icon={Dog} label="GPS dogs" value={gpsTotals.dogs ?? 0} />
-              <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
-              <SummaryCard icon={FolderOpen} label="GPS files" value={gpsTotals.files ?? 0} />
-              <SummaryCard
-                icon={Clock}
-                label="GPS duration"
-                value={gpsTotals.duration_human || formatSecondsShort(gpsTotals.duration_seconds)}
-              />
-            </div>
           </div>
-        ) : null}
-      </div>
 
-      <section className="mb-10">
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">When data arrived</h2>
-          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            When labeled sessions arrived, and who sent them.
-          </p>
-        </div>
-        <div className={`${chartPairClass} mb-4`}>
-          <ChartCard
-            kicker="Posture"
-            title="By date"
-            description="Session-day volume, stacked by labeler"
-          >
-            <StackedDurationChart
-              data={dateLabelerStack}
-              seriesKeys={labelerKeys}
-              colorMap={labelerColors}
-              xKey="label"
-              emptyText="No dated sessions found."
-            />
-            <DateVolumeTable rows={byDateChartData} />
-          </ChartCard>
-          {hasGps ? (
-            <ChartCard
-              kicker="Indoor / outdoor"
-              title="By date"
-              description="Session-day GPS volume, stacked by labeler"
-            >
-              <StackedDurationChart
-                data={gpsDateLabelerStack}
-                seriesKeys={gpsLabelerKeys}
-                colorMap={gpsLabelerColors}
-                xKey="label"
-                emptyText="No dated GPS sessions found."
-              />
-              <DateVolumeTable rows={gpsByDateChartData} />
-            </ChartCard>
-          ) : null}
-        </div>
-        <div className={chartPairClass}>
-          <ChartCard
-            kicker="Posture"
-            title="By labeler"
-            description="Ranked by labeled duration. Dark bars are distinct dogs (top axis)."
-          >
-            <LabelerVarietyChart
-              data={userContributionData}
-              height={userChartHeight}
-              colorMap={labelerColors}
-              emptyText="No processed users yet. Click Process staging to build extracted-txt from staging."
-            />
-            <LabelerTable rows={userContributionData} />
-          </ChartCard>
-          {hasGps ? (
-            <ChartCard
-              kicker="Indoor / outdoor"
-              title="By labeler"
-              description="Ranked by GPS labeled duration. Dark bars are distinct dogs (top axis)."
-            >
-              <LabelerVarietyChart
-                data={gpsUserContributionData}
-                height={gpsUserChartHeight}
-                colorMap={gpsLabelerColors}
-                emptyText="No GPS labelers yet."
-              />
-              <LabelerTable rows={gpsUserContributionData} />
-            </ChartCard>
-          ) : null}
-        </div>
-      </section>
+          <div className={hasGps ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8' : 'mb-8'}>
+            <div>
+              <div className="text-base font-semibold text-gray-900">Posture</div>
+              <p className="text-sm text-gray-500 mb-3">
+                From <span className="font-mono text-xs">activity_session_*</span>
+              </p>
+              <div className={hasGps ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-2 md:grid-cols-4 gap-4'}>
+                <SummaryCard
+                  icon={Users}
+                  label="Processed users"
+                  value={totals.users ?? 0}
+                  hint={
+                    stagingEmails.length > (totals.users ?? 0)
+                      ? `${stagingEmails.length} in staging`
+                      : null
+                  }
+                />
+                <SummaryCard icon={Dog} label="Unique dogs" value={totals.dogs ?? 0} />
+                <SummaryCard icon={FolderOpen} label="Sessions" value={totals.sessions ?? 0} />
+                <SummaryCard icon={FolderOpen} label="Files" value={totals.files ?? 0} />
+                <SummaryCard
+                  icon={Clock}
+                  label="Labeled duration"
+                  value={totals.duration_human || formatSecondsShort(totals.duration_seconds)}
+                />
+              </div>
+            </div>
+            {hasGps ? (
+              <div>
+                <div className="text-base font-semibold text-gray-900">Indoor / outdoor</div>
+                <p className="text-sm text-gray-500 mb-3">
+                  From <span className="font-mono text-xs">gps_session_*</span>
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <SummaryCard icon={Users} label="GPS labelers" value={gpsTotals.users ?? 0} />
+                  <SummaryCard icon={Dog} label="GPS dogs" value={gpsTotals.dogs ?? 0} />
+                  <SummaryCard icon={FolderOpen} label="GPS sessions" value={gpsTotals.sessions ?? 0} />
+                  <SummaryCard icon={FolderOpen} label="GPS files" value={gpsTotals.files ?? 0} />
+                  <SummaryCard
+                    icon={Clock}
+                    label="GPS duration"
+                    value={gpsTotals.duration_human || formatSecondsShort(gpsTotals.duration_seconds)}
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
 
-      <section className="mb-10">
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">By labeler</h2>
-          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            Posture sessions for each person. Expand a row for activities and collar serials.
-          </p>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-lg p-5">
-        <div className="space-y-3">
-          {users.map((user) => {
-            const isOpen = expandedUser === user.email;
-            const kinds = user.by_kind || {};
-            return (
-              <div key={user.email} className="border border-gray-200 rounded-lg overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setExpandedUser(isOpen ? null : user.email)}
-                  className="w-full flex items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50"
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium text-gray-900 truncate">
-                      <LabelerName email={user.email} />
-                    </div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      {user.sessions} sessions · {user.files} files · collars {(user.collar_sns || []).length} ·
-                      collar_collected {kinds.collar_collected || 0} ·
-                      durations {kinds.durations || 0} · user_reported {kinds.user_reported || 0}
-                    </div>
-                    {(user.collar_sns || []).length > 0 ? (
-                      <div className="text-xs text-gray-400 mt-0.5 truncate">
-                        SN: {(user.collar_sns || []).join(', ')}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className="text-sm font-semibold text-gray-900">
-                      {user.total_duration_human || formatSecondsShort(user.total_duration_seconds)}
-                    </div>
-                    <div className="text-xs text-gray-400">{isOpen ? 'Hide' : 'Show'} activities</div>
-                  </div>
-                </button>
-
-                {isOpen ? (
-                  <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
-                    {(user.activities || []).length === 0 ? (
-                      <p className="text-sm text-gray-500 pt-3">No non-zero durations for this user.</p>
-                    ) : (
-                      <div className="pt-3 overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                          <thead>
-                            <tr className="text-left text-gray-500 border-b border-gray-200">
-                              <th className="py-2 pr-4 font-medium">Activity</th>
-                              <th className="py-2 pr-4 font-medium">Duration</th>
-                              <th className="py-2 font-medium">Seconds</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {user.activities.map((a) => (
-                              <tr key={`${user.email}-${a.label}`} className="border-b border-gray-100">
-                                <td className="py-2 pr-4 text-gray-900">{a.label}</td>
-                                <td className="py-2 pr-4 text-gray-700">{a.human}</td>
-                                <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    {(user.collars || []).length > 0 ? (
-                      <div className="mt-4 space-y-2">
-                        <div className="text-xs font-medium text-gray-600 uppercase tracking-wide">
-                          By collar SN
-                        </div>
-                        {user.collars.map((collar) => (
-                          <div
-                            key={`${user.email}-${collar.collar_sn}`}
-                            className="bg-white border border-gray-200 rounded-md px-3 py-2"
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="font-mono text-sm text-gray-900">{collar.collar_sn}</div>
-                              <div className="text-xs text-gray-500">
-                                {collar.sessions} sessions · {collar.files} files ·{' '}
-                                {collar.total_duration_human}
-                              </div>
-                            </div>
-                            {(collar.activities || []).length > 0 ? (
-                              <div className="mt-1 text-xs text-gray-500">
-                                {collar.activities
-                                  .map((a) => `${a.name} ${a.human}`)
-                                  .join(' · ')}
-                              </div>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {Object.keys(user.collar_activity_events || {}).length > 0 ? (
-                      <div className="mt-3 text-xs text-gray-500">
-                        Collar transitions:{' '}
-                        {Object.entries(user.collar_activity_events)
-                          .map(([label, count]) => `${label.split(' ')[0]} ${count}`)
-                          .join(' · ')}
-                      </div>
-                    ) : null}
+          <section className="mb-10">
+            <div className="mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-gray-900">When data arrived</h2>
+                {hasGps ? (
+                  <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+                    {['activity', 'gps'].map((family) => (
+                      <button
+                        key={family}
+                        type="button"
+                        onClick={() => setContribModel(family)}
+                        className={`px-2.5 py-1 ${
+                          contribModel === family
+                            ? 'bg-gray-900 text-white'
+                            : 'bg-white text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        {MODEL_LABELS[family]}
+                      </button>
+                    ))}
                   </div>
                 ) : null}
               </div>
-            );
-          })}
-        </div>
-      </div>
-      </section>
+              <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+                When labeled sessions arrived, and who sent them, for one model at a time.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <ChartCard
+                kicker={MODEL_LABELS[contribModel]}
+                title="By date"
+                description="Is labeling steady, or bunched into a few days? Labeled time each day, stacked by labeler."
+              >
+                <StackedDurationChart
+                  data={contribModel === 'gps' ? gpsDateLabelerStack : dateLabelerStack}
+                  seriesKeys={contribModel === 'gps' ? gpsLabelerKeys : labelerKeys}
+                  colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
+                  xKey="label"
+                  emptyText="No dated sessions found."
+                />
+                <DateVolumeTable rows={contribModel === 'gps' ? gpsByDateChartData : byDateChartData} />
+              </ChartCard>
+              <ChartCard
+                kicker={MODEL_LABELS[contribModel]}
+                title="By labeler"
+                description="Who carries the load? Ranked by labeled time; dark bars are distinct dogs (top axis)."
+              >
+                <LabelerVarietyChart
+                  data={contribModel === 'gps' ? gpsUserContributionData : userContributionData}
+                  height={contribModel === 'gps' ? gpsUserChartHeight : userChartHeight}
+                  colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
+                  emptyText="No labelers yet. Click Process staging to build extracted-txt from staging."
+                />
+                <LabelerTable
+                  rows={contribModel === 'gps' ? gpsUserContributionData : userContributionData}
+                />
+              </ChartCard>
+            </div>
+          </section>
 
-      <section className="mb-10">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">How broad the data is</h2>
-          <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-            Which postures and environments the set actually covers: {breadthSummary}. Each color is a labeler.
-          </p>
-        </div>
-        <div className={chartPairClass}>
-          <ChartCard
-            kicker="Posture"
-            title="By posture"
-            description="Each posture, stacked by who labeled it"
-          >
-            <StackedDurationChart
-              data={activityLabelerStack}
-              seriesKeys={labelerKeys}
-              colorMap={labelerColors}
-              xKey="name"
-              emptyText="No non-zero activity durations found."
-            />
-            <ActivityDurationTable rows={activities} labelHeader="Posture" />
-          </ChartCard>
-          {hasGps ? (
-            <ChartCard
-              kicker="Indoor / outdoor"
-              title="By environment"
-              description="Each environment, stacked by who labeled it"
-            >
-              <StackedDurationChart
-                data={gpsActivityLabelerStack}
-                seriesKeys={gpsLabelerKeys}
-                colorMap={gpsLabelerColors}
-                xKey="name"
-                emptyText="No non-zero GPS durations found."
-              />
-              <ActivityDurationTable
-                rows={gpsActivities}
-                labelHeader="Environment"
-                formatName={(row) => displayLabel(row.label)}
-              />
-            </ChartCard>
-          ) : null}
-        </div>
-        <div className="mt-4">
-          <ChartCard
-            kicker="Dogs"
-            title="Minutes by dog"
-            description={`Labeled duration per collar. A few long bars mean minutes are concentrated on those dogs.${
-              dogRows.length > DOG_CHART_LIMIT
-                ? ` Chart shows the top ${DOG_CHART_LIMIT} of ${dogRows.length}.`
-                : ''
-            }`}
-          >
-            {dogChartData.length === 0 ? (
-              <p className="text-sm text-gray-500">No dogs found in processed sessions.</p>
-            ) : (
-              <>
-                <div style={{ height: dogChartHeight }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={dogChartData}
-                      layout="vertical"
-                      margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+          <section className="mb-10">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-gray-900">By labeler</h2>
+              <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+                Posture sessions for each person. Expand a row for activities and collar serials.
+              </p>
+            </div>
+            <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <div className="space-y-3">
+              {users.map((user) => {
+                const isOpen = expandedUser === user.email;
+                const kinds = user.by_kind || {};
+                return (
+                  <div key={user.email} className="border border-gray-200 rounded-lg overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedUser(isOpen ? null : user.email)}
+                      className="w-full flex items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50"
                     >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                      <XAxis
-                        type="number"
-                        tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => formatSecondsShort(v)}
-                      />
-                      <YAxis type="category" dataKey="label" width={140} tick={{ fontSize: 12 }} />
-                      <Tooltip
-                        formatter={(value, _name, props) => [
-                          `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.owners || 'no owner'}`,
-                          props.payload.breed
-                            ? `${props.payload.name} · ${props.payload.breed}`
-                            : props.payload.name,
-                        ]}
-                      />
-                      <Bar dataKey="seconds" fill="#4285F4" radius={[0, 4, 4, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <CollapsibleTable label="Show dog table">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-gray-500 border-b">
-                        <th className="py-2 pr-4 font-medium">Dog</th>
-                        <th className="py-2 pr-4 font-medium">Collar SN</th>
-                        <th className="py-2 pr-4 font-medium">Breed</th>
-                        <th className="py-2 pr-4 font-medium">Owners</th>
-                        <th className="py-2 pr-4 font-medium">Sessions</th>
-                        <th className="py-2 font-medium">Duration</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dogRows.map((dog) => (
-                        <tr key={dog.collar_sn || dog.name} className="border-b border-gray-100">
-                          <td className="py-2 pr-4 text-gray-900">{(dog.name || '').trim() || 'Unnamed'}</td>
-                          <td className="py-2 pr-4 font-mono text-xs text-gray-700">{dog.collar_sn}</td>
-                          <td className="py-2 pr-4 text-gray-500">{dog.breed || '—'}</td>
-                          <td className="py-2 pr-4 text-gray-500">
-                            {(dog.owners || dog.users || []).join(', ') || '—'}
-                          </td>
-                          <td className="py-2 pr-4 text-gray-500">{dog.sessions ?? 0}</td>
-                          <td className="py-2 text-gray-700">
-                            {dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </CollapsibleTable>
-              </>
-            )}
-          </ChartCard>
-        </div>
-      </section>
+                      <div className="min-w-0">
+                        <div className="font-medium text-gray-900 truncate">
+                          <LabelerName email={user.email} />
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {user.sessions} sessions · {user.files} files · collars {(user.collar_sns || []).length} ·
+                          collar_collected {kinds.collar_collected || 0} ·
+                          durations {kinds.durations || 0} · user_reported {kinds.user_reported || 0}
+                        </div>
+                        {(user.collar_sns || []).length > 0 ? (
+                          <div className="text-xs text-gray-400 mt-0.5 truncate">
+                            SN: {(user.collar_sns || []).join(', ')}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {user.total_duration_human || formatSecondsShort(user.total_duration_seconds)}
+                        </div>
+                        <div className="text-xs text-gray-400">{isOpen ? 'Hide' : 'Show'} activities</div>
+                      </div>
+                    </button>
 
+                    {isOpen ? (
+                      <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
+                        {(user.activities || []).length === 0 ? (
+                          <p className="text-sm text-gray-500 pt-3">No non-zero durations for this user.</p>
+                        ) : (
+                          <div className="pt-3 overflow-x-auto">
+                            <table className="min-w-full text-sm">
+                              <thead>
+                                <tr className="text-left text-gray-500 border-b border-gray-200">
+                                  <th className="py-2 pr-4 font-medium">Activity</th>
+                                  <th className="py-2 pr-4 font-medium">Duration</th>
+                                  <th className="py-2 font-medium">Seconds</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {user.activities.map((a) => (
+                                  <tr key={`${user.email}-${a.label}`} className="border-b border-gray-100">
+                                    <td className="py-2 pr-4 text-gray-900">{a.label}</td>
+                                    <td className="py-2 pr-4 text-gray-700">{a.human}</td>
+                                    <td className="py-2 text-gray-500">{a.seconds.toFixed(1)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
 
-      <details className="mt-8 group">
-        <summary className="cursor-pointer list-none text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
-          <span className="underline decoration-dotted underline-offset-2">Pipeline & source details</span>
-          <span className="text-gray-400 group-open:hidden">▸</span>
-          <span className="text-gray-400 hidden group-open:inline">▾</span>
-        </summary>
-        <div className="mt-3 p-4 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 space-y-2">
-          <div>
-            <span className="text-gray-500">Source:</span>{' '}
-            <span className="font-mono text-xs">
-              s3://{data?.bucket}/{data?.prefix}
-            </span>
-            {cached ? (
-              <span className="ml-2 text-xs text-gray-400">
-                {stale ? '(stale cache)' : '(cached)'}
-              </span>
-            ) : null}
+                        {(user.collars || []).length > 0 ? (
+                          <div className="mt-4 space-y-2">
+                            <div className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+                              By collar SN
+                            </div>
+                            {user.collars.map((collar) => (
+                              <div
+                                key={`${user.email}-${collar.collar_sn}`}
+                                className="bg-white border border-gray-200 rounded-md px-3 py-2"
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="font-mono text-sm text-gray-900">{collar.collar_sn}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {collar.sessions} sessions · {collar.files} files ·{' '}
+                                    {collar.total_duration_human}
+                                  </div>
+                                </div>
+                                {(collar.activities || []).length > 0 ? (
+                                  <div className="mt-1 text-xs text-gray-500">
+                                    {collar.activities
+                                      .map((a) => `${a.name} ${a.human}`)
+                                      .join(' · ')}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {Object.keys(user.collar_activity_events || {}).length > 0 ? (
+                          <div className="mt-3 text-xs text-gray-500">
+                            Collar transitions:{' '}
+                            {Object.entries(user.collar_activity_events)
+                              .map(([label, count]) => `${label.split(' ')[0]} ${count}`)
+                              .join(' · ')}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          {status ? (
-            <>
-              <div>
-                <span className="text-gray-500">Staging:</span>{' '}
-                <span className="font-mono">{status.staging_extracted_files ?? 0}</span> extracted
-                files in <span className="font-mono">{status.staging_batches ?? 0}</span> Gmail
-                batches
-                {status.staging_by_family
-                  ? ` · activity ${status.staging_by_family.activity || 0} · gps ${status.staging_by_family.gps || 0}`
-                  : ''}
-                {status.staging_by_email
-                  ? ` (${Object.entries(status.staging_by_email)
-                      .map(([email, n]) => `${email}: ${n}`)
-                      .join(' · ')})`
-                  : ''}
-              </div>
-              <div>
-                <span className="text-gray-500">Output:</span>{' '}
-                <span className="font-mono">{status.output_files ?? 0}</span> files under{' '}
-                <span className="font-mono text-xs">{status.output_prefix}</span>
-                {status.output_by_family
-                  ? ` · activity ${status.output_by_family.activity || 0} · gps ${status.output_by_family.gps || 0}`
-                  : ''}
-                {(status.output_emails || []).length
-                  ? ` (${status.output_emails.join(', ')})`
-                  : ' (empty — click Process staging)'}
-              </div>
-              {status.staging_health ? (
-                <div>
-                  Health: ~{status.staging_health.unique_files_after_dedupe} unique /{' '}
-                  {status.staging_health.raw_extracted_files} raw
-                  {status.staging_health.duplicate_ratio
-                    ? ` (${status.staging_health.duplicate_ratio}x)`
-                    : ''}
-                  {status.staging_health.incomplete_sessions
-                    ? ` · incomplete ${status.staging_health.incomplete_sessions}`
-                    : ''}
-                </div>
+          </section>
+
+        </>
+      ) : null}
+
+      {tab === 'coverage' ? (
+        <>
+          <section className="mb-10">
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">How broad the data is</h2>
+              <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+                Which postures and environments the set actually covers: {breadthSummary}. Each color is a labeler.
+              </p>
+            </div>
+            <div className={chartPairClass}>
+              <ChartCard
+                kicker="Posture"
+                title="By posture"
+                description={`${shareTakeaway(activities)} Each posture, stacked by who labeled it.`.trim()}
+              >
+                <StackedDurationChart
+                  data={activityLabelerStack}
+                  seriesKeys={labelerKeys}
+                  colorMap={labelerColors}
+                  xKey="name"
+                  emptyText="No non-zero activity durations found."
+                />
+                <ActivityDurationTable rows={activities} labelHeader="Posture" />
+              </ChartCard>
+              {hasGps ? (
+                <ChartCard
+                  kicker="Indoor / outdoor"
+                  title="By environment"
+                  description={`${shareTakeaway(gpsActivities)} Each environment, stacked by who labeled it.`.trim()}
+                >
+                  <StackedDurationChart
+                    data={gpsActivityLabelerStack}
+                    seriesKeys={gpsLabelerKeys}
+                    colorMap={gpsLabelerColors}
+                    xKey="name"
+                    emptyText="No non-zero GPS durations found."
+                  />
+                  <ActivityDurationTable
+                    rows={gpsActivities}
+                    labelHeader="Environment"
+                    formatName={(row) => displayLabel(row.label)}
+                  />
+                </ChartCard>
               ) : null}
-              {status.pending_forwards ? (
-                <div>
-                  Forwards: {status.pending_forwards.pending_count || 0} pending
-                  {status.pending_forwards.already_promoted?.length
-                    ? ` · ${status.pending_forwards.already_promoted.length} already promoted`
-                    : ''}
-                  {status.pending_forwards.unresolved?.length
-                    ? ` · ${status.pending_forwards.unresolved.length} unresolved`
-                    : ''}
-                  {status.forward_batches
-                    ? ` · ${status.forward_batches} quarantine batch(es)`
-                    : ''}
-                </div>
-              ) : null}
-              {processReport ? (
-                <div className="text-xs text-gray-500">
-                  {processReport.promoted ? (
-                    <>
-                      Last promote: {processReport.promoted.length} batch(es), skipped{' '}
-                      {(processReport.skipped || []).length}, errors{' '}
-                      {(processReport.errors || []).length}
-                    </>
-                  ) : processReport.extracted_duplicates_planned != null ? (
-                    <>
-                      Last compact: removed {processReport.extracted_duplicates_removed ?? 0}{' '}
-                      extracted copies, raw objects {processReport.raw_objects_removed ?? 0}, kept{' '}
-                      {processReport.unique_filenames ?? 0} filenames
-                    </>
-                  ) : (
-                    <>
-                      Last process: copied {processReport.copied}, sessions {processReport.sessions},
-                      unknown SN {processReport.unknown_sn_sessions}, errors{' '}
-                      {(processReport.errors || []).length}
-                    </>
-                  )}
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <div className="text-xs text-gray-400">Pipeline status not loaded yet.</div>
-          )}
-        </div>
-      </details>
+            </div>
+            <div className="mt-4">
+              <ChartCard
+                kicker="Dogs"
+                title="Minutes by dog"
+                description={`Labeled duration per collar. A few long bars mean minutes are concentrated on those dogs.${
+                  dogRows.length > DOG_CHART_LIMIT
+                    ? ` Chart shows the top ${DOG_CHART_LIMIT} of ${dogRows.length}.`
+                    : ''
+                }`}
+              >
+                {dogChartData.length === 0 ? (
+                  <p className="text-sm text-gray-500">No dogs found in processed sessions.</p>
+                ) : (
+                  <>
+                    <div style={{ height: dogChartHeight }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={dogChartData}
+                          layout="vertical"
+                          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis
+                            type="number"
+                            tick={{ fontSize: 12 }}
+                            tickFormatter={(v) => formatSecondsShort(v)}
+                          />
+                          <YAxis type="category" dataKey="label" width={140} tick={{ fontSize: 12 }} />
+                          <Tooltip
+                            formatter={(value, _name, props) => [
+                              `${formatSecondsShort(value)} · ${props.payload.sessions} sessions · ${props.payload.owners || 'no owner'}`,
+                              props.payload.breed
+                                ? `${props.payload.name} · ${props.payload.breed}`
+                                : props.payload.name,
+                            ]}
+                          />
+                          <Bar dataKey="seconds" fill="#4285F4" radius={[0, 4, 4, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <CollapsibleTable label="Show dog table">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b">
+                            <th className="py-2 pr-4 font-medium">Dog</th>
+                            <th className="py-2 pr-4 font-medium">Collar SN</th>
+                            <th className="py-2 pr-4 font-medium">Breed</th>
+                            <th className="py-2 pr-4 font-medium">Owners</th>
+                            <th className="py-2 pr-4 font-medium">Sessions</th>
+                            <th className="py-2 font-medium">Duration</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dogRows.map((dog) => (
+                            <tr key={dog.collar_sn || dog.name} className="border-b border-gray-100">
+                              <td className="py-2 pr-4 text-gray-900">{(dog.name || '').trim() || 'Unnamed'}</td>
+                              <td className="py-2 pr-4 font-mono text-xs text-gray-700">{dog.collar_sn}</td>
+                              <td className="py-2 pr-4 text-gray-500">{dog.breed || '—'}</td>
+                              <td className="py-2 pr-4 text-gray-500">
+                                {(dog.owners || dog.users || []).join(', ') || '—'}
+                              </td>
+                              <td className="py-2 pr-4 text-gray-500">{dog.sessions ?? 0}</td>
+                              <td className="py-2 text-gray-700">
+                                {dog.total_duration_human || formatSecondsShort(dog.total_duration_seconds)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </CollapsibleTable>
+                  </>
+                )}
+              </ChartCard>
+            </div>
+          </section>
+
+
+        </>
+      ) : null}
     </div>
     </LabelerNamesContext.Provider>
   );

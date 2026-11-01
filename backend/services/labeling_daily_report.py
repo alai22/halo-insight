@@ -203,6 +203,99 @@ def period_start(day: str, days: int) -> str:
     return (date.fromisoformat(day) - timedelta(days=max(1, days) - 1)).isoformat()
 
 
+def recap_data(
+    end: str,
+    day_data: Dict[str, Any],
+    all_data: Dict[str, Any],
+    start: Optional[str] = None,
+    owner_names: Optional[Dict[str, str]] = None,
+    group_senders: Optional[set] = None,
+    owner_emails: Optional[Dict[str, str]] = None,
+    names_by_email: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    The recap as data, for the period start..end (inclusive; start None = all time).
+    day_data is the summary limited to that period. Shared by Slack and the dashboard.
+    """
+    owner_names = owner_names or {}
+    period = _totals(day_data)
+    overall = _totals(all_data)
+    sessions = period["activity_sessions"] + period["gps_sessions"]
+    seconds = period["activity_seconds"] + period["gps_seconds"]
+    all_sessions = overall["activity_sessions"] + overall["gps_sessions"]
+    all_seconds = overall["activity_seconds"] + overall["gps_seconds"]
+    labelers = _split_group_senders(_merge_labelers(day_data), group_senders)
+    dogs_by_collar = _dogs_by_collar(day_data)
+    leaderboard = []
+    for index, labeler in enumerate(labelers):
+        leaderboard.append({
+            "person": labeler_name(labeler, owner_names, owner_emails, names_by_email),
+            "dogs": labeler_dogs(labeler, dogs_by_collar),
+            "sessions": labeler["sessions"],
+            "seconds": round(labeler["seconds"], 1),
+            "medal": PODIUM[index] if len(labelers) > 1 and index < len(PODIUM) else None,
+        })
+    # Milestones are what this period pushed the all-time totals past.
+    period_bound = start is not None
+    return {
+        "start": start,
+        "end": end,
+        "sessions": sessions,
+        "seconds": round(seconds, 1),
+        "activity": {
+            "sessions": period["activity_sessions"],
+            "seconds": period["activity_seconds"],
+        },
+        "gps": {"sessions": period["gps_sessions"], "seconds": period["gps_seconds"]},
+        "all_sessions": all_sessions,
+        "all_seconds": round(all_seconds, 1),
+        "labelers": len(labelers),
+        "dogs": _dog_names(day_data),
+        "leaderboard": leaderboard,
+        "streak": _streak(all_data, end),
+        "session_milestone": (
+            _crossed(all_sessions - sessions, all_sessions, SESSION_MILESTONE_STEP)
+            if period_bound
+            else None
+        ),
+        "hours_milestone": (
+            _crossed((all_seconds - seconds) / 3600, all_seconds / 3600, HOURS_MILESTONE_STEP)
+            if period_bound
+            else None
+        ),
+    }
+
+
+def _day_rows(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list(data.get("by_date") or []) + list((data.get("gps") or {}).get("by_date") or [])
+
+
+def period_change(all_data: Dict[str, Any], start: str, end: str) -> Dict[str, Any]:
+    """
+    Sessions, minutes and labelers in start..end and in the same-length period just before,
+    from the all-time summary's per-day rows.
+    """
+    span = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+    prev_end = date.fromisoformat(start) - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=span - 1)
+
+    def _sum(lo: str, hi: str) -> Dict[str, Any]:
+        sessions, seconds, people = 0, 0.0, set()
+        for row in _day_rows(all_data):
+            if lo <= str(row.get("date") or "") <= hi:
+                sessions += int(row.get("sessions") or 0)
+                seconds += float(row.get("duration_seconds") or 0)
+                people.update(u.get("user") for u in row.get("by_user") or [] if u.get("user"))
+        return {"sessions": sessions, "seconds": round(seconds, 1), "labelers": len(people)}
+
+    return {
+        "current": _sum(start, end),
+        "previous": _sum(prev_start.isoformat(), prev_end.isoformat()),
+        "previous_start": prev_start.isoformat(),
+        "previous_end": prev_end.isoformat(),
+    }
+
+
 def build_daily_report(
     day: str,
     day_data: Dict[str, Any],
@@ -218,7 +311,6 @@ def build_daily_report(
     Slack mrkdwn for the days-long period ending on day (one day by default).
     day_data is the summary limited to that period.
     """
-    owner_names = owner_names or {}
     end = date.fromisoformat(day)
     if days > 1:
         start = date.fromisoformat(period_start(day, days))
@@ -227,70 +319,72 @@ def build_daily_report(
     else:
         pretty_day = end.strftime("%A, %b %-d")
         quiet = "A quiet day"
-    today = _totals(day_data)
-    overall = _totals(all_data)
-    sessions = today["activity_sessions"] + today["gps_sessions"]
-    seconds = today["activity_seconds"] + today["gps_seconds"]
-    all_sessions = overall["activity_sessions"] + overall["gps_sessions"]
-    all_seconds = overall["activity_seconds"] + overall["gps_seconds"]
+    recap = recap_data(
+        day,
+        day_data,
+        all_data,
+        start=period_start(day, days),
+        owner_names=owner_names,
+        group_senders=group_senders,
+        owner_emails=owner_emails,
+        names_by_email=names_by_email,
+    )
+    sessions = recap["sessions"]
     link = f"\n<{dashboard_url.rstrip('/')}|Open the labeling dashboard>" if dashboard_url else ""
 
     if sessions == 0:
         return (
             f":sunrise: *Labeling recap for {pretty_day}*\n"
             f"{quiet}, with no new labeled sessions. "
-            f"So far the team has labeled *{all_sessions:,} sessions* and "
-            f"*{format_minutes(all_seconds)}* of data. Thank you! :sparkles:{link}"
+            f"So far the team has labeled *{recap['all_sessions']:,} sessions* and "
+            f"*{format_minutes(recap['all_seconds'])}* of data. Thank you! :sparkles:{link}"
         )
 
-    labelers = _split_group_senders(_merge_labelers(day_data), group_senders)
-    dogs = _dog_names(day_data)
+    labelers, dogs = recap["labelers"], recap["dogs"]
     lines = [
         f":tada: *Labeling recap for {pretty_day}*",
-        f"*{sessions} session{'s' if sessions != 1 else ''}* and *{format_minutes(seconds)}* "
-        f"of labeled data from *{len(labelers)} labeler{'s' if len(labelers) != 1 else ''}*"
+        f"*{sessions} session{'s' if sessions != 1 else ''}* and "
+        f"*{format_minutes(recap['seconds'])}* "
+        f"of labeled data from *{labelers} labeler{'s' if labelers != 1 else ''}*"
         + (f" and *{len(dogs)} dog{'s' if len(dogs) != 1 else ''}*" if dogs else "")
         + ".",
     ]
-    if today["activity_sessions"]:
+    if recap["activity"]["sessions"]:
         lines.append(
-            f"• :dog2: Activity: {today['activity_sessions']} sessions · "
-            f"{format_minutes(today['activity_seconds'])}"
+            f"• :dog2: Activity: {recap['activity']['sessions']} sessions · "
+            f"{format_minutes(recap['activity']['seconds'])}"
         )
-    if today["gps_sessions"]:
+    if recap["gps"]["sessions"]:
         lines.append(
-            f"• :house_with_garden: Indoor/outdoor: {today['gps_sessions']} sessions · "
-            f"{format_minutes(today['gps_seconds'])}"
+            f"• :house_with_garden: Indoor/outdoor: {recap['gps']['sessions']} sessions · "
+            f"{format_minutes(recap['gps']['seconds'])}"
         )
 
     lines.append("")
     # Each line thanks the dogs first, with their people in brackets.
     lines.append(":raised_hands: *Shout-outs to the good dogs and their people*")
-    dogs_by_collar = _dogs_by_collar(day_data)
-    for index, labeler in enumerate(labelers[:SHOUT_OUT_LIMIT]):
-        medal = f" {PODIUM[index]}" if len(labelers) > 1 and index < len(PODIUM) else ""
-        person = labeler_name(labeler, owner_names, owner_emails, names_by_email)
-        their_dogs = labeler_dogs(labeler, dogs_by_collar)
-        shown = ", ".join(their_dogs[:DOGS_PER_LINE])
-        if len(their_dogs) > DOGS_PER_LINE:
-            shown += f" +{len(their_dogs) - DOGS_PER_LINE}"
-        who = f":dog: {shown} ({person})" if their_dogs else person
+    for row in recap["leaderboard"][:SHOUT_OUT_LIMIT]:
+        shown = ", ".join(row["dogs"][:DOGS_PER_LINE])
+        if len(row["dogs"]) > DOGS_PER_LINE:
+            shown += f" +{len(row['dogs']) - DOGS_PER_LINE}"
+        who = f":dog: {shown} ({row['person']})" if row["dogs"] else row["person"]
+        medal = f" {row['medal']}" if row["medal"] else ""
         lines.append(
-            f"• {who}: {labeler['sessions']} sessions · "
-            f"{format_minutes(labeler['seconds'])}{medal}"
+            f"• {who}: {row['sessions']} sessions · {format_minutes(row['seconds'])}{medal}"
         )
-    if len(labelers) > SHOUT_OUT_LIMIT:
-        lines.append(f"• …and {len(labelers) - SHOUT_OUT_LIMIT} more. Thank you all!")
+    if labelers > SHOUT_OUT_LIMIT:
+        lines.append(f"• …and {labelers - SHOUT_OUT_LIMIT} more. Thank you all!")
 
-    streak = _streak(all_data, day)
-    if streak >= STREAK_MIN_DAYS:
-        lines.append(f":fire: {streak} days in a row with new labeled data!")
-    session_mark = _crossed(all_sessions - sessions, all_sessions, SESSION_MILESTONE_STEP)
-    if session_mark:
-        lines.append(f":trophy: Milestone: we passed *{session_mark:,} labeled sessions*!")
-    hours_mark = _crossed((all_seconds - seconds) / 3600, all_seconds / 3600, HOURS_MILESTONE_STEP)
-    if hours_mark:
-        lines.append(f":stopwatch: Milestone: over *{hours_mark:,} hours* of labeled data!")
+    if recap["streak"] >= STREAK_MIN_DAYS:
+        lines.append(f":fire: {recap['streak']} days in a row with new labeled data!")
+    if recap["session_milestone"]:
+        lines.append(
+            f":trophy: Milestone: we passed *{recap['session_milestone']:,} labeled sessions*!"
+        )
+    if recap["hours_milestone"]:
+        lines.append(
+            f":stopwatch: Milestone: over *{recap['hours_milestone']:,} hours* of labeled data!"
+        )
 
     return "\n".join(lines) + link
 

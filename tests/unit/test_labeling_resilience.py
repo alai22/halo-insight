@@ -318,6 +318,8 @@ def test_window_summary_builds_from_file_snapshot_without_reading_s3(monkeypatch
 
     monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
     monkeypatch.setattr(routes, "_load_collar_owners", lambda: {})
+    monkeypatch.setattr(routes, "_cache_get_memory", lambda _key: None)
+    monkeypatch.setattr(routes, "_load_summary_cache_s3", lambda _ttl: None)
     monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {"totals": {}})
     monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
     monkeypatch.setitem(
@@ -406,6 +408,8 @@ def test_window_summary_without_snapshot_runs_one_full_scan_first(monkeypatch):
     monkeypatch.setattr(routes, "_compute_summary", _full)
     monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
     monkeypatch.setattr(routes, "_load_collar_owners", lambda: {})
+    monkeypatch.setattr(routes, "_cache_get_memory", lambda _key: None)
+    monkeypatch.setattr(routes, "_load_summary_cache_s3", lambda _ttl: None)
     monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {})
     monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
     routes._window_cache_clear()
@@ -475,3 +479,33 @@ def test_build_liveness_reports_the_deployed_commit(monkeypatch):
     }
     monkeypatch.delenv("APP_COMMIT")
     assert build_liveness({})["build"]["commit"] is None
+
+
+def test_overview_is_attached_with_the_change_from_the_period_before(monkeypatch):
+    monkeypatch.setattr(routes, "_load_collar_owners", lambda: {})
+    monkeypatch.setattr(routes.Config, "LABELING_GROUP_SENDERS", "")
+
+    def _family(rows):
+        return {
+            "totals": {"sessions": sum(r["sessions"] for r in rows), "duration_seconds": 0},
+            "users": [],
+            "dogs": [],
+            "by_date": rows,
+        }
+
+    all_data = {
+        **_family([
+            {"date": "2026-10-20", "sessions": 2, "duration_seconds": 60, "by_user": [{"user": "a@x.com"}]},
+            {"date": "2026-10-27", "sessions": 5, "duration_seconds": 300, "by_user": [{"user": "a@x.com"}, {"user": "b@x.com"}]},
+        ]),
+        "gps": _family([]),
+    }
+    window_data = {**_family([all_data["by_date"][1]]), "gps": _family([])}
+    routes._attach_overview(window_data, all_data, ("2026-10-24", "2026-10-30"))
+    overview = window_data["overview"]
+    assert overview["recap"]["start"] == "2026-10-24"
+    assert overview["recap"]["sessions"] == 5
+    assert overview["change"]["current"] == {"sessions": 5, "seconds": 300.0, "labelers": 2}
+    assert overview["change"]["previous"] == {"sessions": 2, "seconds": 60.0, "labelers": 1}
+    assert overview["change"]["previous_start"] == "2026-10-17"
+    assert overview["change_is_last_7_days"] is False

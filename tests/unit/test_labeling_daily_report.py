@@ -410,3 +410,39 @@ def test_several_dogs_on_one_line_are_capped():
     day = {**_family(15, 900, users=[_user("a@x.com", 15, 900, collars)], dogs=dogs), "gps": _family(0, 0)}
     text = build_daily_report("2026-10-30", day, {**_family(20, 0), "gps": _family(0, 0)})
     assert "• :dog: Dog0, Dog1, Dog2 +2 (a@x.com): 15 sessions · 15m" in text
+
+
+def test_recap_data_gives_the_dashboard_the_same_leaderboard_as_slack():
+    from backend.services.labeling_daily_report import recap_data
+
+    day = {
+        **_family(
+            5,
+            1800,
+            users=[
+                _user("b@x.com", 3, 1200, [("sn1", 3, 1200)]),
+                _user("c@x.com", 2, 600, [("sn2", 2, 600)]),
+            ],
+            dogs=[{"name": "Mochi", "collar_sn": "sn1"}],
+        ),
+        "gps": _family(0, 0),
+    }
+    recap = recap_data(
+        "2026-10-30",
+        day,
+        {**_family(497, 0), "gps": _family(7, 0)},  # 504 all-time, 499 before this week
+        start="2026-10-24",
+        owner_names={"sn1": "Brandon Rivera"},
+    )
+    assert recap["sessions"] == 5 and recap["labelers"] == 2
+    assert recap["leaderboard"][0] == {
+        "person": "Brandon Rivera",
+        "dogs": ["Mochi"],
+        "sessions": 3,
+        "seconds": 1200.0,
+        "medal": ":first_place_medal:",
+    }
+    assert recap["leaderboard"][1]["medal"] == ":second_place_medal:"
+    assert recap["session_milestone"] == 500
+    # All time has no period to have pushed past a milestone.
+    assert recap_data("2026-10-30", day, day)["session_milestone"] is None
