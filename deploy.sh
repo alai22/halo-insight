@@ -149,6 +149,12 @@ case $ENVIRONMENT in
         # which is what makes the instance need a reboot.
         CONTAINER_MEMORY="${CONTAINER_MEMORY:-2800m}"
         print_status "Container memory cap: ${CONTAINER_MEMORY} (override with CONTAINER_MEMORY)"
+
+        # Which commit is running, shown in /health and on the dashboard.
+        APP_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        APP_COMMIT_SUBJECT="$(git log -1 --pretty=%s 2>/dev/null | cut -c1-120)"
+        APP_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        print_status "Deploying commit ${APP_COMMIT}: ${APP_COMMIT_SUBJECT}"
         
         # Use --env-file to load all variables from .env (handles spaces and special chars)
         # Also explicitly pass critical variables as -e flags to ensure they're set
@@ -168,6 +174,9 @@ case $ENVIRONMENT in
                 -e SURVICATE_SURVEY_ID="${SURVICATE_SURVEY_ID:-e08c3365f14085e2}" \
                 -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
                 -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
+                -e APP_COMMIT="${APP_COMMIT}" \
+                -e APP_COMMIT_SUBJECT="${APP_COMMIT_SUBJECT}" \
+                -e APP_DEPLOYED_AT="${APP_DEPLOYED_AT}" \
                 --name gladly-prod \
                 $PROJECT_NAME:$ENVIRONMENT
         else
@@ -190,6 +199,9 @@ case $ENVIRONMENT in
                 -e SURVICATE_WORKSPACE_ID="${SURVICATE_WORKSPACE_ID}" \
                 -e SURVICATE_API_BASE_URL="${SURVICATE_API_BASE_URL:-https://api.survicate.com/v1}" \
                 -e SURVICATE_CACHE_MAX_AGE_HOURS="${SURVICATE_CACHE_MAX_AGE_HOURS:-24}" \
+                -e APP_COMMIT="${APP_COMMIT}" \
+                -e APP_COMMIT_SUBJECT="${APP_COMMIT_SUBJECT}" \
+                -e APP_DEPLOYED_AT="${APP_DEPLOYED_AT}" \
                 --name gladly-prod \
                 $PROJECT_NAME:$ENVIRONMENT
         fi

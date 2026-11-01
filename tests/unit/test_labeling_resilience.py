@@ -456,3 +456,16 @@ def test_saving_owners_rebuilds_the_summary(monkeypatch):
         headers=_admin_headers(),
     )
     assert rebuilt == [True]
+
+
+def test_build_liveness_reports_the_deployed_commit(monkeypatch):
+    monkeypatch.setenv("APP_COMMIT", "4412e0b")
+    monkeypatch.setenv("APP_COMMIT_SUBJECT", "Credit sessions sent through ai_logs@")
+    monkeypatch.setenv("APP_DEPLOYED_AT", "2026-11-01T17:00:00Z")
+    assert build_liveness({})["build"] == {
+        "commit": "4412e0b",
+        "subject": "Credit sessions sent through ai_logs@",
+        "deployed_at": "2026-11-01T17:00:00Z",
+    }
+    monkeypatch.delenv("APP_COMMIT")
+    assert build_liveness({})["build"]["commit"] is None

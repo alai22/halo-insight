@@ -2408,6 +2408,8 @@ const LabelingDataDashboard = () => {
   const [collarOwnersUpdatedAt, setCollarOwnersUpdatedAt] = useState(null);
   const [ownersOpen, setOwnersOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
+  // The commit running on the server, from /health (set by deploy.sh).
+  const [build, setBuild] = useState(null);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -2760,6 +2762,13 @@ const LabelingDataDashboard = () => {
   useEffect(() => {
     fetchCollarOwners();
   }, [fetchCollarOwners]);
+
+  useEffect(() => {
+    axios
+      .get('/health')
+      .then((response) => setBuild(response.data?.build || null))
+      .catch(() => setBuild(null));
+  }, []);
 
   useEffect(() => {
     fetchStatus();
@@ -3274,6 +3283,15 @@ const LabelingDataDashboard = () => {
                 {processInfo.runtime.peak_rss_mb
                   ? ` · peak ${processInfo.runtime.peak_rss_mb} MB`
                   : ''}
+              </span>
+            ) : null}
+            {build?.commit ? (
+              <span
+                className="ml-2 text-xs text-gray-400"
+                title={build.subject ? `Deployed commit: ${build.subject}` : 'Deployed commit'}
+              >
+                · Build <span className="font-mono">{build.commit}</span>
+                {build.deployed_at ? `, deployed ${formatUpdatedAt(build.deployed_at)}` : ''}
               </span>
             ) : null}
             {loading && data ? (

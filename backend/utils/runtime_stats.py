@@ -72,9 +72,18 @@ def log_rss(logger: Any, label: str) -> Dict[str, Any]:
     return snap
 
 
+def build_info() -> Dict[str, Optional[str]]:
+    """The deployed commit, set by deploy.sh; None when run outside a deploy."""
+    return {
+        "commit": os.environ.get("APP_COMMIT") or None,
+        "subject": os.environ.get("APP_COMMIT_SUBJECT") or None,
+        "deployed_at": os.environ.get("APP_DEPLOYED_AT") or None,
+    }
+
+
 def build_liveness(job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Cheap JSON body for load-balancer and Docker health checks."""
-    body: Dict[str, Any] = {"status": "ok", **snapshot()}
+    body: Dict[str, Any] = {"status": "ok", **snapshot(), "build": build_info()}
     job = job or {}
     body["job_running"] = bool(job.get("running"))
     body["job"] = job.get("job")
