@@ -437,6 +437,8 @@ def test_recap_data_gives_the_dashboard_the_same_leaderboard_as_slack():
     assert recap["sessions"] == 5 and recap["labelers"] == 2
     assert recap["leaderboard"][0] == {
         "person": "Brandon Rivera",
+        "emails": ["b@x.com"],
+        "labeler_type": None,
         "dogs": ["Mochi"],
         "sessions": 3,
         "seconds": 1200.0,
@@ -545,3 +547,28 @@ def test_dog_leaderboard_ranks_dogs_with_their_people():
         {"dog": "Bear", "people": ["amy@x.com"], "sessions": 3, "seconds": 400.0,
          "medal": ":second_place_medal:"},
     ]
+
+
+def test_labeler_type_defaults_halo_emails_to_employee_and_saved_types_win():
+    from backend.services.labeling_daily_report import recap_data
+
+    day = {
+        **_family(
+            6,
+            600,
+            users=[
+                _user("amy@halocollar.com", 2, 200, [("sn1", 2, 200)]),
+                _user("ken@x.com", 2, 200, [("sn2", 2, 200)]),
+                _user("bo@x.com", 2, 200, [("sn3", 2, 200)]),
+            ],
+        ),
+        "gps": _family(0, 0),
+    }
+    recap = recap_data(
+        "2026-10-30", day, day, start="2026-10-30",
+        names_by_email={"ken@x.com": "Ken E"},
+        labeler_types={"ken e": "partner"},
+    )
+    types = {r["person"]: r["labeler_type"] for r in recap["leaderboard"]}
+    assert types == {"amy@halocollar.com": "employee", "Ken E": "partner", "bo@x.com": None}
+    assert recap["leaderboard"][0]["emails"] == ["amy@halocollar.com"]

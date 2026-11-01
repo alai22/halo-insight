@@ -451,6 +451,37 @@ def test_configure_analyzer_reads_group_senders_and_owner_emails(monkeypatch):
     assert analyzer.labeler_aliases == {"jenniferpeterson400@yahoo.com": "alai@halocollar.com"}
 
 
+def test_labeler_type_saves_merge_and_null_clears(monkeypatch):
+    store = {}
+
+    class _Body:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    class _S3:
+        def put_object(self, Bucket, Key, Body, ContentType):  # noqa: N803
+            store[Key] = Body
+
+        def get_object(self, Bucket, Key):  # noqa: N803
+            if Key not in store:
+                raise Exception("NoSuchKey")
+            return {"Body": _Body(store[Key])}
+
+    monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
+    monkeypatch.setattr(routes, "_rebuild_summary_in_background", lambda: None)
+    client = _client()
+    headers = _admin_headers()
+    put = lambda types: client.put("/api/labeling/labeler-types", json={"types": types}, headers=headers)  # noqa: E731
+    assert put({"Ken Ehrman": "partner", "Lindsey": "pack_member"}).status_code == 200
+    # Only names sent change; null clears one.
+    assert put({"Lindsey": None}).status_code == 200
+    assert routes._load_labeler_types() == {"ken ehrman": "partner"}
+    assert put({"Ken Ehrman": "boss"}).status_code == 400
+
+
 def test_saving_owners_rebuilds_the_summary(monkeypatch):
     rebuilt = []
 

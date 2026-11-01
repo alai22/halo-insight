@@ -1364,6 +1364,150 @@ function shareTakeaway(rows) {
 }
 
 /** The recap for the selected range, in plain language, with one simple chart. */
+/** Who a labeler is to Halo. Unset unless saved, except @halocollar.com means employee. */
+const LABELER_TYPES = [
+  { key: 'employee', label: 'Employee', className: 'bg-blue-50 text-blue-800 border-blue-200' },
+  { key: 'pack_member', label: 'Pack member', className: 'bg-purple-50 text-purple-800 border-purple-200' },
+  { key: 'partner', label: 'Partner', className: 'bg-teal-50 text-teal-800 border-teal-200' },
+];
+const EMPLOYEE_DOMAIN = '@halocollar.com';
+
+function defaultLabelerType(emails) {
+  return (emails || []).some((e) => e.endsWith(EMPLOYEE_DOMAIN)) ? 'employee' : null;
+}
+
+/** A row's labeler type, with edits saved in this session applied before the summary rebuilds. */
+function resolveLabelerType(row, overrides) {
+  const key = (row.person || '').toLowerCase();
+  if (overrides && key in overrides) return overrides[key] || defaultLabelerType(row.emails);
+  return row.labeler_type || null;
+}
+
+function LabelerTypeBadge({ type }) {
+  const info = LABELER_TYPES.find((t) => t.key === type);
+  if (!info) return null;
+  return (
+    <span className={`inline-block text-[11px] leading-4 px-1.5 rounded border ${info.className}`}>
+      {info.label}
+    </span>
+  );
+}
+
+function EditLabelersButton({ onClick }) {
+  return (
+    <button type="button" onClick={onClick} className="text-xs text-blue-700 hover:text-blue-900 whitespace-nowrap">
+      Edit labelers
+    </button>
+  );
+}
+
+/** Set each labeler's type: employee, pack member or partner. */
+function LabelerTypesEditor({ people, overrides, onSave, onClose }) {
+  const [draft, setDraft] = useState(() => {
+    const map = {};
+    people.forEach((p) => {
+      map[p.person.toLowerCase()] = resolveLabelerType(p, overrides) || '';
+    });
+    return map;
+  });
+  const [onlyUnset, setOnlyUnset] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const changed = people.filter(
+    (p) => (draft[p.person.toLowerCase()] || '') !== (resolveLabelerType(p, overrides) || '')
+  );
+  const unset = people.filter((p) => !draft[p.person.toLowerCase()]).length;
+  const shown = people.filter((p) => !onlyUnset || !draft[p.person.toLowerCase()]);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    const types = {};
+    changed.forEach((p) => {
+      types[p.person] = draft[p.person.toLowerCase()] || null;
+    });
+    const ok = await onSave(types);
+    setSaving(false);
+    setMessage(ok ? 'Saved.' : 'Could not save. Try again.');
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Edit labelers">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative h-full w-full max-w-2xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Labelers</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Mark each person as an employee, pack member or partner. People with an {EMPLOYEE_DOMAIN}{' '}
+              email start as employees. Everyone who labeled in the selected date range is listed.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 text-gray-500 hover:text-gray-900" aria-label="Close">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-gray-100 text-sm">
+          <label className="flex items-center gap-2 text-gray-600">
+            <input type="checkbox" checked={onlyUnset} onChange={(e) => setOnlyUnset(e.target.checked)} />
+            Only not set ({unset})
+          </label>
+          <span className="text-xs text-gray-500">{people.length} labelers</span>
+        </div>
+        <ul className="flex-1 overflow-y-auto divide-y divide-gray-100 px-5">
+          {shown.map((p) => {
+            const key = p.person.toLowerCase();
+            return (
+              <li key={key} className="flex items-center gap-3 py-2">
+                <span className="flex-1 min-w-0">
+                  <span className="block text-sm font-medium text-gray-900 truncate">{p.person}</span>
+                  <span className="block text-xs text-gray-500 truncate">
+                    {[p.emails?.filter((e) => e !== key).join(', '), p.dogs?.length ? `🐶 ${listNames(p.dogs)}` : '']
+                      .filter(Boolean)
+                      .join(' · ') || 'No email on file'}
+                  </span>
+                </span>
+                <select
+                  value={draft[key] || ''}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value="">Not set</option>
+                  {LABELER_TYPES.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-gray-200">
+          <span className="text-sm text-gray-600">{message}</span>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || changed.length === 0}
+            className="px-3 py-1.5 text-sm rounded-md bg-gray-900 text-white disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : changed.length ? `Save ${changed.length} change${changed.length === 1 ? '' : 's'}` : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** "A, B, C +2" */
 function listNames(names, max = 3) {
   return names.slice(0, max).join(', ') + (names.length > max ? ` +${names.length - max}` : '');
@@ -1381,7 +1525,10 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
               {row.medal ? SLACK_EMOJI[row.medal.replace(/:/g, '')] : ''}
             </span>
             <span className="flex-1 min-w-0">
-              <span className="block font-medium text-gray-900 truncate">{row.primary}</span>
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="font-medium text-gray-900 truncate">{row.primary}</span>
+                {row.type ? <LabelerTypeBadge type={row.type} /> : null}
+              </span>
               {row.secondary ? <span className="block text-xs text-gray-500 truncate">{row.secondary}</span> : null}
             </span>
             <span className="text-right tabular-nums whitespace-nowrap">
@@ -1402,7 +1549,7 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
 
 const SHOUT_OUT_ROWS = 10;
 
-function OverviewTab({ data, nextStep, onOpenHealth }) {
+function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabelers }) {
   const [showAllShoutOuts, setShowAllShoutOuts] = useState(false);
   const overview = data?.overview;
   if (!overview) {
@@ -1534,7 +1681,11 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
             }))}
           />
         </ChartCard>
-        <ChartCard title="Top people" description="Owners and labelers, ranked by labeled time. The list Slack posts.">
+        <ChartCard
+          title="Top people"
+          description="Owners and labelers, ranked by labeled time. The list Slack posts."
+          action={<EditLabelersButton onClick={onEditLabelers} />}
+        >
           <ShoutOutList
             empty="Nobody labeled in this range."
             showAll={showAllShoutOuts}
@@ -1543,6 +1694,7 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
               key: row.person,
               medal: row.medal,
               primary: row.person,
+              type: resolveLabelerType(row, typeOverrides),
               secondary: row.dogs.length ? `🐶 ${listNames(row.dogs)}` : null,
               sessions: row.sessions,
               seconds: row.seconds,
@@ -1566,9 +1718,10 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
 }
 
 /** Who has earned a 5-button remote: 2+ minutes in each of 9 labels, both models counted. */
-function CompensationTab({ data }) {
+function CompensationTab({ data, typeOverrides, onEditLabelers }) {
   const comp = data?.overview?.compensation;
   const [copied, setCopied] = useState(false);
+  const [typeFilter, setTypeFilter] = useState('all');
   if (!comp) {
     return (
       <p className="text-sm text-gray-500">
@@ -1578,7 +1731,10 @@ function CompensationTab({ data }) {
   }
   const recap = data.overview.recap;
   const minLabel = `${Math.round(comp.min_seconds / 60)} minutes`;
-  const eligible = comp.people.filter((p) => p.eligible);
+  const people = comp.people
+    .map((p) => ({ ...p, type: resolveLabelerType(p, typeOverrides) }))
+    .filter((p) => typeFilter === 'all' || (p.type || 'unset') === typeFilter);
+  const eligible = people.filter((p) => p.eligible);
   const copyEligible = () => {
     const text = eligible
       .map((p) => `${p.person}${p.dogs.length ? ` (${p.dogs.join(', ')})` : ''}: ${p.qualified.length} labels`)
@@ -1613,23 +1769,41 @@ function CompensationTab({ data }) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile label="Eligible" value={comp.eligible} />
-        <StatTile label="Labelers" value={comp.people.length} />
+        <StatTile label="Eligible" value={eligible.length} />
+        <StatTile label="Labelers" value={people.length} />
         <StatTile
           label="One or two labels away"
-          value={comp.people.filter((p) => !p.eligible && p.qualified.length >= comp.min_labels - 2).length}
+          value={people.filter((p) => !p.eligible && p.qualified.length >= comp.min_labels - 2).length}
         />
+      </div>
+
+      <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+        {[{ key: 'all', label: 'Everyone' }, ...LABELER_TYPES.map((t) => ({ key: t.key, label: `${t.label}s` })), { key: 'unset', label: 'Not set' }].map(
+          (option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setTypeFilter(option.key)}
+              className={`px-2.5 py-1 ${
+                typeFilter === option.key ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {option.label}
+            </button>
+          )
+        )}
       </div>
 
       <ChartCard
         title="Progress by person"
         description={`Green labels have ${minLabel} or more. Amber ones are started but short; the time shown is what they have so far.`}
+        action={<EditLabelersButton onClick={onEditLabelers} />}
       >
-        {comp.people.length === 0 ? (
-          <p className="text-sm text-gray-500">Nobody labeled in this range.</p>
+        {people.length === 0 ? (
+          <p className="text-sm text-gray-500">Nobody here in this range.</p>
         ) : (
           <ul className="divide-y divide-gray-100">
-            {comp.people.map((p, index) => {
+            {people.map((p, index) => {
               const pct = Math.min(100, (p.qualified.length / comp.min_labels) * 100);
               const short = comp.min_labels - p.qualified.length;
               return (
@@ -1644,7 +1818,8 @@ function CompensationTab({ data }) {
                       ) : null}
                       <span className={p.dogs.length ? 'text-gray-500' : 'font-medium text-gray-900'}>
                         {p.dogs.length ? `(${p.person})` : p.person}
-                      </span>
+                      </span>{' '}
+                      <LabelerTypeBadge type={p.type} />
                     </span>
                     <span className="w-40 h-2 rounded-full bg-gray-100 overflow-hidden">
                       <span
@@ -2645,7 +2820,7 @@ function CollapsibleTable({ label = 'Show data table', children }) {
   );
 }
 
-function ChartCard({ kicker, title, description, children }) {
+function ChartCard({ kicker, title, description, action, children }) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-5 h-full">
       {kicker ? (
@@ -2653,7 +2828,10 @@ function ChartCard({ kicker, title, description, children }) {
           {kicker}
         </div>
       ) : null}
-      <h3 className="text-lg font-semibold text-gray-900 mb-1">{title}</h3>
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">{title}</h3>
+        {action}
+      </div>
       {description ? <p className="text-sm text-gray-500 mb-4">{description}</p> : null}
       {children}
     </div>
@@ -2984,6 +3162,9 @@ const LabelingDataDashboard = () => {
   const [collarOwners, setCollarOwners] = useState([]);
   const [collarOwnersUpdatedAt, setCollarOwnersUpdatedAt] = useState(null);
   const [ownersOpen, setOwnersOpen] = useState(false);
+  const [labelersOpen, setLabelersOpen] = useState(false);
+  // Types saved here show at once; the summary picks them up when it rebuilds.
+  const [typeOverrides, setTypeOverrides] = useState({});
   // Owner name for each labeler email in the owner list, shown beside the email.
   const labelerNames = useMemo(() => {
     const map = new Map();
@@ -3082,6 +3263,24 @@ const LabelingDataDashboard = () => {
       return true;
     } catch (err) {
       console.error('Failed to save collar owners', err);
+      return false;
+    }
+  }, []);
+
+  const saveLabelerTypes = useCallback(async (types) => {
+    try {
+      const response = await axios.put('/api/labeling/labeler-types', { types });
+      if (!response.data?.success) return false;
+      setTypeOverrides((prev) => {
+        const next = { ...prev };
+        Object.entries(types).forEach(([name, kind]) => {
+          next[name.toLowerCase()] = kind;
+        });
+        return next;
+      });
+      return true;
+    } catch (err) {
+      console.error('Failed to save labeler types', err);
       return false;
     }
   }, []);
@@ -4193,10 +4392,27 @@ const LabelingDataDashboard = () => {
       </div>
 
       {tab === 'overview' ? (
-        <OverviewTab data={data} nextStep={nextStep} onOpenHealth={() => setTab('health')} />
+        <OverviewTab
+          data={data}
+          nextStep={nextStep}
+          onOpenHealth={() => setTab('health')}
+          typeOverrides={typeOverrides}
+          onEditLabelers={() => setLabelersOpen(true)}
+        />
       ) : null}
 
-      {tab === 'compensation' ? <CompensationTab data={data} /> : null}
+      {tab === 'compensation' ? (
+        <CompensationTab data={data} typeOverrides={typeOverrides} onEditLabelers={() => setLabelersOpen(true)} />
+      ) : null}
+
+      {labelersOpen ? (
+        <LabelerTypesEditor
+          people={data?.overview?.compensation?.people || []}
+          overrides={typeOverrides}
+          onSave={saveLabelerTypes}
+          onClose={() => setLabelersOpen(false)}
+        />
+      ) : null}
 
       {tab === 'health' ? (
         <>

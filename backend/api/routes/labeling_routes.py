@@ -37,6 +37,7 @@ from backend.services.labeling_daily_report import (
     period_start,
     recap_data,
     remote_eligibility,
+    LABELER_TYPES,
     post_to_slack,
     post_to_slack_webhook,
     report_day,
@@ -80,6 +81,8 @@ _STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
 # Who each collar belongs to, edited on the dashboard. Kept in S3, not the repo.
 _COLLAR_OWNERS_KEY = "labeling-jobs/collar_owners.json"
+# Employee, pack member or partner, per labeler name (lowercase).
+_LABELER_TYPES_KEY = "labeling-jobs/labeler_types.json"
 _COLLAR_OWNER_FIELD_MAX = 120
 # Status polls every few seconds. Re-listing the whole staging tree that often
 # competes with the job that is copying those same objects.
@@ -793,6 +796,20 @@ def _load_collar_owners() -> Dict[str, Any]:
         return {}
 
 
+def _load_labeler_types() -> Dict[str, str]:
+    try:
+        body = json.loads(
+            _s3_client()
+            .get_object(Bucket=Config.LABELING_S3_BUCKET_NAME, Key=_LABELER_TYPES_KEY)["Body"]
+            .read()
+        )
+        return body.get("types") or {}
+    except Exception as exc:  # noqa: BLE001
+        if "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
+            logger.warning("Labeler types load failed: %s", exc)
+        return {}
+
+
 def _configure_analyzer(analyzer: LabelingDataAnalyzer) -> LabelingDataAnalyzer:
     """Credit sessions sent through a group address to the collar owner's email."""
     analyzer.group_senders = {
@@ -824,6 +841,7 @@ def _recap_lookups() -> Dict[str, Any]:
         "owner_names": {r["collar_sn"]: r["owner"] for r in owner_rows if r.get("owner")},
         "owner_emails": {r["collar_sn"]: r["email"] for r in owner_rows if r.get("email")},
         "names_by_email": names_by_email,
+        "labeler_types": _load_labeler_types(),
         "group_senders": {
             s.strip().lower()
             for s in (Config.LABELING_GROUP_SENDERS or "").split(",")
@@ -924,6 +942,44 @@ def labeling_save_collar_owners():
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Collar owners save failed")
+        return jsonify({"success": False, "error": str(exc)}), 500
+    _rebuild_summary_in_background()
+    return jsonify({"success": True, "data": payload})
+
+
+@labeling_bp.route("/labeler-types", methods=["PUT"])
+@require_admin_auth
+def labeling_save_labeler_types():
+    """
+    Change saved labeler types. Body: {"types": {"<labeler name>": "employee" |
+    "pack_member" | "partner" | null}}. Only the names sent change, so people outside
+    the dashboard's date range keep theirs; null clears one back to the default
+    (employee for a Halo email, otherwise not set).
+    """
+    raw = (request.get_json(silent=True) or {}).get("types")
+    if not isinstance(raw, dict):
+        return jsonify({"success": False, "error": "types must be an object"}), 400
+    types = _load_labeler_types()
+    for name, kind in raw.items():
+        key = str(name or "").strip().lower()[:_COLLAR_OWNER_FIELD_MAX]
+        if not key:
+            continue
+        if kind in (None, ""):
+            types.pop(key, None)
+        elif kind in LABELER_TYPES:
+            types[key] = kind
+        else:
+            return jsonify({"success": False, "error": f"Unknown labeler type: {kind}"}), 400
+    payload = {"types": types, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    try:
+        _s3_client().put_object(
+            Bucket=Config.LABELING_S3_BUCKET_NAME,
+            Key=_LABELER_TYPES_KEY,
+            Body=json.dumps(payload).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Labeler types save failed")
         return jsonify({"success": False, "error": str(exc)}), 500
     _rebuild_summary_in_background()
     return jsonify({"success": True, "data": payload})

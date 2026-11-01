@@ -112,7 +112,50 @@ def _split_group_senders(
     return _sort_labelers(out)
 
 
-def _merge_same_person(labelers: List[Dict[str, Any]], name_of) -> List[Dict[str, Any]]:
+# Who a labeler is to Halo. Saved per person in the dashboard; @halocollar.com means employee.
+LABELER_TYPES = ("employee", "pack_member", "partner")
+EMPLOYEE_DOMAIN = "@halocollar.com"
+
+
+def _people(
+    data: Dict[str, Any],
+    owner_names: Optional[Dict[str, str]],
+    group_senders: Optional[set],
+    owner_emails: Optional[Dict[str, str]],
+    names_by_email: Optional[Dict[str, str]],
+    labeler_types: Optional[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    """Labelers merged into one row per person, with their emails and labeler type."""
+    owner_names = owner_names or {}
+    owner_emails = owner_emails or {}
+
+    def emails_of(labeler: Dict[str, Any]) -> List[str]:
+        if "group_collar" in labeler:
+            email = owner_emails.get(serial_key(labeler["group_collar"]))
+            return [email.lower()] if email else []
+        return [labeler["email"].lower()] if labeler.get("email") else []
+
+    people = _merge_same_person(
+        _split_group_senders(_merge_labelers(data), group_senders),
+        lambda labeler: labeler_name(labeler, owner_names, owner_emails, names_by_email),
+        emails_of,
+    )
+    for person in people:
+        person["labeler_type"] = labeler_type(person["person"], person["emails"], labeler_types)
+    return people
+
+
+def labeler_type(person: str, emails: List[str], labeler_types: Optional[Dict[str, str]]) -> Optional[str]:
+    """The saved type for this person, else employee for a Halo email, else unknown (None)."""
+    saved = (labeler_types or {}).get(person.lower())
+    if saved in LABELER_TYPES:
+        return saved
+    if any(email.endswith(EMPLOYEE_DOMAIN) for email in emails):
+        return "employee"
+    return None
+
+
+def _merge_same_person(labelers: List[Dict[str, Any]], name_of, emails_of=None) -> List[Dict[str, Any]]:
     """
     One row per name. Someone who sends from their own email and also through a shared
     inbox (for their collar) would otherwise be thanked twice.
@@ -120,15 +163,18 @@ def _merge_same_person(labelers: List[Dict[str, Any]], name_of) -> List[Dict[str
     merged: Dict[str, Dict[str, Any]] = {}
     for labeler in labelers:
         person = name_of(labeler)
+        emails = emails_of(labeler) if emails_of else []
         row = merged.get(person.lower())
         if row is None:
             merged[person.lower()] = {
                 **labeler,
                 "person": person,
+                "emails": list(emails),
                 "collars": dict(labeler["collars"]),
                 "labels": dict(labeler.get("labels") or {}),
             }
             continue
+        row["emails"] += [e for e in emails if e not in row["emails"]]
         row["sessions"] += labeler["sessions"]
         row["seconds"] += labeler["seconds"]
         for label, seconds in (labeler.get("labels") or {}).items():
@@ -147,6 +193,7 @@ def labeler_name(
     owner_names: Dict[str, str],
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
+    labeler_types: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     The friendliest name we have, falling back to more technical ones:
@@ -286,6 +333,7 @@ def recap_data(
     group_senders: Optional[set] = None,
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
+    labeler_types: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     The recap as data, for the period start..end (inclusive; start None = all time).
@@ -298,15 +346,14 @@ def recap_data(
     seconds = period["activity_seconds"] + period["gps_seconds"]
     all_sessions = overall["activity_sessions"] + overall["gps_sessions"]
     all_seconds = overall["activity_seconds"] + overall["gps_seconds"]
-    labelers = _merge_same_person(
-        _split_group_senders(_merge_labelers(day_data), group_senders),
-        lambda labeler: labeler_name(labeler, owner_names, owner_emails, names_by_email),
-    )
+    labelers = _people(day_data, owner_names, group_senders, owner_emails, names_by_email, labeler_types)
     dogs_by_collar = _dogs_by_collar(day_data)
     leaderboard = []
     for index, labeler in enumerate(labelers):
         leaderboard.append({
             "person": labeler["person"],
+            "emails": labeler["emails"],
+            "labeler_type": labeler["labeler_type"],
             "dogs": labeler_dogs(labeler, dogs_by_collar),
             "sessions": labeler["sessions"],
             "seconds": round(labeler["seconds"], 1),
@@ -357,13 +404,11 @@ def remote_eligibility(
     group_senders: Optional[set] = None,
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
+    labeler_types: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Who has earned a remote, and how close everyone else is, from a summary."""
     owner_names = owner_names or {}
-    labelers = _merge_same_person(
-        _split_group_senders(_merge_labelers(data), group_senders),
-        lambda labeler: labeler_name(labeler, owner_names, owner_emails, names_by_email),
-    )
+    labelers = _people(data, owner_names, group_senders, owner_emails, names_by_email, labeler_types)
     dogs_by_collar = _dogs_by_collar(data)
     people = []
     for labeler in labelers:
@@ -374,6 +419,8 @@ def remote_eligibility(
         ]
         people.append({
             "person": labeler["person"],
+            "emails": labeler["emails"],
+            "labeler_type": labeler["labeler_type"],
             "dogs": labeler_dogs(labeler, dogs_by_collar),
             "sessions": labeler["sessions"],
             "seconds": round(labeler["seconds"], 1),
@@ -430,6 +477,7 @@ def build_daily_report(
     group_senders: Optional[set] = None,
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
+    labeler_types: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Slack mrkdwn for the days-long period ending on day (one day by default).
@@ -452,6 +500,7 @@ def build_daily_report(
         group_senders=group_senders,
         owner_emails=owner_emails,
         names_by_email=names_by_email,
+        labeler_types=labeler_types,
     )
     sessions = recap["sessions"]
     link = f"\n<{dashboard_url.rstrip('/')}|Open the labeling dashboard>" if dashboard_url else ""
