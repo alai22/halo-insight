@@ -247,7 +247,7 @@ def test_collar_owner_rows_normalize_serials_and_drop_empty_rows():
             "junk",
         ]
     )
-    assert rows == [{"collar_sn": "26h5232291rt", "owner": "Adrian L", "model": "HC5"}]
+    assert rows == [{"collar_sn": "26h5232291rt", "owner": "Adrian L", "model": "HC5", "email": ""}]
     with pytest.raises(ValueError):
         routes._clean_owner_rows({"collar_sn": "x"})
 
@@ -272,6 +272,7 @@ def test_collar_owners_save_and_load_round_trip(monkeypatch):
             return {"Body": _Body(store[Key])}
 
     monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
+    monkeypatch.setattr(routes, "_rebuild_summary_in_background", lambda: None)
     client = _client()
     headers = _admin_headers()
     assert client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]["owners"] == []
@@ -282,7 +283,9 @@ def test_collar_owners_save_and_load_round_trip(monkeypatch):
     ).get_json()
     assert saved["success"] is True
     loaded = client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]
-    assert loaded["owners"] == [{"collar_sn": "26h4171887rt", "owner": "Tavia Soule", "model": "HC4"}]
+    assert loaded["owners"] == [
+        {"collar_sn": "26h4171887rt", "owner": "Tavia Soule", "model": "HC4", "email": ""}
+    ]
     assert loaded["updated_at"]
 
 
@@ -314,6 +317,7 @@ def test_window_summary_builds_from_file_snapshot_without_reading_s3(monkeypatch
             return {"sessions": []}
 
     monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
+    monkeypatch.setattr(routes, "_load_collar_owners", lambda: {})
     monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {"totals": {}})
     monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
     monkeypatch.setitem(
@@ -401,9 +405,54 @@ def test_window_summary_without_snapshot_runs_one_full_scan_first(monkeypatch):
     monkeypatch.setattr(routes, "_load_file_snapshot", lambda: routes._SNAPSHOT_MEMO["payload"])
     monkeypatch.setattr(routes, "_compute_summary", _full)
     monkeypatch.setattr(routes, "LabelingDataAnalyzer", _Analyzer)
+    monkeypatch.setattr(routes, "_load_collar_owners", lambda: {})
     monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {})
     monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw, window: data)
     routes._window_cache_clear()
     routes._compute_window_summary(("2026-08-01", "2026-08-31"))
     assert calls == ["full", ("window", [])]
     routes._window_cache_clear()
+
+
+def test_owner_email_is_validated_and_kept():
+    rows = routes._clean_owner_rows(
+        [{"collar_sn": "25H5425925VM", "owner": "Jenny", "email": " JenniferPeterson400@Yahoo.com "}]
+    )
+    assert rows == [
+        {"collar_sn": "25h5425925vm", "owner": "Jenny", "model": "", "email": "jenniferpeterson400@yahoo.com"}
+    ]
+    with pytest.raises(ValueError):
+        routes._clean_owner_rows([{"collar_sn": "x1", "email": "not an email"}])
+
+
+def test_configure_analyzer_reads_group_senders_and_owner_emails(monkeypatch):
+    monkeypatch.setattr(routes.Config, "LABELING_GROUP_SENDERS", "ai_logs@halocollar.com, Other@X.com")
+    monkeypatch.setattr(
+        routes,
+        "_load_collar_owners",
+        lambda: {"owners": [{"collar_sn": "sn1", "email": "jenny@yahoo.com"}, {"collar_sn": "sn2", "email": ""}]},
+    )
+
+    class _A:
+        pass
+
+    analyzer = routes._configure_analyzer(_A())
+    assert analyzer.group_senders == {"ai_logs@halocollar.com", "other@x.com"}
+    assert analyzer.owner_emails == {"sn1": "jenny@yahoo.com"}
+
+
+def test_saving_owners_rebuilds_the_summary(monkeypatch):
+    rebuilt = []
+
+    class _S3:
+        def put_object(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
+    monkeypatch.setattr(routes, "_rebuild_summary_in_background", lambda: rebuilt.append(True))
+    _client().put(
+        "/api/labeling/collar-owners",
+        json={"owners": [{"collar_sn": "sn1", "owner": "Jenny", "email": "jenny@yahoo.com"}]},
+        headers=_admin_headers(),
+    )
+    assert rebuilt == [True]

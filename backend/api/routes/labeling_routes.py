@@ -23,6 +23,7 @@ from backend.services.labeling_data_analyzer import (
     file_snapshot_payload,
     files_from_snapshot,
     format_ui_summary,
+    serial_key,
 )
 from backend.services.labeling_collar_sync_service import (
     LabelingCollarSyncService,
@@ -237,7 +238,7 @@ def _attach_collar_coverage(
 
 
 def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
-    analyzer = LabelingDataAnalyzer()
+    analyzer = _configure_analyzer(LabelingDataAnalyzer())
     raw = analyzer.analyze(include_content=True)
     data = _attach_collar_coverage(format_ui_summary(raw), raw)
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
@@ -339,7 +340,7 @@ def _compute_window_summary(window: Tuple[str, str]) -> None:
         # and refreshes the all-time summary on the way.
         _compute_summary(_DEFAULT_CACHE_TTL_SEC)
         snapshot = _load_file_snapshot() or {}
-    analyzer = LabelingDataAnalyzer()
+    analyzer = _configure_analyzer(LabelingDataAnalyzer())
     analyzer.text_overrides = snapshot.get("texts") or {}
     raw = analyzer.analyze(
         include_content=True,
@@ -748,13 +749,11 @@ def labeling_status():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
-def collar_serial_key(sn: Any) -> str:
-    """Serial as lowercase letters and digits, so 26-H5232291-RT matches 26h5232291rt."""
-    return re.sub(r"[^a-z0-9]", "", str(sn or "").lower())
+collar_serial_key = serial_key
 
 
 def _clean_owner_rows(rows: Any) -> list:
-    """Keep rows with a serial and an owner or model; last row wins per serial."""
+    """Keep rows with a serial and an owner, model or email; last row wins per serial."""
     if not isinstance(rows, list):
         raise ValueError("owners must be a list")
     by_key: Dict[str, Dict[str, str]] = {}
@@ -764,8 +763,11 @@ def _clean_owner_rows(rows: Any) -> list:
         key = collar_serial_key(row.get("collar_sn"))
         owner = str(row.get("owner") or "").strip()[:_COLLAR_OWNER_FIELD_MAX]
         model = str(row.get("model") or "").strip()[:_COLLAR_OWNER_FIELD_MAX]
-        if key and (owner or model):
-            by_key[key] = {"collar_sn": key, "owner": owner, "model": model}
+        email = str(row.get("email") or "").strip().lower()[:_COLLAR_OWNER_FIELD_MAX]
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise ValueError(f"Not an email address for {key}: {email}")
+        if key and (owner or model or email):
+            by_key[key] = {"collar_sn": key, "owner": owner, "model": model, "email": email}
     return sorted(by_key.values(), key=lambda r: r["collar_sn"])
 
 
@@ -780,6 +782,44 @@ def _load_collar_owners() -> Dict[str, Any]:
         if "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
             logger.warning("Collar owners load failed: %s", exc)
         return {}
+
+
+def _configure_analyzer(analyzer: LabelingDataAnalyzer) -> LabelingDataAnalyzer:
+    """Credit sessions sent through a group address to the collar owner's email."""
+    analyzer.group_senders = {
+        s.strip().lower() for s in (Config.LABELING_GROUP_SENDERS or "").split(",") if s.strip()
+    }
+    analyzer.owner_emails = {
+        row["collar_sn"]: row["email"]
+        for row in _load_collar_owners().get("owners") or []
+        if row.get("email")
+    }
+    return analyzer
+
+
+def _rebuild_summary_from_snapshot() -> None:
+    """Re-aggregate the all-time summary from the file snapshot, without reading S3 files."""
+    snapshot = _load_file_snapshot()
+    if not snapshot or snapshot.get("files") is None:
+        _cache_mark_stale()
+        return
+    analyzer = _configure_analyzer(LabelingDataAnalyzer())
+    analyzer.text_overrides = snapshot.get("texts") or {}
+    raw = analyzer.analyze(include_content=True, files=files_from_snapshot(snapshot))
+    data = _attach_collar_coverage(format_ui_summary(raw), raw)
+    entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, _DEFAULT_CACHE_TTL_SEC)
+    _persist_summary_cache(data, entry["generated_at"], _DEFAULT_CACHE_TTL_SEC)
+    _window_cache_clear()
+
+
+def _rebuild_summary_in_background() -> None:
+    def _worker():
+        try:
+            _rebuild_summary_from_snapshot()
+        except Exception:  # noqa: BLE001
+            logger.exception("Labeling summary rebuild after owner change failed")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 @labeling_bp.route("/collar-owners", methods=["GET"])
@@ -799,7 +839,10 @@ def labeling_collar_owners():
 @labeling_bp.route("/collar-owners", methods=["PUT"])
 @require_admin_auth
 def labeling_save_collar_owners():
-    """Replace the collar → owner list. Body: {"owners": [{collar_sn, owner, model}]}."""
+    """
+    Replace the collar → owner list. Body: {"owners": [{collar_sn, owner, model, email}]}.
+    Owner emails change who group-sender sessions are credited to, so the summary is rebuilt.
+    """
     try:
         rows = _clean_owner_rows((request.get_json(silent=True) or {}).get("owners"))
     except ValueError as exc:
@@ -818,6 +861,7 @@ def labeling_save_collar_owners():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Collar owners save failed")
         return jsonify({"success": False, "error": str(exc)}), 500
+    _rebuild_summary_in_background()
     return jsonify({"success": True, "data": payload})
 
 

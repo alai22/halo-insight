@@ -23,6 +23,7 @@ import re
 import threading
 from collections import OrderedDict, defaultdict
 from dataclasses import asdict, dataclass, field
+from dataclasses import replace as replace_ref
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -80,6 +81,11 @@ def file_snapshot_payload(analyzer: "LabelingDataAnalyzer") -> Dict[str, Any]:
 
 def files_from_snapshot(payload: Dict[str, Any]) -> List["SessionFileRef"]:
     return [SessionFileRef(**row) for row in payload.get("files") or []]
+
+
+def serial_key(sn: Any) -> str:
+    """Serial as lowercase letters and digits, so 26-H5232291-RT matches 26h5232291rt."""
+    return re.sub(r"[^a-z0-9]", "", str(sn or "").lower())
 
 
 def in_date_window(timestamp: Optional[str], window: Optional[Tuple[str, str]]) -> bool:
@@ -382,6 +388,10 @@ class LabelingDataAnalyzer:
         # Texts to serve instead of reading S3, by key (from a snapshot).
         self.text_overrides: Dict[str, str] = {}
         self.last_files: List[SessionFileRef] = []
+        # Shared sender addresses (e.g. a Google Group that rewrites outside senders' From)
+        # whose sessions are credited to their collar's owner, by serial key → owner email.
+        self.group_senders: set = set()
+        self.owner_emails: Dict[str, str] = {}
 
         if not self.bucket_name:
             raise ValueError("LABELING_S3_BUCKET_NAME is not configured")
@@ -465,6 +475,33 @@ class LabelingDataAnalyzer:
             },
         }
 
+    def _credit_group_sessions(
+        self,
+        files: List[SessionFileRef],
+        session_collar: Dict[Tuple[str, str], str],
+    ) -> Tuple[List[SessionFileRef], Dict[Tuple[str, str], str]]:
+        """
+        Sessions filed under a group sender are credited to their collar's owner, when the
+        owner list has an email for that collar. Others are left as they are.
+        """
+        if not self.group_senders or not self.owner_emails:
+            return files, session_collar
+        credited: List[SessionFileRef] = []
+        remapped: Dict[Tuple[str, str], str] = {}
+        for ref in files:
+            session_id = f"{ref.timestamp}_{ref.index}"
+            sn = session_collar.get((ref.user, session_id))
+            owner = (
+                self.owner_emails.get(serial_key(sn))
+                if ref.user.lower() in self.group_senders and sn
+                else None
+            )
+            user = owner or ref.user
+            if sn:
+                remapped[(user, session_id)] = sn
+            credited.append(replace_ref(ref, user=user) if owner else ref)
+        return credited, remapped
+
     def _analyze_file_set(
         self, files: List[SessionFileRef], include_content: bool = True
     ) -> Dict[str, Any]:
@@ -506,6 +543,8 @@ class LabelingDataAnalyzer:
                         session_collar[sess_key] = sanitize_collar_sn(parsed.collar_sn)
                 except Exception as exc:  # noqa: BLE001
                     parse_errors.append({"key": ref.key, "error": str(exc)})
+
+        files, session_collar = self._credit_group_sessions(files, session_collar)
 
         for ref in files:
             user_stats = by_user.setdefault(

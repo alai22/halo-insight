@@ -585,26 +585,39 @@ function CollarOwnerLine({ info }) {
 }
 
 /**
- * Parse pasted rows of "serial, owner, model" (commas or tabs, e.g. copied from a
- * Notion table). A header row naming the serial column is skipped.
+ * Parse pasted rows of "serial, owner, model, email" (commas or tabs, e.g. copied from a
+ * Notion table). Model and email are optional. A header row naming the serial column is skipped.
  */
 function parseOwnerPaste(text) {
   return String(text || '')
     .split(/\r?\n/)
     .map((line) => line.split(line.includes('\t') ? '\t' : ',').map((cell) => cell.trim()))
     .filter((cells) => cells[0] && !/serial/i.test(cells[0]))
-    .map(([collar_sn, owner = '', model = '']) => ({ collar_sn: serialKey(collar_sn), owner, model }))
-    .filter((row) => row.collar_sn && (row.owner || row.model));
+    .map(([collar_sn, owner = '', model = '', email = '']) => ({
+      collar_sn: serialKey(collar_sn),
+      owner,
+      model,
+      email: email.toLowerCase(),
+    }))
+    .filter((row) => row.collar_sn && (row.owner || row.model || row.email));
 }
 
 /** Side panel to edit who each collar belongs to. Saved to S3 for everyone. */
 function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave, onClose }) {
   const [draft, setDraft] = useState(() => {
     const map = new Map();
-    owners.forEach((row) => map.set(serialKey(row.collar_sn), { owner: row.owner || '', model: row.model || '' }));
+    owners.forEach((row) =>
+      map.set(serialKey(row.collar_sn), {
+        owner: row.owner || '',
+        model: row.model || '',
+        email: row.email || '',
+      })
+    );
     collarRows.forEach((row) => {
       const key = serialKey(row.collar_sn);
-      if (key && row.collar_sn !== '_unknown' && !map.has(key)) map.set(key, { owner: '', model: '' });
+      if (key && row.collar_sn !== '_unknown' && !map.has(key)) {
+        map.set(key, { owner: '', model: '', email: '' });
+      }
     });
     return map;
   });
@@ -642,10 +655,16 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
     const rows = parseOwnerPaste(paste);
     setDraft((prev) => {
       const next = new Map(prev);
-      rows.forEach((row) => next.set(row.collar_sn, { owner: row.owner, model: row.model }));
+      rows.forEach((row) =>
+        next.set(row.collar_sn, { owner: row.owner, model: row.model, email: row.email })
+      );
       return next;
     });
-    setMessage(rows.length ? `Added ${rows.length} pasted row${rows.length === 1 ? '' : 's'}. Save to keep them.` : 'No rows found. Use serial, owner, model on each line.');
+    setMessage(
+      rows.length
+        ? `Added ${rows.length} pasted row${rows.length === 1 ? '' : 's'}. Save to keep them.`
+        : 'No rows found. Use serial, owner, model, email on each line.'
+    );
     setPaste('');
   };
   const save = async () => {
@@ -654,19 +673,25 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
     const rows = [...draft.entries()].map(([collar_sn, row]) => ({ collar_sn, ...row }));
     const ok = await onSave(rows);
     setSaving(false);
-    setMessage(ok ? 'Saved.' : 'Could not save. Try again.');
+    setMessage(
+      ok
+        ? 'Saved. Charts update in a few seconds as the summary is rebuilt.'
+        : 'Could not save. Check the emails and try again.'
+    );
   };
   const inputClass = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md';
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Collar owners">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
-      <div className="relative h-full w-full max-w-4xl bg-white shadow-xl flex flex-col">
+      <div className="relative h-full w-full max-w-5xl bg-white shadow-xl flex flex-col">
         <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Collar owners</h3>
             <p className="text-xs text-gray-500">
               Who each collar belongs to. Dog names and app accounts come from the labeled data.
+              An owner email credits sessions that arrived through ai_logs@ (which hides some
+              senders, such as Yahoo addresses) to that owner.
               {updatedAt ? ` Last saved ${formatUpdatedAt(updatedAt)}.` : ''}
             </p>
           </div>
@@ -680,7 +705,9 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
             value={paste}
             onChange={(e) => setPaste(e.target.value)}
             rows={3}
-            placeholder={'Paste rows to add or update, one per line:\n26h5232291rt, Adrian Lai, HC5'}
+            placeholder={
+              'Paste rows to add or update, one per line (model and email optional):\n26h5232291rt, Adrian Lai, HC5, alai@halocollar.com'
+            }
             className="w-full px-2.5 py-1.5 text-sm font-mono border border-gray-300 rounded-md"
           />
           <div className="flex flex-wrap items-center gap-3">
@@ -715,6 +742,7 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
                 <th className="py-2 pr-3 font-medium">Serial</th>
                 <th className="py-2 pr-3 font-medium w-1/4">Owner</th>
                 <th className="py-2 pr-3 font-medium w-24">Model</th>
+                <th className="py-2 pr-3 font-medium w-1/4">Email</th>
                 <th className="py-2 pr-3 font-medium">Dog</th>
                 <th className="py-2 pr-3 font-medium">App accounts</th>
                 <th className="py-2 font-medium text-right">Sessions</th>
@@ -732,6 +760,15 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
                     </td>
                     <td className="py-1.5 pr-3">
                       <input value={row.model} onChange={(e) => update(key, 'model', e.target.value)} className={inputClass} placeholder="HC5" />
+                    </td>
+                    <td className="py-1.5 pr-3">
+                      <input
+                        type="email"
+                        value={row.email || ''}
+                        onChange={(e) => update(key, 'email', e.target.value)}
+                        className={inputClass}
+                        placeholder="name@example.com"
+                      />
                     </td>
                     <td className="py-1.5 pr-3 text-gray-700">
                       {info.dog || <span className="text-gray-400">—</span>}

@@ -306,3 +306,36 @@ def test_snapshot_payload_holds_listing_and_texts_read():
     again = LabelingDataAnalyzer(bucket_name="snap-bucket-2", prefix="p/", s3_client=_NoS3())
     again.text_overrides = payload["texts"]
     again.analyze(include_content=True, files=files_from_snapshot(payload))
+
+
+def test_group_sender_sessions_are_credited_to_the_collar_owner():
+    from backend.services.labeling_data_analyzer import SessionFileRef
+
+    def ref(user, sn, ts, kind="durations"):
+        return SessionFileRef(
+            key=f"x/{user}/{sn}/{ts}_{kind}.txt", user=user, filename=f"{ts}_{kind}.txt",
+            timestamp=ts, index=0, kind=kind, size=11, collar_sn=sn,
+        )
+
+    files = [
+        ref("ai_logs@halocollar.com", "25h5425925vm", "2026-10-28T03:59:38"),
+        ref("ai_logs@halocollar.com", "26h5034560mk", "2026-10-28T04:00:00"),  # no owner email
+        ref("brivera@halocollar.com", "25h5425925vm", "2026-10-28T05:00:00"),  # not a group sender
+    ]
+
+    class _S3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            class _B:
+                def read(self):
+                    return b"Durations:\n"
+
+            return {"Body": _B()}
+
+    analyzer = LabelingDataAnalyzer(bucket_name="credit-test", prefix="x/", s3_client=_S3())
+    analyzer.group_senders = {"ai_logs@halocollar.com"}
+    analyzer.owner_emails = {"25h5425925vm": "jenny@yahoo.com"}
+    result = analyzer.analyze(include_content=True, files=files)
+    users = {s["user"] for s in result["sessions"]}
+    assert users == {"jenny@yahoo.com", "ai_logs@halocollar.com", "brivera@halocollar.com"}
+    jenny = [s for s in result["sessions"] if s["user"] == "jenny@yahoo.com"]
+    assert [s["collar_sn"] for s in jenny] == ["25h5425925vm"]

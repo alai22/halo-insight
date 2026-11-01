@@ -188,6 +188,9 @@ class Config:
         'LABELING_S3_BUCKET_NAME', 'halo-ai-labeling-prod'
     )
     LABELING_S3_PREFIX: str = os.getenv('LABELING_S3_PREFIX', 'extracted-txt/')
+    # Shared sender addresses whose sessions are credited to the collar's owner (comma-separated).
+    # A Google Group rewrites the From of outside senders (e.g. Yahoo) to the group address.
+    LABELING_GROUP_SENDERS: str = os.getenv('LABELING_GROUP_SENDERS', 'ai_logs@halocollar.com')
     LABELING_S3_STAGING_PREFIX: str = os.getenv('LABELING_S3_STAGING_PREFIX', 'staging/')
     # Collar logs copied into the labeling bucket (CSV + JSON sidecar per session).
     LABELING_S3_ML_PREFIX: str = os.getenv('LABELING_S3_ML_PREFIX', 'ml-processed/')
