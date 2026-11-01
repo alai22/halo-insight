@@ -24,6 +24,8 @@ HOURS_MILESTONE_STEP = 10
 STREAK_MIN_DAYS = 3
 SHOUT_OUT_LIMIT = 5
 DOGS_PER_LINE = 3
+# Medals for the top three shout-outs by minutes labeled.
+PODIUM = (":first_place_medal:", ":second_place_medal:", ":third_place_medal:")
 
 
 def report_day(tz_name: Optional[str], now: Optional[datetime] = None) -> str:
@@ -266,7 +268,7 @@ def build_daily_report(
     lines.append(":raised_hands: *Shout-outs to the good dogs and their people*")
     dogs_by_collar = _dogs_by_collar(day_data)
     for index, labeler in enumerate(labelers[:SHOUT_OUT_LIMIT]):
-        trophy = " :trophy:" if index == 0 and len(labelers) > 1 else ""
+        medal = f" {PODIUM[index]}" if len(labelers) > 1 and index < len(PODIUM) else ""
         person = labeler_name(labeler, owner_names, owner_emails, names_by_email)
         their_dogs = labeler_dogs(labeler, dogs_by_collar)
         shown = ", ".join(their_dogs[:DOGS_PER_LINE])
@@ -275,7 +277,7 @@ def build_daily_report(
         who = f":dog: {shown} ({person})" if their_dogs else person
         lines.append(
             f"• {who}: {labeler['sessions']} sessions · "
-            f"{format_minutes(labeler['seconds'])}{trophy}"
+            f"{format_minutes(labeler['seconds'])}{medal}"
         )
     if len(labelers) > SHOUT_OUT_LIMIT:
         lines.append(f"• …and {len(labelers) - SHOUT_OUT_LIMIT} more. Thank you all!")

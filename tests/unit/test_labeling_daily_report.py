@@ -73,8 +73,8 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
     assert "Activity: 3 sessions · 30m" in text
     assert "Indoor/outdoor: 2 sessions · 10m" in text
     # Each line thanks the dogs, with their person in brackets; the top labeler gets the trophy.
-    assert "• :dog: Mochi (Brandon Rivera): 3 sessions · 30m :trophy:" in text
-    assert "• :dog: Rocky (lindsey@x.com): 2 sessions · 10m" in text
+    assert "• :dog: Mochi (Brandon Rivera): 3 sessions · 30m :first_place_medal:" in text
+    assert "• :dog: Rocky (lindsey@x.com): 2 sessions · 10m :second_place_medal:" in text
     assert "Good dogs on the job" not in text
     assert "3 days in a row" in text
     assert "we passed *500 labeled sessions*" in text
@@ -374,10 +374,13 @@ def test_group_sender_is_split_per_collar_with_a_name_fallback_chain():
         group_senders={"ai_logs@halocollar.com"},
         owner_emails={"25h5425925vm": "someone@yahoo.com"},
     )
-    assert "• collar 26h5230414rt: 12 sessions · 22m :trophy:" in text
-    assert "• someone@yahoo.com: 2 sessions · 12m" in text
-    assert "• Jenny & Adrian: 4 sessions · 6m" in text
-    assert "• ai_logs@ shared inbox: 2 sessions · 2m" in text
+    # Medals go to the top three by minutes; the fourth line gets none.
+    assert "• collar 26h5230414rt: 12 sessions · 22m :first_place_medal:" in text
+    assert "• someone@yahoo.com: 2 sessions · 12m :second_place_medal:" in text
+    assert "• Jenny & Adrian: 4 sessions · 6m :third_place_medal:" in text
+    assert "• ai_logs@ shared inbox: 2 sessions · 2m\n" in text or text.endswith(
+        "• ai_logs@ shared inbox: 2 sessions · 2m"
+    )
 
 
 def test_direct_labeler_prefers_the_name_on_their_email():
