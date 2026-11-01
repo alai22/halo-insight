@@ -254,3 +254,12 @@ def test_match_coverage_splits_days_and_reasons_by_model():
         "activity": {"sessions": 1, "matched": 1, "missing": 0},
         "gps": {"sessions": 1, "matched": 0, "missing": 1},
     }
+
+
+def test_fftnet_logs_are_activity_logs():
+    from backend.services.labeling_collar_sync_service import parse_ai_log_filename
+
+    for name in ("ai_log_fftnet_v3_4c_2026-10-29_12-11-00_v5.log", "ai_log_fftnet_v3_2026-10-29_12-11-00_v5.log"):
+        parsed = parse_ai_log_filename(name)
+        assert parsed["family"] == "activity"
+        assert parsed["timestamp"] == "2026-10-29T12:11:00"

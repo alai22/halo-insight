@@ -2051,9 +2051,17 @@ function SourceSummary({ label, totals }) {
         </span>{' '}
         of {totals.sessions} sessions matched
       </span>
-      <span className="text-gray-500">
-        <span className="tabular-nums">{totals.collarOnly}</span> collar logs with no session
-      </span>
+      {totals.sessions && !totals.matched && !totals.collarOnly ? (
+        // Nothing matched and nothing left over means there were no collar logs to match.
+        <span className="text-amber-700">
+          No {label ? `${label.toLowerCase()} ` : ''}collar logs in S3 for these days, so the sessions have
+          nothing to match. Check Sync collar data or the reasons under Mismatches.
+        </span>
+      ) : (
+        <span className="text-gray-500">
+          <span className="tabular-nums">{totals.collarOnly}</span> collar logs with no session
+        </span>
+      )}
     </div>
   );
 }

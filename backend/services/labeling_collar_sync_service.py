@@ -130,6 +130,7 @@ def parse_ai_log_filename(filename: str) -> Optional[Dict[str, Any]]:
     ai_log_model_50f_8c_2026-07-02_21-13-44_v3.log → activity, 2026-07-02T21:13:44
     ai_gps_log_model_gps_04_2025-12-11_14-45-40.log → gps
     ai_log_model_8c_80f_v2_2025-12-11_14-36-23_v2.log → activity
+    ai_log_fftnet_v3_4c_2026-10-29_12-11-00_v5.log → activity (the posture model since Aug 2026)
     """
     if not filename or not isinstance(filename, str):
         return None
@@ -137,7 +138,7 @@ def parse_ai_log_filename(filename: str) -> Optional[Dict[str, Any]]:
     lowered = base.lower()
     if "ai_gps_log" in lowered:
         family = "gps"
-    elif "ai_log_model" in lowered:
+    elif "ai_log_model" in lowered or "ai_log_fftnet" in lowered:
         family = "activity"
     else:
         return None
