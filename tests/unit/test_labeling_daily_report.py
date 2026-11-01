@@ -45,9 +45,14 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
             3,
             1800,
             users=[_user("ai_logs@halocollar.com", 3, 1800, [("26-H5364782-RT", 3)])],
-            dogs=[{"name": "Mochi"}],
+            dogs=[{"name": "Mochi", "collar_sn": "26h5364782rt"}],
         ),
-        "gps": _family(2, 600, users=[_user("lindsey@x.com", 2, 600)], dogs=[{"name": "Rocky"}]),
+        "gps": _family(
+            2,
+            600,
+            users=[_user("lindsey@x.com", 2, 600, [("24h4290093rt", 2)])],
+            dogs=[{"name": "Rocky", "collar_sn": "24h4290093rt"}],
+        ),
     }
     all_time = {
         **_family(498, 0, by_date=[{"date": "2026-10-28", "sessions": 4}, {"date": "2026-10-29", "sessions": 1}, {"date": "2026-10-30", "sessions": 3}]),
@@ -64,10 +69,10 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
     assert "*5 sessions* and *40m* of labeled data from *2 labelers* and *2 dogs*." in text
     assert "Activity: 3 sessions · 30m" in text
     assert "Indoor/outdoor: 2 sessions · 10m" in text
-    # The shared account is credited to the collar's owner; the top labeler gets the trophy.
-    assert "• Brandon Rivera: 3 sessions · 30m :trophy:" in text
-    assert "• lindsey: 2 sessions · 10m" in text
-    assert "Good dogs on the job: Mochi, Rocky" in text
+    # Each line thanks the dogs, with their person in brackets; the top labeler gets the trophy.
+    assert "• :dog: Mochi (Brandon Rivera): 3 sessions · 30m :trophy:" in text
+    assert "• :dog: Rocky (lindsey): 2 sessions · 10m" in text
+    assert "Good dogs on the job" not in text
     assert "3 days in a row" in text
     assert "we passed *500 labeled sessions*" in text
     assert text.endswith("<https://insight.example.com|Open the labeling dashboard>")
@@ -362,3 +367,17 @@ def test_group_sender_is_named_as_the_shared_inbox_not_a_collar_owner():
     )
     assert "• ai_logs@ shared inbox: 18 sessions · 40m" in text
     assert "Adrian Lai" not in text
+
+
+def test_shout_out_without_known_dogs_names_just_the_person():
+    day = {**_family(4, 600, users=[_user("a@x.com", 4, 600, [("sn9", 4)])]), "gps": _family(0, 0)}
+    text = build_daily_report("2026-10-30", day, {**_family(10, 0), "gps": _family(0, 0)})
+    assert "• a: 4 sessions · 10m" in text
+
+
+def test_several_dogs_on_one_line_are_capped():
+    collars = [(f"sn{i}", 5 - i) for i in range(5)]
+    dogs = [{"name": f"Dog{i}", "collar_sn": f"sn{i}"} for i in range(5)]
+    day = {**_family(15, 900, users=[_user("a@x.com", 15, 900, collars)], dogs=dogs), "gps": _family(0, 0)}
+    text = build_daily_report("2026-10-30", day, {**_family(20, 0), "gps": _family(0, 0)})
+    assert "• :dog: Dog0, Dog1, Dog2 +2 (a): 15 sessions · 15m" in text

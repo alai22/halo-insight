@@ -23,7 +23,7 @@ SESSION_MILESTONE_STEP = 500
 HOURS_MILESTONE_STEP = 10
 STREAK_MIN_DAYS = 3
 SHOUT_OUT_LIMIT = 5
-DOG_NAME_LIMIT = 8
+DOGS_PER_LINE = 3
 
 
 def report_day(tz_name: Optional[str], now: Optional[datetime] = None) -> str:
@@ -92,6 +92,28 @@ def _dog_names(day_data: Dict[str, Any]) -> List[str]:
             name = (dog.get("name") or "").strip()
             if name and name.lower() != "unnamed" and name not in names:
                 names.append(name)
+    return names
+
+
+def _dogs_by_collar(day_data: Dict[str, Any]) -> Dict[str, str]:
+    """Dog name per collar serial key, from the app data."""
+    out: Dict[str, str] = {}
+    for dogs in (day_data.get("dogs") or [], (day_data.get("gps") or {}).get("dogs") or []):
+        for dog in dogs:
+            name = (dog.get("name") or "").strip()
+            key = serial_key(dog.get("collar_sn"))
+            if key and name and name.lower() != "unnamed":
+                out.setdefault(key, name)
+    return out
+
+
+def labeler_dogs(labeler: Dict[str, Any], dogs_by_collar: Dict[str, str]) -> List[str]:
+    """Dogs on the labeler's collars, busiest collar first."""
+    names: List[str] = []
+    for sn, _ in sorted(labeler["collars"].items(), key=lambda item: -item[1]):
+        name = dogs_by_collar.get(serial_key(sn))
+        if name and name not in names:
+            names.append(name)
     return names
 
 
@@ -197,21 +219,23 @@ def build_daily_report(
         )
 
     lines.append("")
-    lines.append(":raised_hands: *Shout-outs*")
+    # Each line thanks the dogs first, with their people in brackets.
+    lines.append(":raised_hands: *Shout-outs to the good dogs and their people*")
+    dogs_by_collar = _dogs_by_collar(day_data)
     for index, labeler in enumerate(labelers[:SHOUT_OUT_LIMIT]):
         trophy = " :trophy:" if index == 0 and len(labelers) > 1 else ""
+        person = labeler_name(labeler, owner_names, group_senders)
+        their_dogs = labeler_dogs(labeler, dogs_by_collar)
+        shown = ", ".join(their_dogs[:DOGS_PER_LINE])
+        if len(their_dogs) > DOGS_PER_LINE:
+            shown += f" +{len(their_dogs) - DOGS_PER_LINE}"
+        who = f":dog: {shown} ({person})" if their_dogs else person
         lines.append(
-            f"• {labeler_name(labeler, owner_names, group_senders)}: "
-            f"{labeler['sessions']} sessions · "
+            f"• {who}: {labeler['sessions']} sessions · "
             f"{format_minutes(labeler['seconds'])}{trophy}"
         )
     if len(labelers) > SHOUT_OUT_LIMIT:
         lines.append(f"• …and {len(labelers) - SHOUT_OUT_LIMIT} more. Thank you all!")
-
-    if dogs:
-        shown = ", ".join(dogs[:DOG_NAME_LIMIT])
-        more = f" and {len(dogs) - DOG_NAME_LIMIT} more" if len(dogs) > DOG_NAME_LIMIT else ""
-        lines.append(f":dog: Good dogs on the job: {shown}{more}")
 
     streak = _streak(all_data, day)
     if streak >= STREAK_MIN_DAYS:
