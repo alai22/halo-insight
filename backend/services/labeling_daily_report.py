@@ -201,6 +201,39 @@ def labeler_dogs(labeler: Dict[str, Any], dogs_by_collar: Dict[str, str]) -> Lis
     return names
 
 
+def _dog_leaderboard(
+    labelers: List[Dict[str, Any]], dogs_by_collar: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """
+    One row per dog with its people, ranked by labeled time. Collars without a dog name
+    in the app are left out; the people list covers those.
+    """
+    dogs: Dict[str, Dict[str, Any]] = {}
+    for labeler in labelers:
+        for sn, stats in labeler["collars"].items():
+            name = dogs_by_collar.get(serial_key(sn))
+            if not name:
+                continue
+            row = dogs.setdefault(
+                name.lower(), {"dog": name, "people": {}, "sessions": 0, "seconds": 0.0}
+            )
+            row["sessions"] += int(stats.get("sessions") or 0)
+            row["seconds"] += float(stats.get("seconds") or 0)
+            person = labeler["person"]
+            row["people"][person] = row["people"].get(person, 0.0) + float(stats.get("seconds") or 0)
+    ranked = sorted(dogs.values(), key=lambda r: (-r["seconds"], -r["sessions"], r["dog"]))
+    return [
+        {
+            "dog": row["dog"],
+            "people": [p for p, _ in sorted(row["people"].items(), key=lambda item: -item[1])],
+            "sessions": row["sessions"],
+            "seconds": round(row["seconds"], 1),
+            "medal": PODIUM[index] if len(ranked) > 1 and index < len(PODIUM) else None,
+        }
+        for index, row in enumerate(ranked)
+    ]
+
+
 def _streak(all_data: Dict[str, Any], day: str) -> int:
     """Days in a row, ending on day, that had at least one labeled session."""
     active = {
@@ -279,6 +312,7 @@ def recap_data(
             "seconds": round(labeler["seconds"], 1),
             "medal": PODIUM[index] if len(labelers) > 1 and index < len(PODIUM) else None,
         })
+    dog_board = _dog_leaderboard(labelers, dogs_by_collar)
     # Milestones are what this period pushed the all-time totals past.
     period_bound = start is not None
     return {
@@ -296,6 +330,7 @@ def recap_data(
         "labelers": len(labelers),
         "dogs": _dog_names(day_data),
         "leaderboard": leaderboard,
+        "dog_leaderboard": dog_board,
         "streak": _streak(all_data, end),
         "session_milestone": (
             _crossed(all_sessions - sessions, all_sessions, SESSION_MILESTONE_STEP)

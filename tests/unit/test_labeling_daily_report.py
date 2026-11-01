@@ -517,3 +517,31 @@ def test_remote_needs_two_minutes_in_nine_labels_across_both_models():
     # Eight labels at 2 minutes or more; Potty is a second short.
     assert (ben["person"], ben["eligible"], len(ben["qualified"])) == ("Ben", False, 8)
     assert ben["close"] == [{"label": "Potty", "seconds": 119}]
+
+
+def test_dog_leaderboard_ranks_dogs_with_their_people():
+    from backend.services.labeling_daily_report import recap_data
+
+    day = {
+        **_family(
+            10,
+            1000,
+            users=[
+                _user("ken@x.com", 6, 500, [("sn1", 4, 300), ("sn2", 2, 200)]),
+                _user("amy@x.com", 4, 500, [("sn1", 1, 100), ("sn3", 3, 400)]),
+            ],
+            dogs=[
+                {"name": "Reese", "collar_sn": "sn1"},
+                {"name": "Reese", "collar_sn": "sn2"},  # same dog, second collar
+                {"name": "Bear", "collar_sn": "sn3"},
+            ],
+        ),
+        "gps": _family(0, 0),
+    }
+    recap = recap_data("2026-10-30", day, day, start="2026-10-30")
+    assert recap["dog_leaderboard"] == [
+        {"dog": "Reese", "people": ["ken@x.com", "amy@x.com"], "sessions": 7, "seconds": 600.0,
+         "medal": ":first_place_medal:"},
+        {"dog": "Bear", "people": ["amy@x.com"], "sessions": 3, "seconds": 400.0,
+         "medal": ":second_place_medal:"},
+    ]

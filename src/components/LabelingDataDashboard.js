@@ -1364,6 +1364,42 @@ function shareTakeaway(rows) {
 }
 
 /** The recap for the selected range, in plain language, with one simple chart. */
+/** "A, B, C +2" */
+function listNames(names, max = 3) {
+  return names.slice(0, max).join(', ') + (names.length > max ? ` +${names.length - max}` : '');
+}
+
+/** A ranked shout-out list: medal, name, who or what it goes with, and labeled time. */
+function ShoutOutList({ rows, empty, showAll, onToggle }) {
+  if (!rows.length) return <p className="text-sm text-gray-500">{empty}</p>;
+  return (
+    <div>
+      <ul className="divide-y divide-gray-100">
+        {(showAll ? rows : rows.slice(0, SHOUT_OUT_ROWS)).map((row, index) => (
+          <li key={`${row.key}-${index}`} className="flex items-center gap-3 py-2 text-sm">
+            <span className="w-6 text-center flex-shrink-0">
+              {row.medal ? SLACK_EMOJI[row.medal.replace(/:/g, '')] : ''}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block font-medium text-gray-900 truncate">{row.primary}</span>
+              {row.secondary ? <span className="block text-xs text-gray-500 truncate">{row.secondary}</span> : null}
+            </span>
+            <span className="text-right tabular-nums whitespace-nowrap">
+              <span className="block text-gray-900">{formatSecondsShort(row.seconds)}</span>
+              <span className="block text-xs text-gray-500">{row.sessions} sessions</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {rows.length > SHOUT_OUT_ROWS ? (
+        <button type="button" onClick={onToggle} className="mt-2 text-xs text-gray-600 underline">
+          {showAll ? `Show top ${SHOUT_OUT_ROWS}` : `Show all ${rows.length}`}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 const SHOUT_OUT_ROWS = 10;
 
 function OverviewTab({ data, nextStep, onOpenHealth }) {
@@ -1482,50 +1518,38 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
         <LabeledOverTimeChart data={data} start={recap.start} end={allTime ? null : recap.end} />
       </ChartCard>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-        <div className="xl:col-span-2 min-w-0">
-        <ChartCard
-          title="Shout-outs"
-          description="The good dogs and their people, ranked by labeled time. The same list the Slack recap posts."
-        >
-          {recap.leaderboard.length === 0 ? (
-            <p className="text-sm text-gray-500">Nobody labeled in this range.</p>
-          ) : (
-            <ul className="divide-y divide-gray-100">
-              {(showAllShoutOuts ? recap.leaderboard : recap.leaderboard.slice(0, SHOUT_OUT_ROWS)).map((row, index) => (
-                <li key={`${row.person}-${index}`} className="flex items-center gap-3 py-2 text-sm">
-                  <span className="w-6 text-center">
-                    {row.medal ? SLACK_EMOJI[row.medal.replace(/:/g, '')] : ''}
-                  </span>
-                  <span className="flex-1 min-w-0">
-                    {row.dogs.length ? (
-                      <span className="font-medium text-gray-900">
-                        🐶 {row.dogs.slice(0, 3).join(', ')}
-                        {row.dogs.length > 3 ? ` +${row.dogs.length - 3}` : ''}{' '}
-                      </span>
-                    ) : null}
-                    <span className={row.dogs.length ? 'text-gray-500' : 'font-medium text-gray-900'}>
-                      {row.dogs.length ? `(${row.person})` : row.person}
-                    </span>
-                  </span>
-                  <span className="text-gray-600 tabular-nums whitespace-nowrap">
-                    {row.sessions} sessions · {minutes(row.seconds)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {recap.leaderboard.length > SHOUT_OUT_ROWS ? (
-            <button
-              type="button"
-              onClick={() => setShowAllShoutOuts((v) => !v)}
-              className="mt-2 text-xs text-gray-600 underline"
-            >
-              {showAllShoutOuts ? 'Show top 10' : `Show all ${recap.leaderboard.length}`}
-            </button>
-          ) : null}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
+        <ChartCard title="Top dogs" description="The good dogs, ranked by labeled time, with their people.">
+          <ShoutOutList
+            empty="No named dogs in this range."
+            showAll={showAllShoutOuts}
+            onToggle={() => setShowAllShoutOuts((v) => !v)}
+            rows={(recap.dog_leaderboard || []).map((row) => ({
+              key: row.dog,
+              medal: row.medal,
+              primary: `🐶 ${row.dog}`,
+              secondary: listNames(row.people),
+              sessions: row.sessions,
+              seconds: row.seconds,
+            }))}
+          />
         </ChartCard>
-        </div>
+        <ChartCard title="Top people" description="Owners and labelers, ranked by labeled time. The list Slack posts.">
+          <ShoutOutList
+            empty="Nobody labeled in this range."
+            showAll={showAllShoutOuts}
+            onToggle={() => setShowAllShoutOuts((v) => !v)}
+            rows={recap.leaderboard.map((row) => ({
+              key: row.person,
+              medal: row.medal,
+              primary: row.person,
+              secondary: row.dogs.length ? `🐶 ${listNames(row.dogs)}` : null,
+              sessions: row.sessions,
+              seconds: row.seconds,
+            }))}
+          />
+        </ChartCard>
+        <div className="lg:col-span-2 xl:col-span-1">
         <ChartCard
           title="What we need more of"
           description="The least-labeled postures and environments in this range. Ask labelers to focus here."
@@ -1535,6 +1559,7 @@ function OverviewTab({ data, nextStep, onOpenHealth }) {
             <NeedsMoreList title="Environments (indoor/outdoor model)" rows={data?.gps?.all_activities || []} />
           </div>
         </ChartCard>
+        </div>
       </div>
     </div>
   );
