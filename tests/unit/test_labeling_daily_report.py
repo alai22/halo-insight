@@ -102,7 +102,7 @@ def test_send_skips_a_day_already_posted_and_starts_otherwise(monkeypatch):
     monkeypatch.setattr(routes, "_report_state", lambda: {"last_posted_day": "2026-10-30"})
     sent = []
     monkeypatch.setattr(
-        routes, "_send_daily_report", lambda day, refresh, days: sent.append((day, refresh, days))
+        routes, "_send_daily_report", lambda day, refresh, days, channels: sent.append((day, refresh, days))
     )
     monkeypatch.setattr(routes, "_report_summary_entry", lambda: None)
 
@@ -159,7 +159,9 @@ def test_send_without_refresh_never_scans(monkeypatch):
         "_build_report_text",
         lambda day, allow_scan, days: calls.append(("build", allow_scan)) or "hi",
     )
-    monkeypatch.setattr(routes, "_post_report", lambda text: calls.append(("post", text)))
+    monkeypatch.setattr(
+        routes, "_post_report", lambda text, ids: calls.append(("post", text)) or (["C1"], [])
+    )
     routes._send_daily_report("2026-10-31", refresh=False)
     assert calls == [("build", False), ("post", "hi"), ("saved", "2026-10-31")]
     assert routes._REPORT_RUNNING["day"] is None
@@ -178,7 +180,7 @@ def test_webhook_is_used_when_set_and_its_url_never_appears_in_errors(monkeypatc
     monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/secret")
     monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_CHANNEL", None)
     assert routes._report_configured() is True
-    routes._post_report("hello")
+    routes._post_report("hello", [])
     assert posted == [("https://hooks.slack.com/services/T/B/secret", {"text": "hello", "unfurl_links": False})]
 
     def _boom(url, json, timeout):
@@ -186,7 +188,7 @@ def test_webhook_is_used_when_set_and_its_url_never_appears_in_errors(monkeypatc
 
     monkeypatch.setattr(report.requests, "post", _boom)
     try:
-        routes._post_report("hello")
+        routes._post_report("hello", [])
     except RuntimeError as exc:
         assert "secret" not in str(exc)
     else:
@@ -214,7 +216,7 @@ def test_week_send_uses_its_own_repeat_guard_and_window(monkeypatch):
     monkeypatch.setattr(routes, "_report_summary_entry", lambda: None)
     sent = []
     monkeypatch.setattr(
-        routes, "_send_daily_report", lambda day, refresh, days: sent.append((day, refresh, days))
+        routes, "_send_daily_report", lambda day, refresh, days, channels: sent.append((day, refresh, days))
     )
 
     class _Thread:
@@ -245,7 +247,87 @@ def test_weekly_post_does_not_count_as_the_daily_post(monkeypatch):
     monkeypatch.setattr(routes, "_report_state", lambda: {"last_posted_day": "2026-10-29"})
     monkeypatch.setattr(routes, "_save_report_state", lambda state: saved.update(state))
     monkeypatch.setattr(routes, "_build_report_text", lambda day, allow_scan, days: "hi")
-    monkeypatch.setattr(routes, "_post_report", lambda text: None)
-    routes._send_daily_report("2026-10-30", refresh=False, days=7)
+    monkeypatch.setattr(routes, "_post_report", lambda text, ids: (ids, []))
+    routes._send_daily_report("2026-10-30", refresh=False, days=7, channel_ids=["C1"])
     assert saved["last_posted_period"] == "2026-10-24..2026-10-30"
     assert saved["last_posted_day"] == "2026-10-29"
+
+
+def test_channels_parse_ids_and_names_with_the_first_as_default(monkeypatch):
+    monkeypatch.setattr(
+        routes.Config,
+        "LABELING_REPORT_SLACK_CHANNEL",
+        " C0BK8F2BHMZ:data-labeling , C09PY36MHQV:#activity-ai-labeling,C0PLAIN",
+    )
+    assert routes._report_channels() == [
+        {"id": "C0BK8F2BHMZ", "name": "data-labeling"},
+        {"id": "C09PY36MHQV", "name": "activity-ai-labeling"},
+        {"id": "C0PLAIN", "name": "C0PLAIN"},
+    ]
+
+
+def test_send_only_to_configured_channels_with_a_per_channel_repeat_guard(monkeypatch):
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SECRET", "s3cret")
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_WEBHOOK_URL", None)
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_CHANNEL", "C1:data-labeling,C2:activity")
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_TOKEN", "xoxb-test")
+    monkeypatch.setattr(
+        routes, "_report_state", lambda: {"last_posted_day": "2026-10-30", "last_posted_day_channels": ["C1"]}
+    )
+    monkeypatch.setattr(routes, "_report_summary_entry", lambda: None)
+    sent = []
+    monkeypatch.setattr(
+        routes,
+        "_send_daily_report",
+        lambda day, refresh, days, channels: sent.append(channels),
+    )
+
+    class _Thread:
+        def __init__(self, target, args, daemon):
+            self._target, self._args = target, args
+
+        def start(self):
+            self._target(*self._args)
+
+    monkeypatch.setattr(routes.threading, "Thread", _Thread)
+    headers = {"X-Report-Secret": "s3cret"}
+    client = _client()
+
+    bad = client.post("/api/labeling/daily-report", json={"channels": ["C9"]}, headers=headers)
+    assert bad.status_code == 400
+
+    # Already posted to C1 for that day...
+    body = client.post(
+        "/api/labeling/daily-report", json={"date": "2026-10-30", "channels": ["C1"]}, headers=headers
+    ).get_json()
+    assert body["started"] is False
+    # ...but not to C2, so that goes ahead.
+    response = client.post(
+        "/api/labeling/daily-report", json={"date": "2026-10-30", "channels": ["C2"]}, headers=headers
+    )
+    assert response.status_code == 202
+    assert sent == [["C2"]]
+    routes._REPORT_RUNNING.update({"day": None, "days": None, "stage": None, "started_at": None})
+
+
+def test_one_failing_channel_does_not_stop_the_others(monkeypatch):
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_WEBHOOK_URL", None)
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_CHANNEL", "C1:data-labeling,C2:activity")
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_TOKEN", "xoxb-test")
+
+    def _post(token, channel, text):
+        if channel == "C2":
+            raise RuntimeError("Slack chat.postMessage failed: not_in_channel")
+
+    monkeypatch.setattr(routes, "post_to_slack", _post)
+    posted, errors = routes._post_report("hi", ["C1", "C2"])
+    assert posted == ["C1"]
+    assert errors == ["#activity: Slack chat.postMessage failed: not_in_channel"]
+
+    saved = {}
+    monkeypatch.setattr(routes, "_report_state", lambda: {})
+    monkeypatch.setattr(routes, "_save_report_state", lambda state: saved.update(state))
+    monkeypatch.setattr(routes, "_build_report_text", lambda day, allow_scan, days: "hi")
+    routes._send_daily_report("2026-10-30", refresh=False, days=1, channel_ids=["C1", "C2"])
+    assert saved["last_posted_day_channels"] == ["C1"]
+    assert "not_in_channel" in saved["last_error"]

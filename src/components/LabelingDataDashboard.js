@@ -804,12 +804,15 @@ function formatElapsed(ms) {
 const RECAP_PERIODS = [
   { days: 1, label: 'Day' },
   { days: 7, label: 'Last 7 days' },
+  { days: 30, label: 'Last 30 days' },
 ];
 
 function SlackRecapPanel({ onClose }) {
   const [day, setDay] = useState('');
-  // 1 = that day; 7 = the week ending on that day.
+  // 1 = that day; 7 or 30 = the days ending on that day.
   const [days, setDays] = useState(1);
+  // Channel ids to post to; starts as the server's default (its first channel).
+  const [channelIds, setChannelIds] = useState(null);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(true);
@@ -828,6 +831,9 @@ function SlackRecapPanel({ onClose }) {
       });
       setPreview(response.data.data);
       setDay(response.data.data.day);
+      setChannelIds(
+        (prev) => prev || (response.data.data.channels || []).slice(0, 1).map((c) => c.id)
+      );
     } catch (err) {
       setPreview(null);
       setError(err.response?.data?.error || err.message || 'Could not build the recap');
@@ -887,13 +893,30 @@ function SlackRecapPanel({ onClose }) {
     return () => clearInterval(id);
   }, [progress]);
 
+  const channels = preview?.channels || [];
+  const selected = channelIds || [];
+  const channelName = (id) => channels.find((c) => c.id === id)?.name || id;
   const send = async () => {
     const period = days === 1 ? day : `${preview?.start} – ${day}`;
-    const again =
+    const samePeriod =
       days === 1
         ? preview?.last_posted_day === day
         : preview?.last_posted_period === `${preview?.start}..${day}`;
-    if (again && !window.confirm(`The recap for ${period} was already posted. Post it again?`)) return;
+    const sentTo =
+      (days === 1 ? preview?.last_posted_day_channels : preview?.last_posted_period_channels) ||
+      channels.slice(0, 1).map((c) => c.id);
+    const repeated = preview?.webhook ? [] : selected.filter((id) => sentTo.includes(id));
+    // Re-posting this period to a channel that already has it needs a confirm and force.
+    const again = samePeriod && (preview?.webhook || repeated.length > 0);
+    if (
+      again &&
+      !window.confirm(
+        `The recap for ${period} was already posted${
+          repeated.length ? ` to ${repeated.map((id) => `#${channelName(id)}`).join(', ')}` : ''
+        }. Post it again?`
+      )
+    )
+      return;
     setSending(true);
     setNotice(null);
     try {
@@ -901,6 +924,7 @@ function SlackRecapPanel({ onClose }) {
       const response = await axios.post('/api/labeling/daily-report', {
         date: day,
         days,
+        channels: preview?.webhook ? undefined : selected,
         force: again,
         refresh: false,
       });
@@ -977,10 +1001,40 @@ function SlackRecapPanel({ onClose }) {
               {preview.start} – {day}
             </span>
           ) : null}
+          {!preview?.webhook && channels.length ? (
+            <div className="w-full flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600">
+              <span className="text-gray-500">Post to</span>
+              {channels.map((channel, index) => (
+                <label key={channel.id} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(channel.id)}
+                    disabled={Boolean(progress)}
+                    onChange={(e) =>
+                      setChannelIds((prev) => {
+                        const current = prev || [];
+                        return e.target.checked
+                          ? [...current, channel.id]
+                          : current.filter((id) => id !== channel.id);
+                      })
+                    }
+                  />
+                  #{channel.name}
+                  {index === 0 ? <span className="text-gray-400">(daily)</span> : null}
+                </label>
+              ))}
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={send}
-            disabled={sending || Boolean(progress) || loadingPreview || !preview?.configured}
+            disabled={
+              sending ||
+              Boolean(progress) ||
+              loadingPreview ||
+              !preview?.configured ||
+              (!preview?.webhook && selected.length === 0)
+            }
             className="ml-auto px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
             title={preview && !preview.configured ? 'Slack is not set up on the server' : undefined}
           >

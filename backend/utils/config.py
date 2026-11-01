@@ -264,7 +264,8 @@ class Config:
     # Daily labeling recap posted to Slack (see docs/LABELING_DAILY_REPORT.md)
     # Incoming webhook URL (preferred: can only post to its one channel)
     LABELING_REPORT_SLACK_WEBHOOK_URL: Optional[str] = os.getenv('LABELING_REPORT_SLACK_WEBHOOK_URL')
-    # Or a channel ID plus a bot token, used when no webhook URL is set
+    # Or channels plus a bot token, used when no webhook URL is set. Channels are
+    # "ID[:name]" items separated by commas; the first is the scheduled run's channel.
     LABELING_REPORT_SLACK_CHANNEL: Optional[str] = os.getenv('LABELING_REPORT_SLACK_CHANNEL')
     # Bot token with chat:write; falls back to SLACK_BOT_TOKEN
     LABELING_REPORT_SLACK_TOKEN: Optional[str] = os.getenv('LABELING_REPORT_SLACK_TOKEN')

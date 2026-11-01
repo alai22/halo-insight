@@ -98,18 +98,31 @@ When IT sets up a dedicated Slack app, repeat step 1 with that app, replace
 from the Make app (**Incoming Webhooks**, click **Remove** next to it) so the old URL stops
 working.
 
-A bot token works too: set `LABELING_REPORT_SLACK_CHANNEL` (channel ID) and
-`LABELING_REPORT_SLACK_TOKEN` (an `xoxb-` token with `chat:write`, with the bot invited to
-the channel) and leave the webhook URL empty.
+A bot token works too: set `LABELING_REPORT_SLACK_CHANNEL` and
+`LABELING_REPORT_SLACK_TOKEN` (an `xoxb-` token with `chat:write`; empty uses
+`SLACK_BOT_TOKEN`) and leave the webhook URL empty.
+
+## Posting to more than one channel (bot token only)
+
+List the channels as `ID:name` pairs separated by commas, and invite the bot to each:
+
+```
+LABELING_REPORT_SLACK_CHANNEL=C0BK8F2BHMZ:data-labeling,C09PY36MHQV:activity-ai-labeling
+```
+
+The first channel gets the scheduled daily post. In **Slack recap** on the dashboard,
+tick the channels a manual send should go to. The server only posts to channels in this
+list. The "already posted" check is per channel, so sending a day to a second channel
+doesn't need "Post again".
 
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `GET` | `/api/labeling/daily-report/preview?date=&days=` | admin | Recap text from data already computed; posts nothing |
-| `POST` | `/api/labeling/daily-report` | `X-Report-Secret` or admin session | Post the recap (body: `date`, `days`, `force`, `refresh`) |
+| `POST` | `/api/labeling/daily-report` | `X-Report-Secret` or admin session | Post the recap (body: `date`, `days`, `channels`, `force`, `refresh`) |
 | `GET` | `/api/labeling/daily-report/status` | admin | The send in progress (stage) and the last result |
 
-`days` is 1 by default; 7 covers the week ending on `date`. The dashboard's **Slack recap**
-panel has a **Day / Last 7 days** switch for manual sends. A weekly post does not count as
+`days` is 1 by default; 7 or 30 cover the days ending on `date`. The dashboard's **Slack
+recap** panel has a **Day / Last 7 days / Last 30 days** switch for manual sends. A weekly post does not count as
 that day's daily post, so the scheduled run still posts the next morning.

@@ -12,7 +12,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from collections import OrderedDict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from flask import Blueprint, jsonify, request, session
@@ -835,19 +835,41 @@ def _report_token() -> Optional[str]:
     return Config.LABELING_REPORT_SLACK_TOKEN or Config.SLACK_BOT_TOKEN
 
 
+def _report_channels() -> List[Dict[str, str]]:
+    """
+    Channels the recap may post to, from LABELING_REPORT_SLACK_CHANNEL as "ID[:name]" items
+    separated by commas. The first is the default, used by the scheduled run.
+    """
+    channels = []
+    for item in (Config.LABELING_REPORT_SLACK_CHANNEL or "").split(","):
+        channel_id, _, name = item.strip().partition(":")
+        if channel_id.strip():
+            channel_id = channel_id.strip()
+            channels.append({"id": channel_id, "name": name.strip().lstrip("#") or channel_id})
+    return channels
+
+
 def _report_configured() -> bool:
-    """A webhook URL, or a channel plus a bot token."""
+    """A webhook URL, or at least one channel plus a bot token."""
     return bool(
-        Config.LABELING_REPORT_SLACK_WEBHOOK_URL
-        or (Config.LABELING_REPORT_SLACK_CHANNEL and _report_token())
+        Config.LABELING_REPORT_SLACK_WEBHOOK_URL or (_report_channels() and _report_token())
     )
 
 
-def _post_report(text: str) -> None:
+def _post_report(text: str, channel_ids: List[str]) -> Tuple[List[str], List[str]]:
+    """Post to each channel (or the webhook). Returns the ids posted and per-channel errors."""
     if Config.LABELING_REPORT_SLACK_WEBHOOK_URL:
         post_to_slack_webhook(Config.LABELING_REPORT_SLACK_WEBHOOK_URL, text)
-    else:
-        post_to_slack(_report_token(), Config.LABELING_REPORT_SLACK_CHANNEL, text)
+        return ["webhook"], []
+    names = {c["id"]: c["name"] for c in _report_channels()}
+    posted, errors = [], []
+    for channel_id in channel_ids:
+        try:
+            post_to_slack(_report_token(), channel_id, text)
+            posted.append(channel_id)
+        except Exception as exc:  # noqa: BLE001 - keep posting to the other channels
+            errors.append(f"#{names.get(channel_id, channel_id)}: {exc}")
+    return posted, errors
 
 
 def _report_state() -> Dict[str, Any]:
@@ -934,21 +956,27 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
     )
 
 
-def _send_daily_report(day: str, refresh: bool = True, days: int = 1) -> None:
+def _send_daily_report(
+    day: str, refresh: bool = True, days: int = 1, channel_ids: Optional[List[str]] = None
+) -> None:
     """Build and post the recap. Without refresh it posts from data already computed."""
     state = _report_state()
+    channel_ids = channel_ids or [c["id"] for c in _report_channels()[:1]]
     try:
         text = _build_report_text(day, allow_scan=refresh, days=days)
         _set_report_stage("posting")
-        _post_report(text)
-        state.update({
-            "last_posted_period": f"{period_start(day, days)}..{day}",
-            "last_posted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "last_error": None,
-        })
-        # Only a one-day recap counts as that day's daily post for the scheduled run.
-        if days == 1:
-            state["last_posted_day"] = day
+        posted, errors = _post_report(text, channel_ids)
+        if posted:
+            state.update({
+                "last_posted_period": f"{period_start(day, days)}..{day}",
+                "last_posted_period_channels": posted,
+                "last_posted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            # Only a one-day recap counts as that day's daily post for the scheduled run.
+            if days == 1:
+                state["last_posted_day"] = day
+                state["last_posted_day_channels"] = posted
+        state["last_error"] = f"{day}: " + "; ".join(errors) if errors else None
     except Exception as exc:  # noqa: BLE001
         logger.exception("Labeling daily report for %s failed", day)
         state.update({"last_error": f"{day}: {redact_secrets(str(exc))}"})
@@ -995,9 +1023,13 @@ def labeling_daily_report_preview():
             "text": text,
             "configured": _report_configured(),
             "last_posted_day": state.get("last_posted_day"),
+            "last_posted_day_channels": state.get("last_posted_day_channels"),
             "last_posted_period": state.get("last_posted_period"),
+            "last_posted_period_channels": state.get("last_posted_period_channels"),
             "last_posted_at": state.get("last_posted_at"),
             "last_error": state.get("last_error"),
+            "channels": _report_channels(),
+            "webhook": bool(Config.LABELING_REPORT_SLACK_WEBHOOK_URL),
         },
     })
 
@@ -1008,7 +1040,8 @@ def labeling_send_daily_report():
     Post the recap to Slack in the background.
 
     Body (optional): date (YYYY-MM-DD, default yesterday), days (1 by default; 7 = the week
-    ending on date), force (re-post a period already sent),
+    ending on date), channels (ids from LABELING_REPORT_SLACK_CHANNEL; default the first),
+    force (re-post a period already sent to those channels),
     refresh (default true: refresh the summary first if it is over 6 hours old, which can
     take minutes; the dashboard sends false to post the preview it shows right away).
     Called daily by .github/workflows/labeling-daily-report.yml with X-Report-Secret.
@@ -1028,12 +1061,20 @@ def labeling_send_daily_report():
     except ValueError as exc:
         message = str(exc) if "days" in str(exc) else "date must be YYYY-MM-DD"
         return jsonify({"success": False, "error": message}), 400
+    allowed = [c["id"] for c in _report_channels()]
+    channel_ids = body.get("channels") or allowed[:1]
+    if not isinstance(channel_ids, list) or any(c not in allowed for c in channel_ids):
+        if not Config.LABELING_REPORT_SLACK_WEBHOOK_URL:
+            return jsonify({"success": False, "error": "Unknown channel"}), 400
     state = _report_state()
-    already = (
-        state.get("last_posted_day") == day
-        if days == 1
-        else state.get("last_posted_period") == f"{period_start(day, days)}..{day}"
-    )
+    # Channels the same period already went to; older state without them meant the default.
+    if days == 1:
+        same = state.get("last_posted_day") == day
+        sent_to = state.get("last_posted_day_channels") or allowed[:1]
+    else:
+        same = state.get("last_posted_period") == f"{period_start(day, days)}..{day}"
+        sent_to = state.get("last_posted_period_channels") or allowed[:1]
+    already = same and set(channel_ids) <= set(sent_to)
     if not body.get("force") and already:
         return jsonify({
             "success": True,
@@ -1056,7 +1097,9 @@ def labeling_send_daily_report():
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
     refresh = bool(body.get("refresh", True))
-    threading.Thread(target=_send_daily_report, args=(day, refresh, days), daemon=True).start()
+    threading.Thread(
+        target=_send_daily_report, args=(day, refresh, days, channel_ids), daemon=True
+    ).start()
     return jsonify({
         "success": True,
         "started": True,
