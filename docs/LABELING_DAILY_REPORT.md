@@ -106,5 +106,10 @@ the channel) and leave the webhook URL empty.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/api/labeling/daily-report/preview?date=` | admin | Recap text from data already computed; posts nothing |
-| `POST` | `/api/labeling/daily-report` | `X-Report-Secret` or admin session | Post the recap (body: `date`, `force`) |
+| `GET` | `/api/labeling/daily-report/preview?date=&days=` | admin | Recap text from data already computed; posts nothing |
+| `POST` | `/api/labeling/daily-report` | `X-Report-Secret` or admin session | Post the recap (body: `date`, `days`, `force`, `refresh`) |
+| `GET` | `/api/labeling/daily-report/status` | admin | The send in progress (stage) and the last result |
+
+`days` is 1 by default; 7 covers the week ending on `date`. The dashboard's **Slack recap**
+panel has a **Day / Last 7 days** switch for manual sends. A weekly post does not count as
+that day's daily post, so the scheduled run still posts the next morning.

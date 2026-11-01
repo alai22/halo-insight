@@ -801,8 +801,15 @@ function formatElapsed(ms) {
 }
 
 /** Preview the daily Slack recap for a day and send it now. */
+const RECAP_PERIODS = [
+  { days: 1, label: 'Day' },
+  { days: 7, label: 'Last 7 days' },
+];
+
 function SlackRecapPanel({ onClose }) {
   const [day, setDay] = useState('');
+  // 1 = that day; 7 = the week ending on that day.
+  const [days, setDays] = useState(1);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(true);
@@ -812,12 +819,12 @@ function SlackRecapPanel({ onClose }) {
   const [progress, setProgress] = useState(null);
   const [now, setNow] = useState(Date.now());
 
-  const load = useCallback(async (date) => {
+  const load = useCallback(async (date, periodDays = 1) => {
     setLoadingPreview(true);
     setError(null);
     try {
       const response = await axios.get('/api/labeling/daily-report/preview', {
-        params: date ? { date } : undefined,
+        params: { ...(date ? { date } : {}), days: periodDays },
       });
       setPreview(response.data.data);
       setDay(response.data.data.day);
@@ -881,14 +888,19 @@ function SlackRecapPanel({ onClose }) {
   }, [progress]);
 
   const send = async () => {
-    const again = preview?.last_posted_day === day;
-    if (again && !window.confirm(`The recap for ${day} was already posted. Post it again?`)) return;
+    const period = days === 1 ? day : `${preview?.start} – ${day}`;
+    const again =
+      days === 1
+        ? preview?.last_posted_day === day
+        : preview?.last_posted_period === `${preview?.start}..${day}`;
+    if (again && !window.confirm(`The recap for ${period} was already posted. Post it again?`)) return;
     setSending(true);
     setNotice(null);
     try {
       // Post the preview shown here as it is, without refreshing the summary first.
       const response = await axios.post('/api/labeling/daily-report', {
         date: day,
+        days,
         force: again,
         refresh: false,
       });
@@ -926,18 +938,45 @@ function SlackRecapPanel({ onClose }) {
           </button>
         </div>
         <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+            {RECAP_PERIODS.map((period) => (
+              <button
+                key={period.days}
+                type="button"
+                onClick={() => {
+                  setDays(period.days);
+                  setNotice(null);
+                  load(day, period.days);
+                }}
+                disabled={Boolean(progress)}
+                className={`px-2.5 py-1 ${
+                  days === period.days
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {period.label}
+              </button>
+            ))}
+          </div>
           <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-            Day
+            {days === 1 ? 'Day' : 'Ending'}
             <input
               type="date"
               value={day}
               onChange={(e) => {
                 setDay(e.target.value);
-                if (e.target.value) load(e.target.value);
+                setNotice(null);
+                if (e.target.value) load(e.target.value, days);
               }}
               className="px-2 py-1 text-sm border border-gray-300 rounded-md"
             />
           </label>
+          {days > 1 && preview?.start ? (
+            <span className="text-xs text-gray-500">
+              {preview.start} – {day}
+            </span>
+          ) : null}
           <button
             type="button"
             onClick={send}

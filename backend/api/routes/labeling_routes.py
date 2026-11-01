@@ -32,6 +32,7 @@ from backend.services.labeling_collar_sync_service import (
 )
 from backend.services.labeling_daily_report import (
     build_daily_report,
+    period_start,
     post_to_slack,
     post_to_slack_webhook,
     report_day,
@@ -827,7 +828,7 @@ _REPORT_STATE_KEY = "labeling-jobs/daily_report_state.json"
 _REPORT_MAX_SUMMARY_AGE_SEC = 6 * 3600
 _REPORT_LOCK = threading.Lock()
 # The send in progress: day, stage (refreshing, building, posting) and when it started.
-_REPORT_RUNNING: Dict[str, Any] = {"day": None, "stage": None, "started_at": None}
+_REPORT_RUNNING: Dict[str, Any] = {"day": None, "days": None, "stage": None, "started_at": None}
 
 
 def _report_token() -> Optional[str]:
@@ -887,8 +888,25 @@ def _set_report_stage(stage: str) -> None:
         _REPORT_RUNNING["stage"] = stage
 
 
-def _build_report_text(day: str, allow_scan: bool) -> str:
-    """The recap for one day. Without allow_scan, only data already computed is used."""
+_REPORT_MAX_DAYS = 31
+
+
+def _report_days(value: Any) -> int:
+    """How many days the recap covers, ending on its day: 1 (default) up to a month."""
+    try:
+        days = int(value or 1)
+    except (TypeError, ValueError):
+        raise ValueError("days must be a whole number") from None
+    if not 1 <= days <= _REPORT_MAX_DAYS:
+        raise ValueError(f"days must be between 1 and {_REPORT_MAX_DAYS}")
+    return days
+
+
+def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
+    """
+    The recap for the days ending on day. Without allow_scan, only data already
+    computed is used.
+    """
     entry = _report_summary_entry()
     if allow_scan and _report_summary_stale(entry):
         _set_report_stage("refreshing")
@@ -897,8 +915,8 @@ def _build_report_text(day: str, allow_scan: bool) -> str:
         raise RuntimeError(
             "The labeling summary is not ready. Click Refresh on the dashboard first."
         )
-    window = (day, day)
-    key = f"{day}..{day}"
+    window = (period_start(day, days), day)
+    key = f"{window[0]}..{window[1]}"
     with _WINDOW_CACHE_LOCK:
         cached = _WINDOW_CACHE.get(key)
     if cached is None or cached["generated_at"] < float(entry["generated_at"]):
@@ -911,28 +929,33 @@ def _build_report_text(day: str, allow_scan: bool) -> str:
         for row in _load_collar_owners().get("owners") or []
         if row.get("owner")
     }
-    return build_daily_report(day, cached["payload"], entry["data"], owners, Config.APP_BASE_URL)
+    return build_daily_report(
+        day, cached["payload"], entry["data"], owners, Config.APP_BASE_URL, days=days
+    )
 
 
-def _send_daily_report(day: str, refresh: bool = True) -> None:
+def _send_daily_report(day: str, refresh: bool = True, days: int = 1) -> None:
     """Build and post the recap. Without refresh it posts from data already computed."""
     state = _report_state()
     try:
-        text = _build_report_text(day, allow_scan=refresh)
+        text = _build_report_text(day, allow_scan=refresh, days=days)
         _set_report_stage("posting")
         _post_report(text)
         state.update({
-            "last_posted_day": day,
+            "last_posted_period": f"{period_start(day, days)}..{day}",
             "last_posted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "last_error": None,
         })
+        # Only a one-day recap counts as that day's daily post for the scheduled run.
+        if days == 1:
+            state["last_posted_day"] = day
     except Exception as exc:  # noqa: BLE001
         logger.exception("Labeling daily report for %s failed", day)
         state.update({"last_error": f"{day}: {redact_secrets(str(exc))}"})
     finally:
         _save_report_state(state)
         with _REPORT_LOCK:
-            _REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
+            _REPORT_RUNNING.update({"day": None, "days": None, "stage": None, "started_at": None})
 
 
 def _report_request_authorized() -> bool:
@@ -954,9 +977,12 @@ def labeling_daily_report_preview():
     day = (request.args.get("date") or "").strip() or report_day(Config.LABELING_REPORT_TIMEZONE)
     try:
         datetime.strptime(day, "%Y-%m-%d")
-        text = _build_report_text(day, allow_scan=False)
-    except ValueError:
-        return jsonify({"success": False, "error": "date must be YYYY-MM-DD"}), 400
+        days = _report_days(request.args.get("days"))
+    except ValueError as exc:
+        message = str(exc) if "days" in str(exc) else "date must be YYYY-MM-DD"
+        return jsonify({"success": False, "error": message}), 400
+    try:
+        text = _build_report_text(day, allow_scan=False, days=days)
     except RuntimeError as exc:
         return jsonify({"success": False, "error": str(exc)}), 409
     state = _report_state()
@@ -964,9 +990,12 @@ def labeling_daily_report_preview():
         "success": True,
         "data": {
             "day": day,
+            "days": days,
+            "start": period_start(day, days),
             "text": text,
             "configured": _report_configured(),
             "last_posted_day": state.get("last_posted_day"),
+            "last_posted_period": state.get("last_posted_period"),
             "last_posted_at": state.get("last_posted_at"),
             "last_error": state.get("last_error"),
         },
@@ -978,7 +1007,8 @@ def labeling_send_daily_report():
     """
     Post the recap to Slack in the background.
 
-    Body (optional): date (YYYY-MM-DD, default yesterday), force (re-post a day already sent),
+    Body (optional): date (YYYY-MM-DD, default yesterday), days (1 by default; 7 = the week
+    ending on date), force (re-post a period already sent),
     refresh (default true: refresh the summary first if it is over 6 hours old, which can
     take minutes; the dashboard sends false to post the preview it shows right away).
     Called daily by .github/workflows/labeling-daily-report.yml with X-Report-Secret.
@@ -994,9 +1024,17 @@ def labeling_send_daily_report():
     day = str(body.get("date") or "").strip() or report_day(Config.LABELING_REPORT_TIMEZONE)
     try:
         datetime.strptime(day, "%Y-%m-%d")
-    except ValueError:
-        return jsonify({"success": False, "error": "date must be YYYY-MM-DD"}), 400
-    if not body.get("force") and _report_state().get("last_posted_day") == day:
+        days = _report_days(body.get("days"))
+    except ValueError as exc:
+        message = str(exc) if "days" in str(exc) else "date must be YYYY-MM-DD"
+        return jsonify({"success": False, "error": message}), 400
+    state = _report_state()
+    already = (
+        state.get("last_posted_day") == day
+        if days == 1
+        else state.get("last_posted_period") == f"{period_start(day, days)}..{day}"
+    )
+    if not body.get("force") and already:
         return jsonify({
             "success": True,
             "started": False,
@@ -1013,11 +1051,12 @@ def labeling_send_daily_report():
             })
         _REPORT_RUNNING.update({
             "day": day,
+            "days": days,
             "stage": "starting",
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
     refresh = bool(body.get("refresh", True))
-    threading.Thread(target=_send_daily_report, args=(day, refresh), daemon=True).start()
+    threading.Thread(target=_send_daily_report, args=(day, refresh, days), daemon=True).start()
     return jsonify({
         "success": True,
         "started": True,

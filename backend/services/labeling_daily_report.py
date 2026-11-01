@@ -123,16 +123,32 @@ def _totals(data: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
+def period_start(day: str, days: int) -> str:
+    """First day of the days-long period that ends on day (inclusive)."""
+    return (date.fromisoformat(day) - timedelta(days=max(1, days) - 1)).isoformat()
+
+
 def build_daily_report(
     day: str,
     day_data: Dict[str, Any],
     all_data: Dict[str, Any],
     owner_names: Optional[Dict[str, str]] = None,
     dashboard_url: Optional[str] = None,
+    days: int = 1,
 ) -> str:
-    """Slack mrkdwn for one day. day_data is the summary limited to that day."""
+    """
+    Slack mrkdwn for the days-long period ending on day (one day by default).
+    day_data is the summary limited to that period.
+    """
     owner_names = owner_names or {}
-    pretty_day = date.fromisoformat(day).strftime("%A, %b %-d")
+    end = date.fromisoformat(day)
+    if days > 1:
+        start = date.fromisoformat(period_start(day, days))
+        pretty_day = f"{start.strftime('%b %-d')} – {end.strftime('%b %-d')} ({days} days)"
+        quiet = "A quiet stretch"
+    else:
+        pretty_day = end.strftime("%A, %b %-d")
+        quiet = "A quiet day"
     today = _totals(day_data)
     overall = _totals(all_data)
     sessions = today["activity_sessions"] + today["gps_sessions"]
@@ -144,7 +160,7 @@ def build_daily_report(
     if sessions == 0:
         return (
             f":sunrise: *Labeling recap for {pretty_day}*\n"
-            "A quiet day, with no new labeled sessions. "
+            f"{quiet}, with no new labeled sessions. "
             f"So far the team has labeled *{all_sessions:,} sessions* and "
             f"*{format_minutes(all_seconds)}* of data. Thank you! :sparkles:{link}"
         )
