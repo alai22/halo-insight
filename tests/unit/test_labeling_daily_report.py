@@ -334,3 +334,31 @@ def test_one_failing_channel_does_not_stop_the_others(monkeypatch):
     routes._send_daily_report("2026-10-30", refresh=False, days=1, channel_ids=["C1", "C2"])
     assert saved["last_posted_day_channels"] == ["C1"]
     assert "not_in_channel" in saved["last_error"]
+
+
+def test_group_sender_is_named_as_the_shared_inbox_not_a_collar_owner():
+    day = {
+        **_family(
+            18,
+            2412,
+            users=[
+                _user(
+                    "ai_logs@halocollar.com",
+                    18,
+                    2412,
+                    [("26h5230414rt", 12), ("25h5425925vm", 2), ("26h5220121th", 4)],
+                )
+            ],
+        ),
+        "gps": _family(0, 0),
+    }
+    text = build_daily_report(
+        "2026-10-30",
+        day,
+        {**_family(100, 0), "gps": _family(0, 0)},
+        owner_names={"26h5220121th": "Adrian Lai"},
+        days=7,
+        group_senders={"ai_logs@halocollar.com"},
+    )
+    assert "• ai_logs@ shared inbox: 18 sessions · 40m" in text
+    assert "Adrian Lai" not in text

@@ -66,8 +66,18 @@ def _merge_labelers(day_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return sorted(merged.values(), key=lambda r: (-r["seconds"], -r["sessions"], r["email"]))
 
 
-def labeler_name(labeler: Dict[str, Any], owner_names: Dict[str, str]) -> str:
-    """Owner name of the collar they labeled most, else the part of the email before @."""
+def labeler_name(
+    labeler: Dict[str, Any],
+    owner_names: Dict[str, str],
+    group_senders: Optional[set] = None,
+) -> str:
+    """
+    Owner name of the collar they labeled most, else the part of the email before @.
+    A group sender is several people, so it is named as the shared inbox, not after a collar.
+    """
+    email = (labeler["email"] or "").lower()
+    if group_senders and email in group_senders:
+        return f"{email.split('@', 1)[0]}@ shared inbox"
     for sn, _ in sorted(labeler["collars"].items(), key=lambda item: -item[1]):
         name = owner_names.get(serial_key(sn))
         if name:
@@ -135,6 +145,7 @@ def build_daily_report(
     owner_names: Optional[Dict[str, str]] = None,
     dashboard_url: Optional[str] = None,
     days: int = 1,
+    group_senders: Optional[set] = None,
 ) -> str:
     """
     Slack mrkdwn for the days-long period ending on day (one day by default).
@@ -190,7 +201,8 @@ def build_daily_report(
     for index, labeler in enumerate(labelers[:SHOUT_OUT_LIMIT]):
         trophy = " :trophy:" if index == 0 and len(labelers) > 1 else ""
         lines.append(
-            f"• {labeler_name(labeler, owner_names)}: {labeler['sessions']} sessions · "
+            f"• {labeler_name(labeler, owner_names, group_senders)}: "
+            f"{labeler['sessions']} sessions · "
             f"{format_minutes(labeler['seconds'])}{trophy}"
         )
     if len(labelers) > SHOUT_OUT_LIMIT:

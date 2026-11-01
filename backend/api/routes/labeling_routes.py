@@ -1002,8 +1002,17 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         for row in _load_collar_owners().get("owners") or []
         if row.get("owner")
     }
+    group_senders = {
+        s.strip().lower() for s in (Config.LABELING_GROUP_SENDERS or "").split(",") if s.strip()
+    }
     return build_daily_report(
-        day, cached["payload"], entry["data"], owners, Config.APP_BASE_URL, days=days
+        day,
+        cached["payload"],
+        entry["data"],
+        owners,
+        Config.APP_BASE_URL,
+        days=days,
+        group_senders=group_senders,
     )
 
 
