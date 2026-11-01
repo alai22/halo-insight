@@ -67,7 +67,17 @@ def liveness():
         job = process_liveness()
     except Exception as exc:  # noqa: BLE001
         print(f"Warning: liveness job snapshot failed: {exc}")
-    return jsonify(build_liveness(job)), 200
+    body = build_liveness(job)
+    # People in a browser get a readable page; probes, curl and fetch() keep getting JSON.
+    wants_html = (
+        request.args.get("format") != "json"
+        and request.accept_mimetypes.best_match(["application/json", "text/html"]) == "text/html"
+    )
+    if wants_html:
+        from backend.utils.runtime_stats import render_liveness_html
+
+        return render_liveness_html(body), 200, {"Content-Type": "text/html; charset=utf-8"}
+    return jsonify(body), 200
 
 # Copy only the API routes from api_app, excluding built-in Flask routes and root route
 for rule in api_app.url_map.iter_rules():

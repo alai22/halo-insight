@@ -509,3 +509,42 @@ def test_overview_is_attached_with_the_change_from_the_period_before(monkeypatch
     assert overview["change"]["previous"] == {"sessions": 2, "seconds": 60.0, "labelers": 1}
     assert overview["change"]["previous_start"] == "2026-10-17"
     assert overview["change_is_last_7_days"] is False
+
+
+def test_health_gives_browsers_a_page_and_everything_else_json():
+    import serve
+
+    client = serve.app.test_client()
+    browser = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    page = client.get("/health", headers={"Accept": browser})
+    assert page.status_code == 200
+    assert page.headers["Content-Type"].startswith("text/html")
+    assert b"Halo Insight server" in page.data
+    # curl, Docker and the deploy job send */*; the dashboard's axios asks for JSON first.
+    for accept in ("*/*", "application/json, text/plain, */*"):
+        response = client.get("/health", headers={"Accept": accept})
+        assert response.headers["Content-Type"].startswith("application/json")
+    forced = client.get("/health?format=json", headers={"Accept": browser})
+    assert forced.get_json()["status"] == "ok"
+
+
+def test_health_page_reads_like_a_status_page():
+    from backend.utils.runtime_stats import render_liveness_html
+
+    html = render_liveness_html(
+        {
+            "status": "ok",
+            "build": {"commit": "8f20c10", "subject": "Split <tabs>", "deployed_at": "2026-11-01T03:33:49Z"},
+            "uptime_sec": 52499,
+            "started_at": "2026-11-01T03:33:52Z",
+            "rss_mb": 697.3,
+            "peak_rss_mb": 697.3,
+            "job_running": False,
+        },
+        now=1793556428,  # 2026-11-01T18:07:08Z
+    )
+    assert "<code>8f20c10</code>" in html
+    assert "Split &lt;tabs&gt;" in html  # escaped
+    assert "14h 33m ago" in html
+    assert "697 MB now · peak 697 MB" in html
+    assert "Idle" in html and ">OK<" in html
