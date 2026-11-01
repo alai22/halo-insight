@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -48,10 +48,25 @@ const COLORS = [
   '#00ACC1', '#64B5F6', '#F28B82', '#81C784', '#FFB74D', '#BA68C8',
 ];
 
-function shortLabeler(email) {
+/** Owner names by labeler email (lowercase), from the collar owner list. */
+const LabelerNamesContext = React.createContext(new Map());
+
+function shortLabeler(email, names) {
   if (!email) return '?';
-  const local = String(email).split('@')[0];
-  return local.length > 16 ? `${local.slice(0, 14)}…` : local;
+  const label = names?.get(String(email).toLowerCase()) || String(email).split('@')[0];
+  return label.length > 16 ? `${label.slice(0, 14)}…` : label;
+}
+
+/** A labeler's owner name with their email, or just the email when no owner has it. */
+function LabelerName({ email }) {
+  const names = useContext(LabelerNamesContext);
+  const name = names.get(String(email || '').toLowerCase());
+  if (!name) return <>{email}</>;
+  return (
+    <>
+      {name} <span className="text-gray-400 text-xs">({email})</span>
+    </>
+  );
 }
 
 function labelerColorMap(emails) {
@@ -103,6 +118,7 @@ function buildActivityLabelerStack(activities, users, labelerKeys) {
 }
 
 function VarietyTooltip({ active, payload, label }) {
+  const names = useContext(LabelerNamesContext);
   if (!active || !payload?.length) return null;
   const row = payload[0].payload || {};
   const durations = payload.filter((item) => item.dataKey !== 'dogs' && Number(item.value));
@@ -111,7 +127,7 @@ function VarietyTooltip({ active, payload, label }) {
       <div className="font-medium text-gray-900 mb-1">{label}</div>
       {durations.map((item) => (
         <div key={String(item.dataKey)} className="text-gray-700">
-          {shortLabeler(item.name || item.dataKey)} {formatSecondsShort(item.value)}
+          {shortLabeler(item.name || item.dataKey, names)} {formatSecondsShort(item.value)}
         </div>
       ))}
       <div className="text-gray-500 mt-1">
@@ -129,6 +145,7 @@ function StackedDurationChart({
   height = 320,
   emptyText = 'No data yet.',
 }) {
+  const names = useContext(LabelerNamesContext);
   if (!data?.length || !seriesKeys?.length) {
     return <p className="text-sm text-gray-500">{emptyText}</p>;
   }
@@ -152,7 +169,7 @@ function StackedDurationChart({
           />
           <Tooltip content={<VarietyTooltip />} />
           <Legend
-            formatter={(value) => (value === 'Dogs' ? 'Dogs' : shortLabeler(value))}
+            formatter={(value) => (value === 'Dogs' ? 'Dogs' : shortLabeler(value, names))}
             wrapperStyle={{ fontSize: 12 }}
           />
           {seriesKeys.map((key, index) => (
@@ -1556,7 +1573,9 @@ function MismatchTopChips({ label, rows, field, onPick }) {
           onClick={() => onPick(value)}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
         >
-          <span className={field === 'collar_sn' ? 'font-mono' : ''}>{value}</span>
+          <span className={field === 'collar_sn' ? 'font-mono' : ''}>
+            {field === 'collar_sn' ? value : <LabelerName email={value} />}
+          </span>
           <span className="text-gray-400 tabular-nums">{count}</span>
         </button>
       ))}
@@ -1780,7 +1799,18 @@ function MismatchExplorer({
                       {String(row.timestamp || '—').replace('T', ' ')}
                     </td>
                     <td className="py-1.5 pr-4 text-gray-900">
-                      {isApp ? row.email : (row.labelers || []).join(', ') || '—'}
+                      {isApp ? (
+                        <LabelerName email={row.email} />
+                      ) : (row.labelers || []).length ? (
+                        (row.labelers || []).map((email, i) => (
+                          <span key={email}>
+                            {i ? ', ' : ''}
+                            <LabelerName email={email} />
+                          </span>
+                        ))
+                      ) : (
+                        '—'
+                      )}
                     </td>
                     <td className="py-1.5 pr-4 max-w-[12rem]">
                       <span className="block font-mono text-xs text-gray-700">{row.collar_sn}</span>
@@ -2010,7 +2040,7 @@ function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClo
                       ) : (
                         f.sessions.map((sess) => (
                           <div key={`${sess.email}-${sess.timestamp}`} className="text-xs">
-                            {sess.email}{' '}
+                            <LabelerName email={sess.email} />{' '}
                             <span className="font-mono text-gray-400">
                               {String(sess.timestamp).replace('T', ' ')}
                             </span>
@@ -2169,7 +2199,9 @@ function LabelerTable({ rows }) {
           {rows.map((u, i) => (
             <tr key={u.email} className="border-b border-gray-100">
               <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
-              <td className="py-2 pr-4 text-gray-900">{u.email}</td>
+              <td className="py-2 pr-4 text-gray-900">
+                <LabelerName email={u.email} />
+              </td>
               <td className="py-2 pr-4 text-gray-700">{u.human}</td>
               <td className="py-2 pr-4 text-gray-500">{u.dogs}</td>
               <td className="py-2 pr-4 text-gray-500">{u.sessions}</td>
@@ -2407,6 +2439,16 @@ const LabelingDataDashboard = () => {
   const [collarOwners, setCollarOwners] = useState([]);
   const [collarOwnersUpdatedAt, setCollarOwnersUpdatedAt] = useState(null);
   const [ownersOpen, setOwnersOpen] = useState(false);
+  // Owner name for each labeler email in the owner list, shown beside the email.
+  const labelerNames = useMemo(() => {
+    const map = new Map();
+    collarOwners.forEach((row) => {
+      if (row.email && row.owner && !map.has(row.email.toLowerCase())) {
+        map.set(row.email.toLowerCase(), row.owner);
+      }
+    });
+    return map;
+  }, [collarOwners]);
   const [recapOpen, setRecapOpen] = useState(false);
   // The commit running on the server, from /health (set by deploy.sh).
   const [build, setBuild] = useState(null);
@@ -2963,14 +3005,14 @@ const LabelingDataDashboard = () => {
     () =>
       users.map((u) => ({
         email: u.email,
-        label: (u.email || '').split('@')[0] || u.email,
+        label: shortLabeler(u.email, labelerNames),
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
         dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
-    [users]
+    [users, labelerNames]
   );
 
   const byDate = data?.by_date || [];
@@ -3018,14 +3060,14 @@ const LabelingDataDashboard = () => {
     () =>
       gpsUsers.map((u) => ({
         email: u.email,
-        label: (u.email || '').split('@')[0] || u.email,
+        label: shortLabeler(u.email, labelerNames),
         seconds: u.total_duration_seconds || 0,
         files: u.files || 0,
         sessions: u.sessions || 0,
         dogs: u.dogs || 0,
         human: u.total_duration_human || formatSecondsShort(u.total_duration_seconds),
       })),
-    [gpsUsers]
+    [gpsUsers, labelerNames]
   );
   const gpsByDateChartData = useMemo(
     () =>
@@ -3111,13 +3153,13 @@ const LabelingDataDashboard = () => {
     () =>
       (collarCoverage?.by_user || []).map((u) => ({
         email: u.email,
-        label: shortLabeler(u.email),
+        label: shortLabeler(u.email, labelerNames),
         matched: Number(u.matched_seconds) || 0,
         missing: Number(u.missing_seconds) || 0,
         matchedSessions: u.matched_sessions || 0,
         missingSessions: u.missing_sessions || 0,
       })),
-    [collarCoverage]
+    [collarCoverage, labelerNames]
   );
   const collarUserChartHeight = Math.max(180, collarUserChart.length * 48 + 48);
   const clone = status?.collar_sync?.clone || null;
@@ -3266,6 +3308,7 @@ const LabelingDataDashboard = () => {
   }
 
   return (
+    <LabelerNamesContext.Provider value={labelerNames}>
     <div className="flex flex-col p-6 bg-gray-50 w-full max-w-[1440px] mx-auto" style={{ minHeight: '100vh' }}>
       <div className="flex items-center justify-between mb-6 flex-shrink-0 gap-4">
         <div className="min-w-0">
@@ -4162,7 +4205,9 @@ const LabelingDataDashboard = () => {
                   className="w-full flex items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50"
                 >
                   <div className="min-w-0">
-                    <div className="font-medium text-gray-900 truncate">{user.email}</div>
+                    <div className="font-medium text-gray-900 truncate">
+                      <LabelerName email={user.email} />
+                    </div>
                     <div className="text-xs text-gray-500 mt-0.5">
                       {user.sessions} sessions · {user.files} files · collars {(user.collar_sns || []).length} ·
                       collar_collected {kinds.collar_collected || 0} ·
@@ -4476,6 +4521,7 @@ const LabelingDataDashboard = () => {
         </div>
       </details>
     </div>
+    </LabelerNamesContext.Provider>
   );
 };
 
