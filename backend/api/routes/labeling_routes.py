@@ -826,7 +826,8 @@ _REPORT_STATE_KEY = "labeling-jobs/daily_report_state.json"
 # Refresh the all-time summary first when it is older than this.
 _REPORT_MAX_SUMMARY_AGE_SEC = 6 * 3600
 _REPORT_LOCK = threading.Lock()
-_REPORT_RUNNING = {"day": None}
+# The send in progress: day, stage (refreshing, building, posting) and when it started.
+_REPORT_RUNNING: Dict[str, Any] = {"day": None, "stage": None, "started_at": None}
 
 
 def _report_token() -> Optional[str]:
@@ -871,14 +872,26 @@ def _save_report_state(state: Dict[str, Any]) -> None:
         logger.warning("Failed to save daily report state: %s", exc)
 
 
-def _build_report_text(day: str, allow_scan: bool) -> str:
-    """The recap for one day. Without allow_scan, only data already computed is used."""
-    entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
+def _report_summary_entry() -> Optional[Dict[str, Any]]:
+    return _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
         _DEFAULT_CACHE_TTL_SEC
     )
-    age = time.time() - float(entry["generated_at"]) if entry else None
-    stale = age is None or age > _REPORT_MAX_SUMMARY_AGE_SEC
-    if allow_scan and stale:
+
+
+def _report_summary_stale(entry: Optional[Dict[str, Any]]) -> bool:
+    return entry is None or time.time() - float(entry["generated_at"]) > _REPORT_MAX_SUMMARY_AGE_SEC
+
+
+def _set_report_stage(stage: str) -> None:
+    with _REPORT_LOCK:
+        _REPORT_RUNNING["stage"] = stage
+
+
+def _build_report_text(day: str, allow_scan: bool) -> str:
+    """The recap for one day. Without allow_scan, only data already computed is used."""
+    entry = _report_summary_entry()
+    if allow_scan and _report_summary_stale(entry):
+        _set_report_stage("refreshing")
         entry = _compute_summary(_DEFAULT_CACHE_TTL_SEC)
     if entry is None or (not allow_scan and _load_file_snapshot() is None):
         raise RuntimeError(
@@ -889,6 +902,7 @@ def _build_report_text(day: str, allow_scan: bool) -> str:
     with _WINDOW_CACHE_LOCK:
         cached = _WINDOW_CACHE.get(key)
     if cached is None or cached["generated_at"] < float(entry["generated_at"]):
+        _set_report_stage("building")
         _compute_window_summary(window)
         with _WINDOW_CACHE_LOCK:
             cached = _WINDOW_CACHE.get(key)
@@ -900,10 +914,12 @@ def _build_report_text(day: str, allow_scan: bool) -> str:
     return build_daily_report(day, cached["payload"], entry["data"], owners, Config.APP_BASE_URL)
 
 
-def _send_daily_report(day: str) -> None:
+def _send_daily_report(day: str, refresh: bool = True) -> None:
+    """Build and post the recap. Without refresh it posts from data already computed."""
     state = _report_state()
     try:
-        text = _build_report_text(day, allow_scan=True)
+        text = _build_report_text(day, allow_scan=refresh)
+        _set_report_stage("posting")
         _post_report(text)
         state.update({
             "last_posted_day": day,
@@ -916,7 +932,7 @@ def _send_daily_report(day: str) -> None:
     finally:
         _save_report_state(state)
         with _REPORT_LOCK:
-            _REPORT_RUNNING["day"] = None
+            _REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
 
 
 def _report_request_authorized() -> bool:
@@ -962,7 +978,9 @@ def labeling_send_daily_report():
     """
     Post the recap to Slack in the background.
 
-    Body (optional): date (YYYY-MM-DD, default yesterday), force (re-post a day already sent).
+    Body (optional): date (YYYY-MM-DD, default yesterday), force (re-post a day already sent),
+    refresh (default true: refresh the summary first if it is over 6 hours old, which can
+    take minutes; the dashboard sends false to post the preview it shows right away).
     Called daily by .github/workflows/labeling-daily-report.yml with X-Report-Secret.
     """
     if not _report_request_authorized():
@@ -993,9 +1011,37 @@ def labeling_send_daily_report():
                 "day": _REPORT_RUNNING["day"],
                 "message": "A report is already being sent.",
             })
-        _REPORT_RUNNING["day"] = day
-    threading.Thread(target=_send_daily_report, args=(day,), daemon=True).start()
-    return jsonify({"success": True, "started": True, "day": day}), 202
+        _REPORT_RUNNING.update({
+            "day": day,
+            "stage": "starting",
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+    refresh = bool(body.get("refresh", True))
+    threading.Thread(target=_send_daily_report, args=(day, refresh), daemon=True).start()
+    return jsonify({
+        "success": True,
+        "started": True,
+        "day": day,
+        "refresh_needed": refresh and _report_summary_stale(_report_summary_entry()),
+    }), 202
+
+
+@labeling_bp.route("/daily-report/status", methods=["GET"])
+@require_admin_auth
+def labeling_daily_report_status():
+    """The send in progress, if any, and the last result. Cheap enough to poll."""
+    with _REPORT_LOCK:
+        running = dict(_REPORT_RUNNING) if _REPORT_RUNNING["day"] else None
+    state = _report_state()
+    return jsonify({
+        "success": True,
+        "data": {
+            "running": running,
+            "last_posted_day": state.get("last_posted_day"),
+            "last_posted_at": state.get("last_posted_at"),
+            "last_error": state.get("last_error"),
+        },
+    })
 
 
 @labeling_bp.route("/promote-forwards", methods=["POST"])

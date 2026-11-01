@@ -788,6 +788,18 @@ function SlackLine({ text }) {
   );
 }
 
+const RECAP_STAGES = {
+  starting: 'Starting…',
+  refreshing: 'Refreshing the labeling summary first. This can take a few minutes.',
+  building: 'Building the recap…',
+  posting: 'Posting to Slack…',
+};
+
+function formatElapsed(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+}
+
 /** Preview the daily Slack recap for a day and send it now. */
 function SlackRecapPanel({ onClose }) {
   const [day, setDay] = useState('');
@@ -796,6 +808,9 @@ function SlackRecapPanel({ onClose }) {
   const [loadingPreview, setLoadingPreview] = useState(true);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState(null);
+  // A send in progress: its stage and when it started, polled from the server.
+  const [progress, setProgress] = useState(null);
+  const [now, setNow] = useState(Date.now());
 
   const load = useCallback(async (date) => {
     setLoadingPreview(true);
@@ -826,20 +841,65 @@ function SlackRecapPanel({ onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  useEffect(() => {
+    if (!progress) return undefined;
+    const id = setInterval(async () => {
+      setNow(Date.now());
+      try {
+        const response = await axios.get('/api/labeling/daily-report/status');
+        const status = response.data.data;
+        if (status.running) {
+          setProgress((prev) => (prev ? { ...prev, stage: status.running.stage } : prev));
+          return;
+        }
+        setProgress(null);
+        setPreview((prev) =>
+          prev
+            ? {
+                ...prev,
+                last_posted_day: status.last_posted_day,
+                last_posted_at: status.last_posted_at,
+                last_error: status.last_error,
+              }
+            : prev
+        );
+        setNotice(
+          status.last_error
+            ? { tone: 'error', text: `Not posted: ${status.last_error}` }
+            : {
+                tone: 'ok',
+                text: status.last_posted_at
+                  ? `Posted to Slack ✓ (${formatUpdatedAt(status.last_posted_at)})`
+                  : 'Posted to Slack ✓',
+              }
+        );
+      } catch {
+        // keep polling
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [progress]);
+
   const send = async () => {
     const again = preview?.last_posted_day === day;
     if (again && !window.confirm(`The recap for ${day} was already posted. Post it again?`)) return;
     setSending(true);
     setNotice(null);
     try {
-      const response = await axios.post('/api/labeling/daily-report', { date: day, force: again });
-      setNotice(
-        response.data.started
-          ? 'Sending to Slack. It can take a minute if the summary needs a refresh.'
-          : response.data.message || 'Not sent.'
-      );
+      // Post the preview shown here as it is, without refreshing the summary first.
+      const response = await axios.post('/api/labeling/daily-report', {
+        date: day,
+        force: again,
+        refresh: false,
+      });
+      if (response.data.started) {
+        setNow(Date.now());
+        setProgress({ stage: 'starting', startedAt: Date.now() });
+      } else {
+        setNotice({ tone: 'info', text: response.data.message || 'Not sent.' });
+      }
     } catch (err) {
-      setNotice(err.response?.data?.error || err.message || 'Could not send');
+      setNotice({ tone: 'error', text: err.response?.data?.error || err.message || 'Could not send' });
     } finally {
       setSending(false);
     }
@@ -853,7 +913,7 @@ function SlackRecapPanel({ onClose }) {
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Daily Slack recap</h3>
             <p className="text-xs text-gray-500">
-              Posted every morning for the day before.
+              Posted every morning for the day before. Send posts this preview as shown.
               {preview?.last_posted_day
                 ? ` Last posted for ${preview.last_posted_day}${
                     preview.last_posted_at ? ` (${formatUpdatedAt(preview.last_posted_at)})` : ''
@@ -881,11 +941,11 @@ function SlackRecapPanel({ onClose }) {
           <button
             type="button"
             onClick={send}
-            disabled={sending || loadingPreview || !preview?.configured}
+            disabled={sending || Boolean(progress) || loadingPreview || !preview?.configured}
             className="ml-auto px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
             title={preview && !preview.configured ? 'Slack is not set up on the server' : undefined}
           >
-            {sending ? 'Sending…' : 'Send to Slack now'}
+            {sending || progress ? 'Sending…' : 'Send to Slack now'}
           </button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-800">
@@ -894,10 +954,27 @@ function SlackRecapPanel({ onClose }) {
               Slack is not set up yet: set LABELING_REPORT_SLACK_WEBHOOK_URL on the server.
             </p>
           ) : null}
-          {preview?.last_error ? (
+          {progress ? (
+            <div className="mb-3 flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin flex-shrink-0" />
+              <span className="flex-1">{RECAP_STAGES[progress.stage] || 'Working…'}</span>
+              <span className="tabular-nums opacity-70">{formatElapsed(now - progress.startedAt)}</span>
+            </div>
+          ) : notice ? (
+            <p
+              className={`mb-3 text-xs ${
+                notice.tone === 'error'
+                  ? 'text-amber-800'
+                  : notice.tone === 'ok'
+                    ? 'text-emerald-800'
+                    : 'text-gray-600'
+              }`}
+            >
+              {notice.text}
+            </p>
+          ) : preview?.last_error ? (
             <p className="mb-3 text-xs text-amber-800">Last attempt failed: {preview.last_error}</p>
           ) : null}
-          {notice ? <p className="mb-3 text-xs text-gray-600">{notice}</p> : null}
           {loadingPreview ? (
             <p className="text-gray-500 inline-flex items-center gap-2">
               <RefreshCw className="h-3.5 w-3.5 animate-spin" />

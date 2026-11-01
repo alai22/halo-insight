@@ -101,7 +101,8 @@ def test_send_skips_a_day_already_posted_and_starts_otherwise(monkeypatch):
     monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_TOKEN", "xoxb-test")
     monkeypatch.setattr(routes, "_report_state", lambda: {"last_posted_day": "2026-10-30"})
     sent = []
-    monkeypatch.setattr(routes, "_send_daily_report", lambda day: sent.append(day))
+    monkeypatch.setattr(routes, "_send_daily_report", lambda day, refresh: sent.append((day, refresh)))
+    monkeypatch.setattr(routes, "_report_summary_entry", lambda: None)
 
     class _Thread:
         def __init__(self, target, args, daemon):
@@ -119,8 +120,42 @@ def test_send_skips_a_day_already_posted_and_starts_otherwise(monkeypatch):
 
     response = client.post("/api/labeling/daily-report", json={"date": "2026-10-31"}, headers=headers)
     assert response.status_code == 202
-    assert sent == ["2026-10-31"]
-    routes._REPORT_RUNNING["day"] = None
+    # The scheduled call refreshes first and says so when the summary is old.
+    assert response.get_json()["refresh_needed"] is True
+    assert sent == [("2026-10-31", True)]
+    routes._REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
+
+    # The dashboard posts what it previewed, without a refresh.
+    body = client.post(
+        "/api/labeling/daily-report",
+        json={"date": "2026-11-01", "refresh": False},
+        headers=headers,
+    ).get_json()
+    assert body["refresh_needed"] is False
+    assert sent[-1] == ("2026-11-01", False)
+    routes._REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
+
+
+def test_status_reports_the_stage_of_a_send_in_progress(monkeypatch):
+    monkeypatch.setattr(routes, "_report_state", lambda: {"last_posted_day": "2026-10-30", "last_error": None})
+    routes._REPORT_RUNNING.update({"day": "2026-10-31", "stage": "refreshing", "started_at": "2026-11-01T16:00:00Z"})
+    body = _client().get("/api/labeling/daily-report/status", headers={"X-Admin-Token": "t"}).get_json()
+    assert body["data"]["running"] == {"day": "2026-10-31", "stage": "refreshing", "started_at": "2026-11-01T16:00:00Z"}
+    assert body["data"]["last_posted_day"] == "2026-10-30"
+    routes._REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
+    body = _client().get("/api/labeling/daily-report/status", headers={"X-Admin-Token": "t"}).get_json()
+    assert body["data"]["running"] is None
+
+
+def test_send_without_refresh_never_scans(monkeypatch):
+    calls = []
+    monkeypatch.setattr(routes, "_report_state", lambda: {})
+    monkeypatch.setattr(routes, "_save_report_state", lambda state: calls.append(("saved", state.get("last_posted_day"))))
+    monkeypatch.setattr(routes, "_build_report_text", lambda day, allow_scan: calls.append(("build", allow_scan)) or "hi")
+    monkeypatch.setattr(routes, "_post_report", lambda text: calls.append(("post", text)))
+    routes._send_daily_report("2026-10-31", refresh=False)
+    assert calls == [("build", False), ("post", "hi"), ("saved", "2026-10-31")]
+    assert routes._REPORT_RUNNING["day"] is None
 
 
 def test_webhook_is_used_when_set_and_its_url_never_appears_in_errors(monkeypatch):
