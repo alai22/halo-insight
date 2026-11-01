@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -744,6 +744,174 @@ function CollarOwnersEditor({ owners, updatedAt, collarRows, collarInfo, onSave,
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Slack emoji codes the recap uses, so the preview looks like the posted message. */
+const SLACK_EMOJI = {
+  tada: '🎉',
+  dog2: '🐕',
+  dog: '🐶',
+  house_with_garden: '🏡',
+  raised_hands: '🙌',
+  trophy: '🏆',
+  fire: '🔥',
+  stopwatch: '⏱️',
+  sunrise: '🌅',
+  sparkles: '✨',
+};
+
+/** One line of Slack mrkdwn as React: :emoji:, *bold* and <url|label> links. */
+function SlackLine({ text }) {
+  const parts = String(text)
+    .replace(/:([a-z0-9_]+):/g, (match, code) => SLACK_EMOJI[code] || match)
+    .split(/(\*[^*]+\*|<[^>|]+\|[^>]+>)/g)
+    .filter(Boolean);
+  return (
+    <div className="min-h-[1.25rem]">
+      {parts.map((part, index) => {
+        if (part.startsWith('*') && part.endsWith('*')) return <strong key={index}>{part.slice(1, -1)}</strong>;
+        const link = part.match(/^<([^>|]+)\|([^>]+)>$/);
+        if (link) {
+          return (
+            <a key={index} href={link[1]} className="text-blue-700 underline" target="_blank" rel="noreferrer">
+              {link[2]}
+            </a>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </div>
+  );
+}
+
+/** Preview the daily Slack recap for a day and send it now. */
+function SlackRecapPanel({ onClose }) {
+  const [day, setDay] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState(null);
+
+  const load = useCallback(async (date) => {
+    setLoadingPreview(true);
+    setError(null);
+    try {
+      const response = await axios.get('/api/labeling/daily-report/preview', {
+        params: date ? { date } : undefined,
+      });
+      setPreview(response.data.data);
+      setDay(response.data.data.day);
+    } catch (err) {
+      setPreview(null);
+      setError(err.response?.data?.error || err.message || 'Could not build the recap');
+    } finally {
+      setLoadingPreview(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load('');
+  }, [load]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const send = async () => {
+    const again = preview?.last_posted_day === day;
+    if (again && !window.confirm(`The recap for ${day} was already posted. Post it again?`)) return;
+    setSending(true);
+    setNotice(null);
+    try {
+      const response = await axios.post('/api/labeling/daily-report', { date: day, force: again });
+      setNotice(
+        response.data.started
+          ? 'Sending to Slack. It can take a minute if the summary needs a refresh.'
+          : response.data.message || 'Not sent.'
+      );
+    } catch (err) {
+      setNotice(err.response?.data?.error || err.message || 'Could not send');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Slack recap">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative h-full w-full max-w-xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Daily Slack recap</h3>
+            <p className="text-xs text-gray-500">
+              Posted every morning for the day before.
+              {preview?.last_posted_day
+                ? ` Last posted for ${preview.last_posted_day}${
+                    preview.last_posted_at ? ` (${formatUpdatedAt(preview.last_posted_at)})` : ''
+                  }.`
+                : ''}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-500" aria-label="Close">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap items-center gap-2">
+          <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+            Day
+            <input
+              type="date"
+              value={day}
+              onChange={(e) => {
+                setDay(e.target.value);
+                if (e.target.value) load(e.target.value);
+              }}
+              className="px-2 py-1 text-sm border border-gray-300 rounded-md"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={send}
+            disabled={sending || loadingPreview || !preview?.configured}
+            className="ml-auto px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
+            title={preview && !preview.configured ? 'Slack is not set up on the server' : undefined}
+          >
+            {sending ? 'Sending…' : 'Send to Slack now'}
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-800">
+          {preview && !preview.configured ? (
+            <p className="mb-3 text-xs text-amber-800">
+              Slack is not set up yet: set LABELING_REPORT_SLACK_CHANNEL and a bot token on the server.
+            </p>
+          ) : null}
+          {preview?.last_error ? (
+            <p className="mb-3 text-xs text-amber-800">Last attempt failed: {preview.last_error}</p>
+          ) : null}
+          {notice ? <p className="mb-3 text-xs text-gray-600">{notice}</p> : null}
+          {loadingPreview ? (
+            <p className="text-gray-500 inline-flex items-center gap-2">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              Building the preview…
+            </p>
+          ) : error ? (
+            <p className="text-amber-800">{error}</p>
+          ) : preview ? (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 leading-relaxed">
+              {preview.text.split('\n').map((line, index) => (
+                <SlackLine key={index} text={line} />
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -2032,6 +2200,7 @@ const LabelingDataDashboard = () => {
   const [collarOwners, setCollarOwners] = useState([]);
   const [collarOwnersUpdatedAt, setCollarOwnersUpdatedAt] = useState(null);
   const [ownersOpen, setOwnersOpen] = useState(false);
+  const [recapOpen, setRecapOpen] = useState(false);
   const [processReport, setProcessReport] = useState(null);
   const [processInfo, setProcessInfo] = useState(null);
   const [loading, setLoading] = useState(!stored?.data);
@@ -2951,6 +3120,15 @@ const LabelingDataDashboard = () => {
           </button>
           <button
             type="button"
+            onClick={() => setRecapOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50"
+            title="Preview or send the daily Slack recap"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Slack recap
+          </button>
+          <button
+            type="button"
             onClick={() => {
               fetchStatus();
               fetchSummary({ refresh: true });
@@ -3599,6 +3777,8 @@ const LabelingDataDashboard = () => {
           collarInfo={collarInfo}
         />
       ) : null}
+
+      {recapOpen ? <SlackRecapPanel onClose={() => setRecapOpen(false)} /> : null}
 
       {ownersOpen ? (
         <CollarOwnersEditor

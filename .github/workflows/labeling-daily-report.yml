@@ -1,0 +1,39 @@
+# Post yesterday's labeling recap to Slack every morning.
+# The server does the work; this only triggers it (see docs/LABELING_DAILY_REPORT.md).
+# Required repo secrets: LABELING_REPORT_URL (e.g. https://insight.example.com),
+# LABELING_REPORT_SECRET (same value as on the server).
+name: Labeling daily report
+
+on:
+  schedule:
+    # 16:00 UTC = 9:00 Pacific in summer, 8:00 in winter.
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day to report (YYYY-MM-DD). Empty = yesterday, Pacific time."
+        required: false
+      force:
+        description: "Post again even if this day was already posted"
+        type: boolean
+        default: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask the server to post the recap
+        env:
+          URL: ${{ secrets.LABELING_REPORT_URL }}
+          SECRET: ${{ secrets.LABELING_REPORT_SECRET }}
+          DATE: ${{ inputs.date }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n --arg date "$DATE" --argjson force "$FORCE" \
+            '{force: $force} + (if $date == "" then {} else {date: $date} end)')
+          curl -fsS -X POST "${URL%/}/api/labeling/daily-report" \
+            -H "Content-Type: application/json" \
+            -H "X-Report-Secret: $SECRET" \
+            -d "$body"

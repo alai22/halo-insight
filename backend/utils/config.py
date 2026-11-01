@@ -260,6 +260,14 @@ class Config:
     # Optional filters; empty = search whatever the Product Notion integration can access
     PRODUCT_NOTION_ALLOWED_PAGE_IDS: str = os.getenv('PRODUCT_NOTION_ALLOWED_PAGE_IDS', '')
     PRODUCT_NOTION_ALLOWED_DATABASE_IDS: str = os.getenv('PRODUCT_NOTION_ALLOWED_DATABASE_IDS', '')
+
+    # Daily labeling recap posted to Slack (see docs/LABELING_DAILY_REPORT.md)
+    LABELING_REPORT_SLACK_CHANNEL: Optional[str] = os.getenv('LABELING_REPORT_SLACK_CHANNEL')
+    # Bot token with chat:write; falls back to SLACK_BOT_TOKEN
+    LABELING_REPORT_SLACK_TOKEN: Optional[str] = os.getenv('LABELING_REPORT_SLACK_TOKEN')
+    # Shared secret the scheduled job sends as X-Report-Secret
+    LABELING_REPORT_SECRET: Optional[str] = os.getenv('LABELING_REPORT_SECRET')
+    LABELING_REPORT_TIMEZONE: str = os.getenv('LABELING_REPORT_TIMEZONE', 'America/Los_Angeles')
     # Optional ranking boost for canonical hub pages (not required; boost only)
     PRODUCT_NOTION_PRIORITY_PAGE_IDS: str = os.getenv('PRODUCT_NOTION_PRIORITY_PAGE_IDS', '')
 

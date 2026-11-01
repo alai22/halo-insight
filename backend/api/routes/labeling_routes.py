@@ -5,6 +5,7 @@ API routes for Halo AI labeling: staging process + summaries.
 from __future__ import annotations
 
 import gzip
+import hmac
 import json
 import re
 import threading
@@ -14,7 +15,7 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
 import boto3
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, session
 
 from backend.api.middleware.auth import require_admin_auth
 from backend.services.labeling_data_analyzer import (
@@ -29,6 +30,7 @@ from backend.services.labeling_collar_sync_service import (
     redact_secrets,
     sync_done_message,
 )
+from backend.services.labeling_daily_report import build_daily_report, post_to_slack, report_day
 from backend.services.labeling_ingest_service import LabelingIngestService
 from backend.services.ml_processed_inventory import MlProcessedInventory, ml_object_key_allowed
 from backend.utils.config import Config
@@ -761,19 +763,24 @@ def _clean_owner_rows(rows: Any) -> list:
     return sorted(by_key.values(), key=lambda r: r["collar_sn"])
 
 
-@labeling_bp.route("/collar-owners", methods=["GET"])
-@require_admin_auth
-def labeling_collar_owners():
-    """The collar → owner list. Empty until someone saves one."""
-    bucket = Config.LABELING_S3_BUCKET_NAME
+def _load_collar_owners() -> Dict[str, Any]:
     try:
-        body = json.loads(
-            _s3_client().get_object(Bucket=bucket, Key=_COLLAR_OWNERS_KEY)["Body"].read()
+        return json.loads(
+            _s3_client()
+            .get_object(Bucket=Config.LABELING_S3_BUCKET_NAME, Key=_COLLAR_OWNERS_KEY)["Body"]
+            .read()
         )
     except Exception as exc:  # noqa: BLE001
         if "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
             logger.warning("Collar owners load failed: %s", exc)
-        body = {}
+        return {}
+
+
+@labeling_bp.route("/collar-owners", methods=["GET"])
+@require_admin_auth
+def labeling_collar_owners():
+    """The collar → owner list. Empty until someone saves one."""
+    body = _load_collar_owners()
     return jsonify({
         "success": True,
         "data": {
@@ -806,6 +813,169 @@ def labeling_save_collar_owners():
         logger.exception("Collar owners save failed")
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "data": payload})
+
+
+# ---- Daily Slack recap ----
+
+_REPORT_STATE_KEY = "labeling-jobs/daily_report_state.json"
+# Refresh the all-time summary first when it is older than this.
+_REPORT_MAX_SUMMARY_AGE_SEC = 6 * 3600
+_REPORT_LOCK = threading.Lock()
+_REPORT_RUNNING = {"day": None}
+
+
+def _report_token() -> Optional[str]:
+    return Config.LABELING_REPORT_SLACK_TOKEN or Config.SLACK_BOT_TOKEN
+
+
+def _report_state() -> Dict[str, Any]:
+    try:
+        return json.loads(
+            _s3_client()
+            .get_object(Bucket=Config.LABELING_S3_BUCKET_NAME, Key=_REPORT_STATE_KEY)["Body"]
+            .read()
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_report_state(state: Dict[str, Any]) -> None:
+    try:
+        _s3_client().put_object(
+            Bucket=Config.LABELING_S3_BUCKET_NAME,
+            Key=_REPORT_STATE_KEY,
+            Body=json.dumps(state).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to save daily report state: %s", exc)
+
+
+def _build_report_text(day: str, allow_scan: bool) -> str:
+    """The recap for one day. Without allow_scan, only data already computed is used."""
+    entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
+        _DEFAULT_CACHE_TTL_SEC
+    )
+    age = time.time() - float(entry["generated_at"]) if entry else None
+    stale = age is None or age > _REPORT_MAX_SUMMARY_AGE_SEC
+    if allow_scan and stale:
+        entry = _compute_summary(_DEFAULT_CACHE_TTL_SEC)
+    if entry is None or (not allow_scan and _load_file_snapshot() is None):
+        raise RuntimeError(
+            "The labeling summary is not ready. Click Refresh on the dashboard first."
+        )
+    window = (day, day)
+    key = f"{day}..{day}"
+    with _WINDOW_CACHE_LOCK:
+        cached = _WINDOW_CACHE.get(key)
+    if cached is None or cached["generated_at"] < float(entry["generated_at"]):
+        _compute_window_summary(window)
+        with _WINDOW_CACHE_LOCK:
+            cached = _WINDOW_CACHE.get(key)
+    owners = {
+        row["collar_sn"]: row["owner"]
+        for row in _load_collar_owners().get("owners") or []
+        if row.get("owner")
+    }
+    return build_daily_report(day, cached["payload"], entry["data"], owners, Config.APP_BASE_URL)
+
+
+def _send_daily_report(day: str) -> None:
+    state = _report_state()
+    try:
+        text = _build_report_text(day, allow_scan=True)
+        post_to_slack(_report_token(), Config.LABELING_REPORT_SLACK_CHANNEL, text)
+        state.update({
+            "last_posted_day": day,
+            "last_posted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "last_error": None,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Labeling daily report for %s failed", day)
+        state.update({"last_error": f"{day}: {redact_secrets(str(exc))}"})
+    finally:
+        _save_report_state(state)
+        with _REPORT_LOCK:
+            _REPORT_RUNNING["day"] = None
+
+
+def _report_request_authorized() -> bool:
+    """The scheduled job sends X-Report-Secret; a person needs an admin session."""
+    secret = Config.LABELING_REPORT_SECRET
+    sent = request.headers.get("X-Report-Secret") or ""
+    if secret and sent and hmac.compare_digest(sent.encode(), secret.encode()):
+        return True
+    try:
+        return bool(session.get("admin_authenticated"))
+    except RuntimeError:
+        return False
+
+
+@labeling_bp.route("/daily-report/preview", methods=["GET"])
+@require_admin_auth
+def labeling_daily_report_preview():
+    """The recap text for a day (default yesterday) from data already computed. Posts nothing."""
+    day = (request.args.get("date") or "").strip() or report_day(Config.LABELING_REPORT_TIMEZONE)
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+        text = _build_report_text(day, allow_scan=False)
+    except ValueError:
+        return jsonify({"success": False, "error": "date must be YYYY-MM-DD"}), 400
+    except RuntimeError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    state = _report_state()
+    return jsonify({
+        "success": True,
+        "data": {
+            "day": day,
+            "text": text,
+            "configured": bool(Config.LABELING_REPORT_SLACK_CHANNEL and _report_token()),
+            "last_posted_day": state.get("last_posted_day"),
+            "last_posted_at": state.get("last_posted_at"),
+            "last_error": state.get("last_error"),
+        },
+    })
+
+
+@labeling_bp.route("/daily-report", methods=["POST"])
+def labeling_send_daily_report():
+    """
+    Post the recap to Slack in the background.
+
+    Body (optional): date (YYYY-MM-DD, default yesterday), force (re-post a day already sent).
+    Called daily by .github/workflows/labeling-daily-report.yml with X-Report-Secret.
+    """
+    if not _report_request_authorized():
+        return jsonify({"success": False, "error": "Not authorized"}), 401
+    if not (Config.LABELING_REPORT_SLACK_CHANNEL and _report_token()):
+        return jsonify({
+            "success": False,
+            "error": "Set LABELING_REPORT_SLACK_CHANNEL and a Slack bot token on the server.",
+        }), 400
+    body = request.get_json(silent=True) or {}
+    day = str(body.get("date") or "").strip() or report_day(Config.LABELING_REPORT_TIMEZONE)
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"success": False, "error": "date must be YYYY-MM-DD"}), 400
+    if not body.get("force") and _report_state().get("last_posted_day") == day:
+        return jsonify({
+            "success": True,
+            "started": False,
+            "day": day,
+            "message": "Already posted for this day.",
+        })
+    with _REPORT_LOCK:
+        if _REPORT_RUNNING["day"]:
+            return jsonify({
+                "success": True,
+                "started": False,
+                "day": _REPORT_RUNNING["day"],
+                "message": "A report is already being sent.",
+            })
+        _REPORT_RUNNING["day"] = day
+    threading.Thread(target=_send_daily_report, args=(day,), daemon=True).start()
+    return jsonify({"success": True, "started": True, "day": day}), 202
 
 
 @labeling_bp.route("/promote-forwards", methods=["POST"])
