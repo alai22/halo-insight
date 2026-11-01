@@ -4,6 +4,7 @@ import pytest
 from flask import Flask
 
 from backend.api.routes import labeling_routes as routes
+from backend.services.auth_service import AuthService
 from backend.utils.runtime_stats import build_liveness, env_int, snapshot
 
 
@@ -34,6 +35,15 @@ def test_env_int_defaults_and_rejects_junk(monkeypatch):
     assert env_int("LABELING_SYNC_WORKERS", 4) == 1
 
 
+@pytest.fixture(autouse=True)
+def _admin_password(monkeypatch):
+    monkeypatch.setattr(routes.Config, "ADMIN_PASSWORD", "admin-pw")
+
+
+def _admin_headers():
+    return {"X-Admin-Token": AuthService.issue_admin_token()}
+
+
 def _client():
     app = Flask(__name__)
     app.secret_key = "test"
@@ -57,7 +67,7 @@ def test_summary_never_scans_on_the_request(monkeypatch):
     monkeypatch.setattr(routes, "_cache_get_memory", lambda _key: None)
     monkeypatch.setattr(routes, "_load_summary_cache_s3", lambda _ttl: None)
 
-    response = _client().get("/api/labeling/summary", headers={"X-Admin-Token": "t"})
+    response = _client().get("/api/labeling/summary", headers=_admin_headers())
     assert response.status_code == 200
     body = response.get_json()
     assert body["success"] is True
@@ -84,7 +94,7 @@ def test_summary_refresh_returns_last_payload_without_scanning(monkeypatch):
     monkeypatch.setattr(routes, "_load_summary_cache_s3", lambda _ttl: None)
 
     response = _client().get(
-        "/api/labeling/summary?refresh=1", headers={"X-Admin-Token": "t"}
+        "/api/labeling/summary?refresh=1", headers=_admin_headers()
     )
     body = response.get_json()
     assert body["pending"] is True
@@ -98,7 +108,7 @@ def test_summary_waits_while_a_job_is_running(monkeypatch):
     monkeypatch.setattr(routes, "_cache_get_memory", lambda _key: None)
     monkeypatch.setattr(routes, "_load_summary_cache_s3", lambda _ttl: None)
 
-    response = _client().get("/api/labeling/summary", headers={"X-Admin-Token": "t"})
+    response = _client().get("/api/labeling/summary", headers=_admin_headers())
     body = response.get_json()
     assert body["pending"] is True
     assert "waits" in body["message"]
@@ -120,7 +130,7 @@ def test_status_route_returns_azure_configured_flag(monkeypatch):
 
     monkeypatch.setattr(routes, "LabelingCollarSyncService", _Index)
 
-    response = _client().get("/api/labeling/status", headers={"X-Admin-Token": "t"})
+    response = _client().get("/api/labeling/status", headers=_admin_headers())
     assert response.status_code == 200
     body = response.get_json()
     assert body["success"] is True
@@ -207,7 +217,7 @@ def test_summary_with_dates_builds_window_in_background(monkeypatch):
     routes._window_cache_clear()
 
     response = _client().get(
-        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers={"X-Admin-Token": "t"}
+        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers=_admin_headers()
     )
     body = response.get_json()
     assert body["pending"] is True
@@ -220,7 +230,7 @@ def test_summary_with_dates_builds_window_in_background(monkeypatch):
             "generated_at": routes.time.time(),
         }
     body = _client().get(
-        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers={"X-Admin-Token": "t"}
+        "/api/labeling/summary?start=2026-08-01&end=2026-10-30", headers=_admin_headers()
     ).get_json()
     assert body["pending"] is False
     assert body["data"]["window"]["start"] == "2026-08-01"
@@ -263,7 +273,7 @@ def test_collar_owners_save_and_load_round_trip(monkeypatch):
 
     monkeypatch.setattr(routes, "_s3_client", lambda: _S3())
     client = _client()
-    headers = {"X-Admin-Token": "t"}
+    headers = _admin_headers()
     assert client.get("/api/labeling/collar-owners", headers=headers).get_json()["data"]["owners"] == []
     saved = client.put(
         "/api/labeling/collar-owners",
@@ -358,7 +368,7 @@ def test_failed_window_summary_is_reported_not_retried(monkeypatch):
         routes._WINDOW_ERRORS["2026-08-01..9999-12-31"] = "boom"
 
     body = _client().get(
-        "/api/labeling/summary?start=2026-08-01", headers={"X-Admin-Token": "t"}
+        "/api/labeling/summary?start=2026-08-01", headers=_admin_headers()
     ).get_json()
     assert body["pending"] is False
     assert "boom" in body["error"]
@@ -366,7 +376,7 @@ def test_failed_window_summary_is_reported_not_retried(monkeypatch):
 
     # refresh=1 clears the error and tries again.
     body = _client().get(
-        "/api/labeling/summary?start=2026-08-01&refresh=1", headers={"X-Admin-Token": "t"}
+        "/api/labeling/summary?start=2026-08-01&refresh=1", headers=_admin_headers()
     ).get_json()
     assert body["pending"] is True
     assert started == [("2026-08-01", "9999-12-31")]

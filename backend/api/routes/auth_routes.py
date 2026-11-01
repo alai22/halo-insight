@@ -8,6 +8,7 @@ from ...services.auth_service import AuthService
 from ...utils.email_service import EmailService
 from ...utils.config import Config
 from urllib.parse import quote
+import hmac
 import os
 
 logger = get_logger('auth_routes')
@@ -349,11 +350,9 @@ def admin_status():
             logger.debug(f"Session unavailable, checking token header: {session_error}")
             pass
         
-        # Check for admin token in headers (temporary workaround)
-        admin_token = request.headers.get('X-Admin-Token')
-        if admin_token:
-            # Simple validation - token exists means admin logged in
-            logger.info(f"Admin authenticated via token header (token length: {len(admin_token)})")
+        # Fallback: a signed admin token issued by /admin-login
+        if AuthService.verify_admin_token(request.headers.get('X-Admin-Token')):
+            logger.info("Admin authenticated via token header")
             return jsonify({
                 'admin_authenticated': True,
                 'session_available': False
@@ -393,36 +392,24 @@ def admin_login():
             }), 503
         
         # Validate password against admin password
-        if password == Config.ADMIN_PASSWORD:
-            # Try to create session if secret key is available
+        if hmac.compare_digest(password.encode(), Config.ADMIN_PASSWORD.encode()):
+            session_available = True
             try:
                 session['admin_authenticated'] = True
                 session['auth_method'] = 'admin_password'
                 session.permanent = True  # Make session persistent
-                logger.info("Admin authenticated successfully via password (session created)")
             except RuntimeError as session_error:
-                # Session creation failed (no secret key) - use token-based auth instead
                 logger.warning(f"Session creation failed (likely no FLASK_SECRET_KEY): {session_error}")
-                logger.info("Falling back to token-based authentication (temporary workaround)")
-                # Return success with a simple token that frontend can store
-                import hashlib
-                import time
-                token_data = f"admin:{password}:{time.time()}"
-                admin_token = hashlib.sha256(token_data.encode()).hexdigest()[:32]
-                
-                logger.info("Admin authenticated successfully via password (token-based, no session)")
-                return jsonify({
-                    'success': True,
-                    'message': 'Admin login successful',
-                    'admin_token': admin_token,  # Frontend will store this
-                    'session_available': False  # Indicates session wasn't created
-                }), 200
-            
-            logger.info("Admin authenticated successfully via password")
+                session_available = False
+
+            # Always issue a signed token too, so the X-Admin-Token header works
+            # when the session cookie is not sent back.
+            logger.info(f"Admin authenticated successfully via password (session: {session_available})")
             return jsonify({
                 'success': True,
                 'message': 'Admin login successful',
-                'session_available': True
+                'admin_token': AuthService.issue_admin_token(),
+                'session_available': session_available
             }), 200
         else:
             logger.warning("Failed admin password login attempt")

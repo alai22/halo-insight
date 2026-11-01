@@ -4,6 +4,8 @@ Authentication Service for Magic Link Authentication
 
 import secrets
 import hashlib
+import hmac
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 import logging
@@ -121,3 +123,43 @@ class AuthService(IAuthService):
         cls._cleanup_expired_tokens()
         return len(cls._tokens)
 
+    # Admin header tokens (X-Admin-Token) are stateless and signed, so they work
+    # across workers and restarts. Changing ADMIN_PASSWORD revokes them.
+    ADMIN_TOKEN_TTL_SECONDS = 12 * 60 * 60
+
+    @staticmethod
+    def _admin_token_key() -> Optional[bytes]:
+        """Signing key for admin tokens, or None when admin password login is off."""
+        if not Config.ADMIN_PASSWORD:
+            return None
+        material = f"admin-token:{Config.ADMIN_PASSWORD}:{Config.FLASK_SECRET_KEY or ''}"
+        return hashlib.sha256(material.encode()).digest()
+
+    @classmethod
+    def _sign_admin_expiry(cls, key: bytes, expires_at: int) -> str:
+        return hmac.new(key, f"admin:{expires_at}".encode(), hashlib.sha256).hexdigest()
+
+    @classmethod
+    def issue_admin_token(cls) -> Optional[str]:
+        """Issue a signed admin token of the form '<expires_at>.<signature>'."""
+        key = cls._admin_token_key()
+        if key is None:
+            return None
+        expires_at = int(time.time()) + cls.ADMIN_TOKEN_TTL_SECONDS
+        return f"{expires_at}.{cls._sign_admin_expiry(key, expires_at)}"
+
+    @classmethod
+    def verify_admin_token(cls, token: Optional[str]) -> bool:
+        """True only for an unexpired token issued by issue_admin_token."""
+        key = cls._admin_token_key()
+        if key is None or not token or '.' not in token:
+            return False
+        expires_part, signature = token.split('.', 1)
+        try:
+            expires_at = int(expires_part)
+        except ValueError:
+            return False
+        if expires_at < time.time():
+            return False
+        expected = cls._sign_admin_expiry(key, expires_at)
+        return hmac.compare_digest(expected.encode(), signature.encode())

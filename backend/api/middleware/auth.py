@@ -5,6 +5,7 @@ Authentication middleware for protecting API routes
 from functools import wraps
 from flask import session, jsonify, request
 from ...utils.logging import get_logger
+from ...services.auth_service import AuthService
 
 logger = get_logger('auth_middleware')
 
@@ -67,10 +68,8 @@ def require_admin_auth(f):
             # Session not available (no secret key) - check for token header
             pass
         
-        # Fallback: Check for admin auth token in headers
-        admin_token = request.headers.get('X-Admin-Token')
-        if admin_token:
-            # Simple validation - token exists means admin logged in
+        # Fallback: a signed admin token issued by /api/auth/admin-login
+        if AuthService.verify_admin_token(request.headers.get('X-Admin-Token')):
             logger.debug(f"Admin authenticated via token header for {request.path}")
             return f(*args, **kwargs)
         

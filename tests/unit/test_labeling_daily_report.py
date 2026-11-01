@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from flask import Flask
 
 from backend.api.routes import labeling_routes as routes
+from backend.services.auth_service import AuthService
 from backend.services.labeling_daily_report import build_daily_report, format_minutes, report_day
 
 
@@ -139,14 +140,16 @@ def test_send_skips_a_day_already_posted_and_starts_otherwise(monkeypatch):
 
 
 def test_status_reports_the_stage_of_a_send_in_progress(monkeypatch):
+    monkeypatch.setattr(routes.Config, "ADMIN_PASSWORD", "admin-pw")
+    admin = {"X-Admin-Token": AuthService.issue_admin_token()}
     monkeypatch.setattr(routes, "_report_state", lambda: {"last_posted_day": "2026-10-30", "last_error": None})
     routes._REPORT_RUNNING.update({"day": "2026-10-31", "stage": "refreshing", "started_at": "2026-11-01T16:00:00Z"})
-    body = _client().get("/api/labeling/daily-report/status", headers={"X-Admin-Token": "t"}).get_json()
+    body = _client().get("/api/labeling/daily-report/status", headers=admin).get_json()
     assert body["data"]["running"]["stage"] == "refreshing"
     assert body["data"]["running"]["day"] == "2026-10-31"
     assert body["data"]["last_posted_day"] == "2026-10-30"
     routes._REPORT_RUNNING.update({"day": None, "stage": None, "started_at": None})
-    body = _client().get("/api/labeling/daily-report/status", headers={"X-Admin-Token": "t"}).get_json()
+    body = _client().get("/api/labeling/daily-report/status", headers=admin).get_json()
     assert body["data"]["running"] is None
 
 
