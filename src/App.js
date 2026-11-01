@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useDeferredValue } from 'react';
-import { Settings, Menu, LogOut } from 'lucide-react';
+import { Settings, Menu, LogOut, Trash2 } from 'lucide-react';
 import PromptInput from './components/PromptInput';
 import Sidebar from './components/Sidebar';
 import SettingsPanel from './components/SettingsPanel';
@@ -36,6 +36,9 @@ axios.interceptors.request.use(
   }
 );
 
+// Tools whose sidebar has content of its own (conversation stats, survey data source).
+const SIDEBAR_MODES = new Set(['conversations', 'ask', 'survicate', 'churn-trends']);
+
 function App() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -70,6 +73,26 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef(null);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return undefined;
+    const onDown = (e) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setAccountMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [accountMenuOpen]);
   const [settings, setSettings] = useState({
     model: 'claude-sonnet-4',  // Default to Sonnet 4 (non-dated alias)
     maxTokens: 1000,
@@ -753,6 +776,10 @@ function App() {
     return getCurrentConversations().length;
   };
 
+  const hasAnyConversations = Object.values(conversations || {}).some(
+    (list) => Array.isArray(list) && list.length > 0
+  );
+
   const getModeTitle = () => {
     const modeTitles = {
       'conversation-trends': 'Conversation Trends',
@@ -772,6 +799,12 @@ function App() {
     }
     return modeTitles[currentMode] || 'Unknown Mode';
   };
+
+  // The sidebar only has content for chat and churn tools (stats, data source); elsewhere
+  // it is hidden on desktop and its logo and connection status move into the header.
+  const showSidebar = Boolean(deferredAdminMode) || SIDEBAR_MODES.has(deferredMode);
+  const healthy = healthStatus?.status === 'healthy';
+  const healthLabel = !healthStatus ? 'Checking connection…' : healthy ? 'Connected' : 'Connection problem';
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
@@ -793,12 +826,13 @@ function App() {
         onCloseSettings={closeSettings}
         mobileDrawerOpen={mobileSidebarOpen}
         onCloseMobile={closeMobileSidebar}
+        hideOnDesktop={!showSidebar}
       />
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200 px-3 py-3 sm:px-6 sm:py-4">
+        <header className="bg-white shadow-sm border-b border-gray-200 px-3 py-2 sm:px-4">
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
@@ -808,6 +842,27 @@ function App() {
             >
               <Menu className="h-5 w-5" />
             </button>
+            {!showSidebar ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAdminMode(null);
+                  setCurrentMode('tools');
+                }}
+                className="hidden md:flex items-center gap-2 shrink-0 mr-1 rounded-lg hover:bg-gray-50 p-1"
+                title={`Halo Insight · ${healthLabel}. Click for Home.`}
+              >
+                <span className="relative">
+                  <img src="/dog-spark.jpg" alt="Halo Insight" className="h-7 w-7 rounded-full object-cover" />
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white ${
+                      !healthStatus ? 'bg-gray-300' : healthy ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                </span>
+                <span className="text-sm font-semibold text-gray-900 hidden lg:inline">Halo Insight</span>
+              </button>
+            ) : null}
             <div className="flex-1 min-w-0">
               {adminMode && currentMode !== 'tools' ? (
                 <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-orange-50 border-2 border-orange-200 rounded-lg">
@@ -833,39 +888,94 @@ function App() {
                 />
               )}
             </div>
-            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            <div className="relative shrink-0" ref={accountMenuRef}>
               <button
-                onClick={handleLogout}
-                className="flex items-center justify-center gap-2 px-2.5 py-2 sm:px-3 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors min-h-[40px]"
-                title="Logout"
-              >
-                <LogOut className="h-5 w-5 sm:hidden shrink-0" aria-hidden />
-                <span className="hidden sm:inline">Logout</span>
-              </button>
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
-                title="Settings"
+                type="button"
+                onClick={() => setAccountMenuOpen((open) => !open)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
+                title="Settings and account"
+                aria-haspopup="menu"
+                aria-expanded={accountMenuOpen}
               >
                 <Settings className="h-5 w-5" />
               </button>
-              {!adminMode && (
-                <div className="hidden md:flex items-center space-x-2">
+              {accountMenuOpen ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-gray-200 bg-white p-1.5 shadow-lg text-sm"
+                >
                   <button
-                    onClick={clearCurrentConversations}
-                    disabled={getCurrentConversationCount() === 0}
-                    className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowSettings((open) => !open);
+                      setAccountMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100"
                   >
-                    Clear {getModeTitle()}
+                    <Settings className="h-4 w-4" />
+                    {showSettings ? 'Hide settings' : 'Settings'}
                   </button>
+                  {!adminMode && getCurrentConversationCount() > 0 ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        clearCurrentConversations();
+                        setAccountMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Clear {getModeTitle()}
+                    </button>
+                  ) : null}
+                  {!adminMode && hasAnyConversations ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        if (window.confirm('Clear the chat history in every tool?')) {
+                          clearAllConversations();
+                        }
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Clear all chat history
+                    </button>
+                  ) : null}
+                  <div className="my-1 border-t border-gray-100" />
+                  <div className="px-3 py-1.5 text-xs text-gray-500 flex items-center gap-2">
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        !healthStatus ? 'bg-gray-300' : healthy ? 'bg-emerald-500' : 'bg-red-500'
+                      }`}
+                    />
+                    {healthLabel}
+                    <button
+                      type="button"
+                      onClick={checkHealth}
+                      className="ml-auto text-gray-400 hover:text-gray-600 underline"
+                    >
+                      Check
+                    </button>
+                  </div>
                   <button
-                    onClick={clearAllConversations}
-                    className="px-3 py-2 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      handleLogout();
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100"
                   >
-                    Clear All
+                    <LogOut className="h-4 w-4" />
+                    Log out
                   </button>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </header>

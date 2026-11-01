@@ -2,7 +2,7 @@ import React, { memo, useState, useEffect, useCallback } from 'react';
 import { Database, RefreshCw, CheckCircle, XCircle, Download, FileDown, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { getSurvicateDataSource } from '../utils/constants';
 
-const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings, mobileDrawerOpen = false, onCloseMobile }) => {
+const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, setCurrentMode, onCloseSettings, mobileDrawerOpen = false, onCloseMobile, hideOnDesktop = false }) => {
   const [downloadStats, setDownloadStats] = useState(null);
   const [surveyStats, setSurveyStats] = useState(null);
   const [dataSource, setDataSource] = useState(getSurvicateDataSource());
@@ -396,6 +396,7 @@ const Sidebar = ({ healthStatus, onRefreshHealth, currentMode, setAdminMode, set
         transition-transform duration-200 ease-out
         md:relative md:inset-auto md:z-auto md:h-auto md:max-w-none md:translate-x-0
         ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+        ${hideOnDesktop ? 'md:hidden' : ''}
       `}
     >
       {/* Header */}

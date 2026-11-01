@@ -197,8 +197,8 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
           : active
             ? 'bg-white text-gray-900 shadow-sm'
             : 'text-gray-600 hover:text-gray-900';
-    const widthClass = tone === 'quiet' ? 'shrink-0' : 'shrink-0 md:flex-1 md:min-w-0';
-    return `${widthClass} px-3 sm:px-4 py-2.5 text-sm font-medium rounded-md transition-colors min-h-[44px] flex items-center justify-center gap-1.5 ${toneClass}`;
+    // Packed to the left at their natural width; taller on touch screens.
+    return `shrink-0 px-3 py-2 md:py-1.5 text-sm font-medium rounded-md transition-colors min-h-[40px] md:min-h-[32px] flex items-center justify-center gap-1.5 ${toneClass}`;
   };
 
   const renderMenuTab = (key) => {
@@ -300,7 +300,7 @@ const TabNavigation = ({ currentMode, setCurrentMode, adminMode, setAdminMode })
   return (
     <div className="min-w-0 w-full" ref={navRef}>
       <div className="overflow-x-auto min-w-0 -mx-1 px-1 sm:mx-0 sm:px-0 overscroll-x-contain [scrollbar-width:thin]">
-        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg flex-nowrap w-max min-w-full md:w-full md:min-w-0">
+        <div className="flex gap-0.5 bg-gray-100 p-1 rounded-lg flex-nowrap w-max">
           <button
             type="button"
             onPointerDown={() => prefetchMode('labeling-data')}
