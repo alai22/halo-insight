@@ -316,6 +316,7 @@ function collarNextStep({
   clone,
   totals,
   reasons,
+  reasonsByFamily,
   waitingOnSync,
 }) {
   if (!statusLoaded) {
@@ -399,7 +400,13 @@ function collarNextStep({
     return {
       tone: 'info',
       title: `${missing} session${missing === 1 ? '' : 's'} still have no collar log`,
-      breakdown: MISSING_REASON_ROWS.map((row) => ({ ...row, count: Number(reasons[row.key]) || 0 }))
+      breakdown: MISSING_REASON_ROWS.map((row) => ({
+        ...row,
+        count: Number(reasons[row.key]) || 0,
+        byModel: Object.keys(MODEL_LABELS)
+          .map((family) => ({ family, count: Number(reasonsByFamily?.[family]?.[row.key]) || 0 }))
+          .filter((part) => part.count > 0),
+      }))
         .filter((row) => row.count > 0)
         .sort((a, b) => b.count - a.count),
       footnote:
@@ -485,6 +492,13 @@ function MissingReasonBreakdown({ step, onPick }) {
               <span className="text-sm">{row.label}</span>
             </div>
             {row.hint ? <div className="text-xs opacity-70 ml-4">{row.hint}</div> : null}
+            {row.byModel?.length ? (
+              <div className="text-xs ml-4 mt-0.5">
+                {row.byModel
+                  .map((part) => `${part.count} ${MODEL_LABELS[part.family].toLowerCase()}`)
+                  .join(' · ')}
+              </div>
+            ) : null}
           </button>
         ))}
       </div>
@@ -863,7 +877,19 @@ const DAILY_SOURCE_RANGES = [
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Fill coverage by_date into one row per calendar day, ending today, so quiet days show as gaps. */
-function dailySourceRows(byDate, days, dataWindow) {
+/** Session families are the two models: activity is posture, gps is indoor/outdoor. */
+const MODEL_LABELS = { activity: 'Activity', gps: 'Indoor/outdoor' };
+const MODEL_VIEWS = [
+  { key: 'both', label: 'Both models' },
+  { key: 'activity', label: 'Activity' },
+  { key: 'gps', label: 'Indoor/outdoor' },
+];
+
+/**
+ * Fill coverage by_date into one row per calendar day, ending today, so quiet days show as
+ * gaps. With a family, counts come from that model only.
+ */
+function dailySourceRows(byDate, days, dataWindow, family) {
   if (!byDate?.length) return [];
   const counts = new Map(byDate.map((row) => [row.date, row]));
   const now = new Date();
@@ -876,7 +902,8 @@ function dailySourceRows(byDate, days, dataWindow) {
   const rows = [];
   for (let t = first; t <= last; t += DAY_MS) {
     const date = new Date(t).toISOString().slice(0, 10);
-    const row = counts.get(date) || {};
+    const day = counts.get(date) || {};
+    const row = family ? day.by_family?.[family] || {} : day;
     rows.push({
       date,
       label: date.slice(5),
@@ -889,11 +916,122 @@ function dailySourceRows(byDate, days, dataWindow) {
 }
 
 /** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
-function DailySourcesChart({ byDate, selectedDay, onSelectDay, lastSyncDate, dataWindow }) {
+/** Round up to 1, 2 or 5 times a power of ten in about four steps, for an even axis. */
+function niceCeil(value) {
+  const rough = value / 4;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 5, 10].map((m) => m * power).find((m) => m >= rough);
+  return Math.ceil(value / step) * step;
+}
+
+function sourceTotals(rows) {
+  const sum = (key) => rows.reduce((acc, row) => acc + row[key], 0);
+  const matched = sum('matched');
+  const sessions = matched + sum('app_only');
+  return { matched, sessions, collarOnly: sum('collar_only') };
+}
+
+function SourceSummary({ label, totals }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm text-gray-700">
+      {label ? <span className="font-medium text-gray-900 w-28">{label}</span> : null}
+      <span>
+        <span className="font-semibold text-gray-900 tabular-nums">
+          {totals.sessions ? Math.round((totals.matched / totals.sessions) * 100) : 0}%
+        </span>{' '}
+        of {totals.sessions} sessions matched
+      </span>
+      <span className="text-gray-500">
+        <span className="tabular-nums">{totals.collarOnly}</span> collar logs with no session
+      </span>
+    </div>
+  );
+}
+
+function DailyBars({ rows, height, yMax, selectedDay, onSelectDay, lastSyncDate, showLegend }) {
+  return (
+    <div style={{ height }} className="[&_*:focus]:outline-none">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={rows}
+          margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
+          onClick={(state) => {
+            // Recharts 3 passes activeIndex; 2.x passed activePayload.
+            const date =
+              state?.activePayload?.[0]?.payload?.date || rows[Number(state?.activeIndex)]?.date;
+            if (date) onSelectDay(date === selectedDay ? null : date);
+          }}
+          style={{ cursor: 'pointer' }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
+          <YAxis
+            tick={{ fontSize: 12 }}
+            allowDecimals={false}
+            width={36}
+            domain={yMax ? [0, yMax] : [0, 'auto']}
+            tickCount={yMax ? 4 : 5}
+          />
+          <Tooltip
+            labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''}
+            formatter={(value, name) => {
+              const series = DAILY_SOURCE_SERIES.find((item) => item.name === name);
+              return [`${value} ${series ? series.unit : ''}`, name];
+            }}
+          />
+          {showLegend ? <Legend wrapperStyle={{ fontSize: 12 }} /> : null}
+          {lastSyncDate && rows.some((row) => row.date === lastSyncDate) ? (
+            <ReferenceLine
+              x={lastSyncDate.slice(5)}
+              stroke="#6B7280"
+              strokeDasharray="4 3"
+              label={{ value: 'Last sync', position: 'insideTopRight', fontSize: 11, fill: '#6B7280' }}
+            />
+          ) : null}
+          {DAILY_SOURCE_SERIES.map((series, index) => (
+            <Bar
+              key={series.key}
+              dataKey={series.key}
+              name={series.name}
+              stackId="sources"
+              fill={series.color}
+              radius={index === DAILY_SOURCE_SERIES.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
+            >
+              {rows.map((row) => (
+                <Cell
+                  key={row.date}
+                  fillOpacity={selectedDay && row.date !== selectedDay ? 0.3 : 1}
+                />
+              ))}
+            </Bar>
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/** Day-by-day: sessions with a collar log, sessions without one, and collar logs no session used. */
+function DailySourcesChart({
+  byDate,
+  selectedDay,
+  onSelectDay,
+  lastSyncDate,
+  dataWindow,
+  model,
+  onModelChange,
+}) {
   const [days, setDays] = useState(30);
-  const rows = useMemo(
-    () => dailySourceRows(byDate, days, dataWindow),
-    [byDate, days, dataWindow]
+  // Summaries built before the per-model split have no by_family.
+  const hasModels = Boolean(byDate?.some((row) => row.by_family));
+  const familyKey = !hasModels ? '' : model === 'both' ? 'activity,gps' : model;
+  const charts = useMemo(
+    () =>
+      (familyKey ? familyKey.split(',') : [null]).map((family) => ({
+        family,
+        rows: dailySourceRows(byDate, days, dataWindow, family),
+      })),
+    [byDate, days, dataWindow, familyKey]
   );
   if (!byDate) {
     return <p className="text-sm text-gray-500">Refresh to load daily counts.</p>;
@@ -901,92 +1039,82 @@ function DailySourcesChart({ byDate, selectedDay, onSelectDay, lastSyncDate, dat
   if (!byDate.length) {
     return <p className="text-sm text-gray-500">No dated sessions or collar logs yet.</p>;
   }
-  const sum = (key) => rows.reduce((acc, row) => acc + row[key], 0);
-  const matched = sum('matched');
-  const appOnly = sum('app_only');
-  const collarOnly = sum('collar_only');
-  const sessions = matched + appOnly;
+  const stacked = charts.length > 1;
+  // One scale for both models, so their bars compare.
+  const yMax = stacked
+    ? niceCeil(
+        Math.max(
+          1,
+          ...charts.flatMap((c) => c.rows.map((r) => r.matched + r.app_only + r.collar_only))
+        )
+      )
+    : null;
+  const segment = (options, current, onPick) => (
+    <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
+      {options.map((option) => (
+        <button
+          key={option.label}
+          type="button"
+          onClick={() => onPick(option.value)}
+          className={`px-2.5 py-1 ${
+            current === option.value ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-700">
-          <span>
-            <span className="font-semibold text-gray-900 tabular-nums">
-              {sessions ? Math.round((matched / sessions) * 100) : 0}%
-            </span>{' '}
-            of {sessions} sessions matched
-          </span>
-          <span className="text-gray-500">
-            <span className="tabular-nums">{collarOnly}</span> collar logs with no session
-          </span>
-        </div>
-        <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
-          {DAILY_SOURCE_RANGES.map((range) => (
-            <button
-              key={range.label}
-              type="button"
-              onClick={() => setDays(range.days)}
-              className={`px-2.5 py-1 ${
-                days === range.days ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              {range.label}
-            </button>
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div className="flex flex-col gap-1">
+          {charts.map((chart) => (
+            <SourceSummary
+              key={chart.family || 'all'}
+              label={stacked ? MODEL_LABELS[chart.family] : null}
+              totals={sourceTotals(chart.rows)}
+            />
           ))}
         </div>
+        <div className="flex flex-wrap gap-2">
+          {hasModels
+            ? segment(
+                MODEL_VIEWS.map((v) => ({ label: v.label, value: v.key })),
+                model,
+                onModelChange
+              )
+            : null}
+          {segment(
+            DAILY_SOURCE_RANGES.map((r) => ({ label: r.label, value: r.days })),
+            days,
+            setDays
+          )}
+        </div>
       </div>
-      <div style={{ height: 260 }} className="[&_*:focus]:outline-none">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={rows}
-            margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
-            onClick={(state) => {
-              // Recharts 3 passes activeIndex; 2.x passed activePayload.
-              const date =
-                state?.activePayload?.[0]?.payload?.date || rows[Number(state?.activeIndex)]?.date;
-              if (date) onSelectDay(date === selectedDay ? null : date);
-            }}
-            style={{ cursor: 'pointer' }}
-          >
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={16} />
-            <YAxis tick={{ fontSize: 12 }} allowDecimals={false} width={36} />
-            <Tooltip
-              labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ''}
-              formatter={(value, name) => {
-                const series = DAILY_SOURCE_SERIES.find((item) => item.name === name);
-                return [`${value} ${series ? series.unit : ''}`, name];
-              }}
-            />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            {lastSyncDate && rows.some((row) => row.date === lastSyncDate) ? (
-              <ReferenceLine
-                x={lastSyncDate.slice(5)}
-                stroke="#6B7280"
-                strokeDasharray="4 3"
-                label={{ value: 'Last sync', position: 'insideTopRight', fontSize: 11, fill: '#6B7280' }}
-              />
-            ) : null}
-            {DAILY_SOURCE_SERIES.map((series, index) => (
-              <Bar
-                key={series.key}
-                dataKey={series.key}
-                name={series.name}
-                stackId="sources"
-                fill={series.color}
-                radius={index === DAILY_SOURCE_SERIES.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-              >
-                {rows.map((row) => (
-                  <Cell
-                    key={row.date}
-                    fillOpacity={selectedDay && row.date !== selectedDay ? 0.3 : 1}
-                  />
-                ))}
-              </Bar>
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {charts.map((chart, index) => (
+        <div key={chart.family || 'all'}>
+          {stacked ? (
+            <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mt-1">
+              {MODEL_LABELS[chart.family]}
+            </div>
+          ) : null}
+          <DailyBars
+            rows={chart.rows}
+            height={stacked ? 170 : 260}
+            yMax={yMax}
+            selectedDay={selectedDay}
+            onSelectDay={onSelectDay}
+            lastSyncDate={lastSyncDate}
+            showLegend={index === charts.length - 1}
+          />
+        </div>
+      ))}
+      {!hasModels ? (
+        <p className="text-xs text-gray-400">Refresh to split this chart by model.</p>
+      ) : !stacked ? (
+        <p className="text-xs text-gray-400">{MODEL_LABELS[model]} model only.</p>
+      ) : null}
     </div>
   );
 }
@@ -1075,6 +1203,8 @@ function MismatchExplorer({
   collarInfo,
   reason,
   onClearReason,
+  model,
+  onClearModel,
 }) {
   const [tab, setTab] = useState('app');
   const [query, setQuery] = useState('');
@@ -1088,13 +1218,14 @@ function MismatchExplorer({
       const q = query.trim().toLowerCase();
       return rows.filter((row) => {
         if (selectedDay && String(row.timestamp || '').slice(0, 10) !== selectedDay) return false;
+        if (model && model !== 'both' && row.family !== model) return false;
         if (!q) return true;
         return fields.some((field) =>
           [].concat(row[field] || []).some((value) => String(value).toLowerCase().includes(q))
         );
       });
     },
-    [query, selectedDay]
+    [query, selectedDay, model]
   );
   const appRows = useMemo(
     () =>
@@ -1164,6 +1295,16 @@ function MismatchExplorer({
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2 pb-1.5">
+          {model && model !== 'both' ? (
+            <button
+              type="button"
+              onClick={onClearModel}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-900 text-white text-xs"
+              title="Show both models"
+            >
+              {MODEL_LABELS[model]} model ×
+            </button>
+          ) : null}
           {reason ? (
             <button
               type="button"
@@ -1883,6 +2024,8 @@ const LabelingDataDashboard = () => {
   const [showAllCollars, setShowAllCollars] = useState(false);
   const [mismatchDay, setMismatchDay] = useState(null);
   const [mismatchReason, setMismatchReason] = useState(null);
+  // Which model the daily chart and the mismatch list show: both, activity or gps.
+  const [mismatchModel, setMismatchModel] = useState('both');
   const mismatchRef = useRef(null);
   // null = closed, '' = all collars, otherwise one serial.
   const [filesCollar, setFilesCollar] = useState(null);
@@ -2694,6 +2837,7 @@ const LabelingDataDashboard = () => {
     clone,
     totals: collarTotals,
     reasons: missingReasons,
+    reasonsByFamily: collarCoverage?.missing_reasons_by_family,
     waitingOnSync,
   });
   const azureUnreadable = nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured';
@@ -3261,6 +3405,8 @@ const LabelingDataDashboard = () => {
               onSelectDay={setMismatchDay}
               lastSyncDate={lastAzureAt ? lastAzureAt.slice(0, 10) : null}
               dataWindow={data?.window}
+              model={mismatchModel}
+              onModelChange={setMismatchModel}
             />
             {mismatchDay ? (
               <button
@@ -3386,6 +3532,8 @@ const LabelingDataDashboard = () => {
             collarInfo={collarInfo}
             reason={mismatchReason}
             onClearReason={() => setMismatchReason(null)}
+            model={mismatchModel}
+            onClearModel={() => setMismatchModel('both')}
           />
         </ChartCard>
       </div>

@@ -118,10 +118,11 @@ def test_match_coverage_by_date_splits_matched_app_only_and_collar_only():
         },
     ]
     coverage = match_coverage(sessions, files, pad_sec=60)
+    activity = lambda m, a, c: {"activity": {"matched": m, "app_only": a, "collar_only": c}}  # noqa: E731
     assert coverage["by_date"] == [
-        {"date": "2026-04-20", "matched": 0, "app_only": 1, "collar_only": 0},
-        {"date": "2026-04-21", "matched": 1, "app_only": 1, "collar_only": 0},
-        {"date": "2026-04-22", "matched": 0, "app_only": 0, "collar_only": 1},
+        {"date": "2026-04-20", "matched": 0, "app_only": 1, "collar_only": 0, "by_family": activity(0, 1, 0)},
+        {"date": "2026-04-21", "matched": 1, "app_only": 1, "collar_only": 0, "by_family": activity(1, 1, 0)},
+        {"date": "2026-04-22", "matched": 0, "app_only": 0, "collar_only": 1, "by_family": activity(0, 0, 1)},
     ]
     by_reason = {row["reason"]: row for row in coverage["mismatched_sessions"]}
     assert set(by_reason) == {"time_gap", "unknown_sn", "bad_timestamp"}
@@ -229,3 +230,27 @@ def test_match_coverage_other_type_only_is_its_own_reason():
     # The unused GPS log has no GPS session to point at either.
     [log] = coverage["collar_only_logs"]
     assert log["nearest_session_delta_sec"] is None
+
+
+def test_match_coverage_splits_days_and_reasons_by_model():
+    files = [
+        _file("sn1", "activity", datetime(2026, 5, 1, 10, 0, 0)),
+        _file("sn1", "gps", datetime(2026, 5, 1, 20, 0, 0)),
+    ]
+    sessions = [
+        {"user": "a@x.com", "collar_sn": "sn1", "family": "activity",
+         "timestamp": "2026-05-01T10:00:00", "duration_seconds": 10},
+        {"user": "a@x.com", "collar_sn": "sn1", "family": "gps",
+         "timestamp": "2026-05-01T12:00:00", "duration_seconds": 10},
+    ]
+    coverage = match_coverage(sessions, files, pad_sec=60)
+    [day] = coverage["by_date"]
+    assert day["by_family"] == {
+        "activity": {"matched": 1, "app_only": 0, "collar_only": 0},
+        "gps": {"matched": 0, "app_only": 1, "collar_only": 1},
+    }
+    assert coverage["missing_reasons_by_family"]["gps"]["time_gap"] == 1
+    assert coverage["totals_by_family"] == {
+        "activity": {"sessions": 1, "matched": 1, "missing": 0},
+        "gps": {"sessions": 1, "matched": 0, "missing": 1},
+    }

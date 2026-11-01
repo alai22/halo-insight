@@ -269,6 +269,26 @@ def match_coverage(
     by_date: Dict[str, Dict[str, int]] = defaultdict(
         lambda: {"matched": 0, "app_only": 0, "collar_only": 0}
     )
+    # The same counts per session family (activity = posture model, gps = indoor/outdoor).
+    by_date_family: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: {"matched": 0, "app_only": 0, "collar_only": 0})
+    )
+    reasons_by_family: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {key: 0 for key in missing_reasons}
+    )
+    totals_by_family: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {"sessions": 0, "matched": 0, "missing": 0}
+    )
+
+    def _day_add(when: datetime, field: str, fam: str) -> None:
+        key = when.date().isoformat()
+        by_date[key][field] += 1
+        by_date_family[key][fam][field] += 1
+
+    def _missing(reason: str, fam: str) -> None:
+        missing_reasons[reason] += 1
+        reasons_by_family[fam][reason] += 1
+        totals_by_family[fam]["missing"] += 1
     used_files = set()
     sessions_by_file: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     # Every unmatched session and its closest log on the same collar, for debugging on the dashboard.
@@ -314,6 +334,7 @@ def match_coverage(
         else:
             sn = sanitize_collar_sn(raw_sn)
         family = session.get("family") or "activity"
+        totals_by_family[family]["sessions"] += 1
         duration = float(session.get("duration_seconds") or 0.0)
         user = by_user.setdefault(
             email,
@@ -334,11 +355,11 @@ def match_coverage(
         if not sn or sn == UNKNOWN_COLLAR_SN:
             unknown_start = parse_session_timestamp(session.get("timestamp") or "")
             if unknown_start is not None:
-                by_date[unknown_start.date().isoformat()]["app_only"] += 1
+                _day_add(unknown_start, "app_only", family)
             totals["unknown_sn"] += 1
             totals["missing"] += 1
             totals["missing_seconds"] += duration
-            missing_reasons["unknown_sn"] += 1
+            _missing("unknown_sn", family)
             sn_row["missing"] += 1
             sn_row["unknown_sn"] += 1
             user["unknown_sn_sessions"] += 1
@@ -374,7 +395,7 @@ def match_coverage(
         if start is None:
             totals["missing"] += 1
             totals["missing_seconds"] += duration
-            missing_reasons["bad_timestamp"] += 1
+            _missing("bad_timestamp", family)
             sn_row["missing"] += 1
             sn_row["bad_timestamp"] += 1
             user["missing_sessions"] += 1
@@ -412,21 +433,21 @@ def match_coverage(
         window_end = start + timedelta(seconds=window_dur) + pad
         candidates = by_sn_family.get((sn, family)) or []
         hits = [b for b in candidates if window_start <= b.when <= window_end]
-        day = by_date[start.date().isoformat()]
         if hits:
             used_files.update(id(b) for b in hits)
             for blob in hits:
                 sessions_by_file[id(blob)].append(
                     {"email": email, "timestamp": session.get("timestamp"), "family": family}
                 )
-            day["matched"] += 1
+            _day_add(start, "matched", family)
+            totals_by_family[family]["matched"] += 1
             totals["matched"] += 1
             totals["matched_seconds"] += duration
             sn_row["matched"] += 1
             user["matched_sessions"] += 1
             user["matched_seconds"] += duration
         else:
-            day["app_only"] += 1
+            _day_add(start, "app_only", family)
             if candidates:
                 reason = "time_gap"
             elif any(b.collar_sn == sn for b in files_list):
@@ -436,7 +457,7 @@ def match_coverage(
                 reason = "no_blobs_for_sn"
             totals["missing"] += 1
             totals["missing_seconds"] += duration
-            missing_reasons[reason] += 1
+            _missing(reason, family)
             sn_row["missing"] += 1
             sn_row[reason] += 1
             user["missing_sessions"] += 1
@@ -482,7 +503,7 @@ def match_coverage(
     for blob in counted_files:
         _touch_sn(blob.collar_sn)["s3_files"] += 1
         if id(blob) not in used_files:
-            by_date[blob.when.date().isoformat()]["collar_only"] += 1
+            _day_add(blob.when, "collar_only", blob.family)
             on_sn = sessions_by_sn.get(blob.collar_sn) or []
             nearest = _nearest(
                 blob.when, [(at, item) for at, item in on_sn if item["family"] == blob.family]
@@ -517,10 +538,19 @@ def match_coverage(
             "sns": len({b.collar_sn for b in counted_files}),
         },
         "missing_reasons": missing_reasons,
+        "missing_reasons_by_family": {fam: dict(r) for fam, r in reasons_by_family.items()},
+        "totals_by_family": {fam: dict(t) for fam, t in totals_by_family.items()},
         "by_user": users_out,
         "by_sn": by_sn_out,
         # Matched and app_only count sessions; collar_only counts AI files no session used.
-        "by_date": [{"date": d, **by_date[d]} for d in sorted(by_date)],
+        "by_date": [
+            {
+                "date": d,
+                **by_date[d],
+                "by_family": {fam: dict(c) for fam, c in by_date_family[d].items()},
+            }
+            for d in sorted(by_date)
+        ],
         "mismatched_sessions": mismatched_sessions,
         "collar_only_logs": collar_only_logs,
         # Every mirrored file with the sessions it matched, for browsing collar-raw/ per collar.
