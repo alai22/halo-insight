@@ -77,7 +77,10 @@ _PROCESS_STATE: Dict[str, Any] = {
     "message": None,
     "progress": None,
 }
-_STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
+# A running job re-saves its state every minute. One that has not for 5 minutes died
+# (usually a deploy restarted the container) and no longer blocks other work.
+_HEARTBEAT_SEC = 60
+_STALE_HEARTBEAT_SEC = 5 * 60
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
 # Who each collar belongs to, edited on the dashboard. Kept in S3, not the repo.
 _COLLAR_OWNERS_KEY = "labeling-jobs/collar_owners.json"
@@ -431,6 +434,11 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
             "data": entry["payload"],
         })
     started = _maybe_start_window_refresh(window)
+    blocked_by = None if started else _blocking_job()
+    if not started:
+        logger.info(
+            "Deferring labeling range %s until %s finishes", key, (blocked_by or {}).get("job")
+        )
     return jsonify({
         "success": True,
         "pending": True,
@@ -438,6 +446,7 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
         "stale": True,
         "generated_at": generated_iso,
         "data": entry["payload"] if entry else None,
+        "blocked_by": blocked_by,
         "message": (
             "Building stats for this date range in the background."
             if started
@@ -555,20 +564,24 @@ def _merge_process_state() -> Dict[str, Any]:
     persisted = _load_persisted_process_state()
     if not persisted:
         return mem
-    # If S3 says running but started long ago, treat as stale
-    if persisted.get("running") and persisted.get("started_at"):
+    # S3 says running but this process is not: trust it only while it keeps beating.
+    beat = persisted.get("updated_at") or persisted.get("started_at")
+    if persisted.get("running") and beat:
         try:
-            started = datetime.strptime(
-                persisted["started_at"], "%Y-%m-%dT%H:%M:%SZ"
-            ).replace(tzinfo=timezone.utc)
-            age = (datetime.now(timezone.utc) - started).total_seconds()
-            if age > _STALE_RUNNING_SEC:
+            last = datetime.strptime(beat, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            silent = (datetime.now(timezone.utc) - last).total_seconds()
+            if silent > _STALE_HEARTBEAT_SEC:
+                logger.warning(
+                    "Labeling job %s stopped reporting %ds ago; treating it as not running",
+                    persisted.get("job"),
+                    int(silent),
+                )
                 persisted = {
                     **persisted,
                     "running": False,
                     "last_error": persisted.get("last_error")
-                    or "Process marked stale (exceeded 2h); you can start again.",
-                    "message": "Stale job cleared",
+                    or "Job stopped reporting (likely interrupted by a restart); you can start again.",
+                    "message": "Interrupted job cleared",
                 }
         except Exception:  # noqa: BLE001
             pass
@@ -581,6 +594,7 @@ def _merge_process_state() -> Dict[str, Any]:
             "job": persisted.get("job"),
             "started_at": persisted.get("started_at"),
             "finished_at": persisted.get("finished_at"),
+            "updated_at": persisted.get("updated_at"),
             "last_error": persisted.get("last_error"),
             "last_report": persisted.get("last_report"),
             "message": persisted.get("message"),
@@ -589,12 +603,51 @@ def _merge_process_state() -> Dict[str, Any]:
     )
 
 
+_HEARTBEAT_THREAD: Optional[threading.Thread] = None
+
+
+def _heartbeat_loop() -> None:
+    while True:
+        time.sleep(_HEARTBEAT_SEC)
+        with _PROCESS_LOCK:
+            if not _PROCESS_STATE["running"]:
+                return
+            snap = _process_fields()
+        _persist_process_state(snap)
+
+
+def _ensure_heartbeat() -> None:
+    """Keep the S3 state fresh while a job runs, even through long silent phases."""
+    global _HEARTBEAT_THREAD
+    with _PROCESS_LOCK:
+        if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():
+            return
+        _HEARTBEAT_THREAD = threading.Thread(target=_heartbeat_loop, daemon=True)
+        _HEARTBEAT_THREAD.start()
+
+
 def _set_process_state(**kwargs: Any) -> Dict[str, Any]:
     with _PROCESS_LOCK:
         _PROCESS_STATE.update(kwargs)
         snap = _process_fields()
     _persist_process_state(snap)
+    if snap["running"]:
+        _ensure_heartbeat()
     return _annotate_runtime(snap)
+
+
+def _blocking_job() -> Optional[Dict[str, Any]]:
+    """The job a deferred summary is waiting on, for the dashboard to name."""
+    state = _merge_process_state()
+    if not state.get("running"):
+        return None
+    return {
+        "job": state.get("job"),
+        "started_at": state.get("started_at"),
+        "updated_at": state.get("updated_at"),
+        "message": state.get("message"),
+        "progress": state.get("progress"),
+    }
 
 
 def _progress_callback(job: str):
@@ -1907,6 +1960,7 @@ def labeling_summary():
                 "stale": True,
                 "generated_at": entry.get("generated_at_iso") if entry else None,
                 "data": entry["data"] if entry else None,
+                "blocked_by": None if started else _blocking_job(),
                 "message": message,
             }
         )

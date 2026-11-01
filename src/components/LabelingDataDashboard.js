@@ -3063,8 +3063,31 @@ function describeRange(range) {
   return 'all time';
 }
 
+const JOB_LABELS = {
+  process: 'Process staging',
+  'promote-forwards': 'Promote forwards',
+  'sync-collar': 'Collar sync',
+  'compact-staging': 'Remove copies',
+};
+
+function minutesSince(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
+/** "Collar sync · started 14 min ago · 340/900" for a job a summary is waiting on. */
+function describeBlockingJob(job) {
+  if (!job) return null;
+  const parts = [JOB_LABELS[job.job] || 'A labeling job'];
+  const mins = minutesSince(job.started_at);
+  if (mins !== null) parts.push(mins < 1 ? 'started just now' : `started ${mins} min ago`);
+  const progress = job.progress;
+  if (progress?.total > 0) parts.push(`${progress.done}/${progress.total}`);
+  return parts.join(' · ');
+}
+
 /** Start and end date for every stat on the page, with quick presets. */
-function DateRangeBar({ range, onChange, building, ready, error, onRetry }) {
+function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRetry }) {
   const today = localDayOffset(0);
   const presets = [
     { label: 'All time', start: '', end: '' },
@@ -3123,7 +3146,9 @@ function DateRangeBar({ range, onChange, building, ready, error, onRetry }) {
         ) : building ? (
           <span className="inline-flex items-center gap-1.5">
             <RefreshCw className="h-3 w-3 animate-spin" />
-            Building stats for this range ({describeRange(range)})…
+            {waitingOn
+              ? `Range stats wait for ${waitingOn}`
+              : `Building stats for this range (${describeRange(range)})…`}
           </span>
         ) : ready && (range.start || range.end) ? (
           `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
@@ -3213,6 +3238,9 @@ const LabelingDataDashboard = () => {
   const [generatedAt, setGeneratedAt] = useState(stored?.generatedAt || null);
   const [summaryPending, setSummaryPending] = useState(false);
   const [summaryMessage, setSummaryMessage] = useState(null);
+  // The job a pending summary is waiting on, and when we last asked the server.
+  const [summaryBlockedBy, setSummaryBlockedBy] = useState(null);
+  const [summaryCheckedAt, setSummaryCheckedAt] = useState(null);
   const [expandedUser, setExpandedUser] = useState(null);
   const wasProcessingRef = useRef(false);
   const autoPromoteAttemptedRef = useRef(false);
@@ -3306,6 +3334,7 @@ const LabelingDataDashboard = () => {
       if (response.data.success && response.data.error) {
         setRangeError(response.data.error);
         setSummaryPending(false);
+        setSummaryBlockedBy(null);
         setStale(false);
         return false;
       }
@@ -3318,6 +3347,8 @@ const LabelingDataDashboard = () => {
         const nextStale = Boolean(response.data.stale) || pending;
         setSummaryPending(pending);
         setSummaryMessage(response.data.message || null);
+        setSummaryBlockedBy(pending ? response.data.blocked_by || null : null);
+        setSummaryCheckedAt(Date.now());
         setCached(nextCached);
         setStale(nextStale);
         if (nextGenerated) setGeneratedAt(nextGenerated);
@@ -3601,12 +3632,18 @@ const LabelingDataDashboard = () => {
     const id = setInterval(async () => {
       attempts += 1;
       // A full scan can take several minutes. Keep the last charts up meanwhile.
+      // Waiting on a running job does not count toward giving up.
       if (cancelled || attempts > 60) {
         clearInterval(id);
         if (!cancelled && rangeActive) {
           setSummaryPending(false);
+          setSummaryBlockedBy(null);
           setStale(false);
           setRangeError('Stats for this range are still building on the server.');
+        } else if (!cancelled) {
+          // Stop the spinner instead of leaving it up with no poll behind it.
+          setSummaryPending(false);
+          setError('The summary is still building on the server. Use Refresh to check again.');
         }
         return;
       }
@@ -3616,12 +3653,17 @@ const LabelingDataDashboard = () => {
         if (response.data.error) {
           setRangeError(response.data.error);
           setSummaryPending(false);
+          setSummaryBlockedBy(null);
           setStale(false);
           clearInterval(id);
           return;
         }
         const pending = Boolean(response.data.pending);
         setSummaryPending(pending);
+        setSummaryMessage(response.data.message || null);
+        setSummaryBlockedBy(pending ? response.data.blocked_by || null : null);
+        setSummaryCheckedAt(Date.now());
+        if (pending && response.data.blocked_by) attempts = 0;
         if (response.data.data && !pending && !response.data.stale) {
           setData(response.data.data);
           setCached(Boolean(response.data.cached));
@@ -4044,14 +4086,40 @@ const LabelingDataDashboard = () => {
         <div className="text-center">
           <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
           <p className="text-gray-600">
-            {summaryPending ? 'Building the summary in the background…' : 'Loading labeling data from S3...'}
+            {summaryBlockedBy
+              ? `Waiting for ${JOB_LABELS[summaryBlockedBy.job] || 'a labeling job'} to finish…`
+              : summaryPending
+                ? 'Building the summary in the background…'
+                : 'Loading labeling data from S3...'}
           </p>
           <p className="text-xs text-gray-400 mt-2">
-            {summaryMessage ||
-              (summaryPending
-                ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
-                : 'Scanning extracted-txt and summing durations')}
+            {summaryBlockedBy
+              ? `${rangeActive ? 'Stats for this date range' : 'The summary'} start building once it is done.`
+              : summaryMessage ||
+                (summaryPending
+                  ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
+                  : 'Scanning extracted-txt and summing durations')}
           </p>
+          {summaryBlockedBy ? (
+            <p className="text-xs text-gray-500 mt-3">
+              {describeBlockingJob(summaryBlockedBy)}
+              {summaryBlockedBy.message ? ` · ${summaryBlockedBy.message}` : ''}
+            </p>
+          ) : null}
+          {summaryPending && summaryCheckedAt ? (
+            <p className="text-xs text-gray-400 mt-1">
+              Last checked {new Date(summaryCheckedAt).toLocaleTimeString()} · checking every 5 seconds
+            </p>
+          ) : null}
+          {summaryPending && rangeActive ? (
+            <button
+              type="button"
+              onClick={() => changeRange({ start: '', end: '' })}
+              className="mt-4 px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50"
+            >
+              Show all time instead
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -4183,6 +4251,7 @@ const LabelingDataDashboard = () => {
         range={range}
         onChange={changeRange}
         building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
+        waitingOn={describeBlockingJob(summaryBlockedBy)}
         ready={dataMatchesRange}
         error={rangeError}
         onRetry={() => {

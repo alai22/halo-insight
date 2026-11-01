@@ -579,3 +579,67 @@ def test_health_page_reads_like_a_status_page():
     assert "14h 33m ago" in html
     assert "697 MB now · peak 697 MB" in html
     assert "Idle" in html and ">OK<" in html
+
+
+def _iso(seconds_ago):
+    import time as _time
+
+    return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() - seconds_ago))
+
+
+def _persisted_job(monkeypatch, beat_seconds_ago):
+    monkeypatch.setattr(routes, "_process_snapshot", lambda: {"running": False})
+    monkeypatch.setattr(
+        routes,
+        "_load_persisted_process_state",
+        lambda: {
+            "running": True,
+            "job": "sync-collar",
+            "started_at": _iso(3600),
+            "updated_at": _iso(beat_seconds_ago),
+            "message": "Copying collar logs",
+            "progress": {"phase": "copy", "done": 340, "total": 900},
+        },
+    )
+
+
+def test_job_that_stopped_heartbeating_no_longer_blocks(monkeypatch):
+    _persisted_job(monkeypatch, beat_seconds_ago=routes._STALE_HEARTBEAT_SEC + 60)
+    assert routes._is_process_busy() is False
+    state = routes._merge_process_state()
+    assert "interrupted" in state["last_error"]
+
+
+def test_job_that_keeps_heartbeating_still_blocks(monkeypatch):
+    # Started an hour ago, but beat a minute ago: a long job, not a dead one.
+    _persisted_job(monkeypatch, beat_seconds_ago=60)
+    assert routes._is_process_busy() is True
+
+
+def test_deferred_range_names_the_job_it_waits_on(monkeypatch):
+    _persisted_job(monkeypatch, beat_seconds_ago=30)
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_CACHE.clear()
+        routes._WINDOW_ERRORS.clear()
+    body = _client().get(
+        "/api/labeling/summary?start=2026-08-01&end=2026-08-31", headers=_admin_headers()
+    ).get_json()
+    assert body["pending"] is True
+    assert body["blocked_by"]["job"] == "sync-collar"
+    assert body["blocked_by"]["progress"]["total"] == 900
+
+
+def test_heartbeat_resaves_state_while_a_job_runs(monkeypatch):
+    saved = []
+    monkeypatch.setattr(routes, "_HEARTBEAT_SEC", 0.01)
+    monkeypatch.setattr(routes, "_persist_process_state", lambda snap: saved.append(snap["running"]))
+    monkeypatch.setattr(routes, "_HEARTBEAT_THREAD", None)
+    routes._set_process_state(running=True, job="process")
+    import time as _time
+
+    _time.sleep(0.1)
+    beats = len(saved)
+    routes._set_process_state(running=False)
+    _time.sleep(0.05)
+    assert beats >= 3
+    assert routes._HEARTBEAT_THREAD is None or not routes._HEARTBEAT_THREAD.is_alive()
