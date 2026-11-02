@@ -26,7 +26,7 @@ def _resp(text):
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_partial_when_title_scan_fails(mock_get_container, client, monkeypatch):
+def test_backlog_overview_partial_when_title_scan_fails(mock_get_container, auth_client, monkeypatch):
     monkeypatch.setenv('JIRA_BACKLOG_OVERVIEW_DEEP_PASS', '0')
     monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '1')
 
@@ -45,7 +45,7 @@ def test_backlog_overview_partial_when_title_scan_fails(mock_get_container, clie
     container.get_claude_service.return_value = mock_claude
     mock_get_container.return_value = container
 
-    rv = client.post(
+    rv = auth_client.post(
         '/api/jira/backlog-overview',
         json={'issues': [_issue()]},
         content_type='application/json',
@@ -59,7 +59,7 @@ def test_backlog_overview_partial_when_title_scan_fails(mock_get_container, clie
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_structured_error_on_pass1(mock_get_container, client):
+def test_backlog_overview_structured_error_on_pass1(mock_get_container, auth_client):
     mock_claude = MagicMock()
     from backend.core.exceptions import RateLimitError
 
@@ -69,7 +69,7 @@ def test_backlog_overview_structured_error_on_pass1(mock_get_container, client):
     container.get_claude_service.return_value = mock_claude
     mock_get_container.return_value = container
 
-    rv = client.post(
+    rv = auth_client.post(
         '/api/jira/backlog-overview',
         json={'issues': [_issue()]},
         content_type='application/json',
@@ -83,7 +83,7 @@ def test_backlog_overview_structured_error_on_pass1(mock_get_container, client):
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, client, monkeypatch):
+def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, auth_client, monkeypatch):
     monkeypatch.setenv('JIRA_BACKLOG_OVERVIEW_DEEP_PASS', '0')
     monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_ENABLED', '1')
     monkeypatch.setenv('JIRA_BACKLOG_TITLE_REWRITE_DISABLED', '0')
@@ -104,7 +104,7 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
     container.get_claude_service.return_value = mock_claude
     mock_get_container.return_value = container
 
-    rv = client.post(
+    rv = auth_client.post(
         '/api/jira/backlog-overview?stream=1',
         json={'issues': [_issue()]},
         content_type='application/json',
@@ -133,7 +133,7 @@ def test_backlog_overview_stream_emits_progress_and_result(mock_get_container, c
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, client):
+def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, auth_client):
     """Terminal meta includes ai_coverage counts for shortlist → scorecard path."""
     pass1 = _resp('## Themes\nx\n')
     shortlist = _resp('{"keys":["HALO-1"]}')
@@ -169,7 +169,7 @@ def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, client)
         JIRA_BACKLOG_OVERVIEW_DEEP_PASS_ENABLED=False,
         JIRA_BACKLOG_TITLE_REWRITE_ENABLED=False,
     ):
-        rv = client.post(
+        rv = auth_client.post(
             '/api/jira/backlog-overview',
             json={'issues': [_issue()]},
             content_type='application/json',
@@ -191,7 +191,7 @@ def test_backlog_overview_ai_coverage_with_scorecard(mock_get_container, client)
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_scorecard_parse_failure_includes_raw_debug(mock_get_container, client):
+def test_backlog_overview_scorecard_parse_failure_includes_raw_debug(mock_get_container, auth_client):
     """Invalid scorecard JSON attaches bounded pass2 excerpt in meta for debugging."""
     pass1 = _resp('## Themes\nx\n')
     shortlist = _resp('{"keys":["HALO-1"]}')
@@ -214,7 +214,7 @@ def test_backlog_overview_scorecard_parse_failure_includes_raw_debug(mock_get_co
         JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE=True,
         JIRA_TRIAGE_SCORECARD_FAILURE_RAW_MAX_CHARS=100,
     ):
-        rv = client.post(
+        rv = auth_client.post(
             '/api/jira/backlog-overview',
             json={'issues': [_issue()]},
             content_type='application/json',
@@ -234,7 +234,7 @@ def test_backlog_overview_scorecard_parse_failure_includes_raw_debug(mock_get_co
 
 
 @patch('app.get_service_container')
-def test_backlog_overview_scorecard_parse_failure_omits_raw_when_disabled(mock_get_container, client):
+def test_backlog_overview_scorecard_parse_failure_omits_raw_when_disabled(mock_get_container, auth_client):
     """When EXPOSE_RAW_ON_FAILURE is false, meta does not include raw excerpts."""
     pass1 = _resp('## Themes\nx\n')
     shortlist = _resp('{"keys":["HALO-1"]}')
@@ -255,7 +255,7 @@ def test_backlog_overview_scorecard_parse_failure_omits_raw_when_disabled(mock_g
         JIRA_BACKLOG_TITLE_REWRITE_ENABLED=False,
         JIRA_TRIAGE_SCORECARD_EXPOSE_RAW_ON_FAILURE=False,
     ):
-        rv = client.post(
+        rv = auth_client.post(
             '/api/jira/backlog-overview',
             json={'issues': [_issue()]},
             content_type='application/json',

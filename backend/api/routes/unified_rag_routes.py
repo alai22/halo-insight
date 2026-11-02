@@ -3,6 +3,7 @@ API routes for unified RAG-powered analysis across all data sources
 """
 
 from flask import Blueprint, request, jsonify, g
+from ..middleware.auth import require_auth
 from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
@@ -14,6 +15,7 @@ unified_rag_bp = Blueprint('unified_rag', __name__, url_prefix='/api/unified')
 
 
 @unified_rag_bp.route('/ask', methods=['POST'])
+@require_auth
 def unified_ask():
     """Ask Claude about data across all sources (Gladly, Survicate, Zoom)"""
     service_container = getattr(g, 'service_container', None)

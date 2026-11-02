@@ -16,6 +16,7 @@ from typing import Dict, Optional
 import logging
 from dotenv import load_dotenv
 
+from backend.api.middleware.auth import require_admin_auth
 from backend.services.zoom_download_service import ZoomDownloadService
 from backend.services.zoom_api_client import ZoomAPIClient
 from backend.utils.config import Config
@@ -57,6 +58,7 @@ download_thread: Optional[threading.Thread] = None
 
 
 @zoom_bp.route('/download/status', methods=['GET'])
+@require_admin_auth
 def get_download_status():
     """Get current download status"""
     try:
@@ -117,6 +119,7 @@ def get_download_status():
 
 
 @zoom_bp.route('/download/start', methods=['POST'])
+@require_admin_auth
 def start_download():
     """Start a new download"""
     global download_service, download_thread, download_state
@@ -223,6 +226,7 @@ def start_download():
 
 
 @zoom_bp.route('/download/stop', methods=['POST'])
+@require_admin_auth
 def stop_download():
     """Stop the current download"""
     global download_state
@@ -251,6 +255,7 @@ def stop_download():
 
 
 @zoom_bp.route('/download/stats', methods=['GET'])
+@require_admin_auth
 def get_download_stats():
     """Get overall download statistics"""
     global download_service
@@ -279,6 +284,7 @@ def get_download_stats():
 
 
 @zoom_bp.route('/download/history', methods=['GET'])
+@require_admin_auth
 def get_download_history():
     """Get download file history"""
     global download_service
@@ -312,6 +318,7 @@ def get_download_history():
 
 
 @zoom_bp.route('/status', methods=['GET'])
+@require_admin_auth
 def get_zoom_status():
     """Get Zoom API credentials status (without exposing actual values)"""
     try:
