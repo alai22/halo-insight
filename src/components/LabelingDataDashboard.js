@@ -3275,10 +3275,15 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
   const today = localDayOffset(0);
+  // "Last N days" are whole days ending yesterday, the same periods the Slack recap uses,
+  // so the rankings here match what it posts.
+  const yesterday = localDayOffset(1);
   const presets = [
     { label: 'All time', start: '', end: '' },
-    { label: 'Last 30 days', start: localDayOffset(29), end: '' },
-    { label: 'Last 90 days', start: localDayOffset(89), end: '' },
+    { label: 'Yesterday', start: yesterday, end: yesterday },
+    { label: 'Last 7 days', start: localDayOffset(7), end: yesterday },
+    { label: 'Last 30 days', start: localDayOffset(30), end: yesterday },
+    { label: 'Last 90 days', start: localDayOffset(90), end: yesterday },
     { label: 'This year', start: `${today.slice(0, 4)}-01-01`, end: '' },
   ];
   const active = presets.find((p) => p.start === range.start && p.end === range.end);
@@ -3376,6 +3381,9 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
             ) : (
               'Every session and collar log.'
             )}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">
+            Yesterday and &ldquo;Last N days&rdquo; end yesterday, matching the Slack recap.
           </p>
         </div>
       ) : null}
