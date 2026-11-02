@@ -1567,6 +1567,8 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
   const prevLabel = allTime
     ? 'the 7 days before'
     : `${formatShortDay(change.previous_start)} – ${formatShortDay(change.previous_end)}`;
+  // The leaderboards cover the dashboard's date range; the Slack recap picks its own period.
+  const rankedOver = allTime ? 'over all time' : `from ${rangeLabel}`;
   const minutes = (s) => formatSecondsShort(s);
   const attention =
     nextStep && !nextStep.loading && nextStep.tone !== 'ok' ? nextStep : null;
@@ -1666,7 +1668,11 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
       </ChartCard>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
-        <ChartCard title="Top dogs" description="The good dogs, ranked by labeled time, with their people.">
+        <ChartCard
+          kicker={rangeLabel}
+          title="Top dogs"
+          description={`The good dogs, ranked by labeled time ${rankedOver}, with their people.`}
+        >
           <ShoutOutList
             empty="No named dogs in this range."
             showAll={showAllShoutOuts}
@@ -1682,8 +1688,9 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
           />
         </ChartCard>
         <ChartCard
+          kicker={rangeLabel}
           title="Top people"
-          description="Owners and labelers, ranked by labeled time. The list Slack posts."
+          description={`Owners and labelers, ranked by labeled time ${rankedOver}. The Slack recap ranks the same way for the day, week or month it covers, so it can differ.`}
           action={onEditLabelers ? <EditLabelersButton onClick={onEditLabelers} /> : null}
         >
           <ShoutOutList
