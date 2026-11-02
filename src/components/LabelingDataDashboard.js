@@ -2785,6 +2785,70 @@ function formatFileSize(bytes) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Why emailed logs may be missing: Make.com stopped uploading, or uploads landed
+ * where Process staging can't read them.
+ */
+function UploadsAlert({ uploads, stale }) {
+  const [open, setOpen] = useState(false);
+  const recent = uploads?.unreadable_recent_count || 0;
+  if (!uploads || (!stale && !recent)) return null;
+  const rows = uploads.unreadable || [];
+  return (
+    <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-950">
+      {stale ? (
+        <p>
+          <span className="font-medium">
+            {uploads.last_upload_at
+              ? `No new uploads from Make.com since ${formatUpdatedAt(uploads.last_upload_at)} (${formatAge(uploads.last_upload_at)}).`
+              : 'No uploads from Make.com found in staging.'}
+          </span>{' '}
+          If labelers emailed logs since then, check the Make scenario: it stops when it runs out of
+          operations, and emails from that time may need a re-run from that date.
+        </p>
+      ) : null}
+      {recent ? (
+        <div className={stale ? 'mt-2' : ''}>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="font-medium underline decoration-amber-400 hover:text-amber-800 text-left"
+          >
+            {recent} upload{recent === 1 ? '' : 's'} in the last {uploads.unreadable_recent_days} days
+            can&rsquo;t be read
+          </button>
+          <span className="text-amber-900/80">
+            {' '}
+            · these emails left no session files Process staging can use.
+          </span>
+          {open ? (
+            <div className="mt-2">
+              <ul className="space-y-2 text-xs">
+                {rows.map((b) => (
+                  <li key={`${b.folder}/${b.message_id}`} className="border-t border-amber-200 pt-2">
+                    <div className="font-mono break-all">
+                      {b.folder}/{b.message_id}
+                    </div>
+                    <div className="text-amber-900/80">
+                      {b.received_at ? `Email received ${formatUpdatedAt(b.received_at)}` : 'Email time unknown'}
+                      {b.uploaded_at ? ` · uploaded ${formatUpdatedAt(b.uploaded_at)}` : ''}
+                    </div>
+                    <div>{b.reason}</div>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-amber-900/80">
+                Re-run the Make scenario from the email&rsquo;s date, or ask the labeler to send it
+                again. Process staging skips duplicates, so a re-send is safe.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Side panel listing the AI logs mirrored into collar-raw/, per collar, with the sessions each one matched. */
 function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClose, collarInfo }) {
   const [usage, setUsage] = useState('all');
@@ -4345,6 +4409,10 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   const stagingEmails = Object.keys(status?.staging_by_email || {});
   const outputEmails = status?.output_emails || [];
   const unprocessedEmails = stagingEmails.filter((e) => !outputEmails.includes(e));
+  // Make.com uploads: when the last one landed, and recent ones Process can't read.
+  const uploads = status?.uploads || null;
+  const uploadsStale = Boolean(uploads?.stale) && !statusFromCache;
+  const unreadableRecent = uploads?.unreadable_recent_count || 0;
   const userChartHeight = Math.max(220, userContributionData.length * 48 + 48);
   const gpsUserChartHeight = Math.max(180, gpsUserContributionData.length * 48 + 48);
   const hasGps =
@@ -4522,7 +4590,9 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   const healthNeedsAttention =
     (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
     stagingHealthActionable ||
-    gmailIngestAttention(status?.gmail_ingest);
+    gmailIngestAttention(status?.gmail_ingest) ||
+    uploadsStale ||
+    unreadableRecent > 0;
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -5069,15 +5139,26 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                     pendingForwards?.pending_count
                       ? ` · ${pendingForwards.pending_count} forwards waiting`
                       : ''
-                  }`}
+                  }${uploads?.last_upload_at ? ` · last upload ${formatAge(uploads.last_upload_at)}` : ''}`}
                   state={
                     unprocessedEmails.length
                       ? 'Ready to summarize'
                       : pendingForwards?.pending_count
                         ? 'Forwards waiting to promote'
-                        : 'No new labelers waiting'
+                        : uploadsStale
+                          ? `No uploads for ${uploads.stale_after_hours}h+ · check Make.com`
+                          : unreadableRecent
+                            ? `${unreadableRecent} upload${unreadableRecent === 1 ? '' : 's'} unreadable`
+                            : 'No new labelers waiting'
                   }
-                  tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
+                  tone={
+                    unprocessedEmails.length ||
+                    pendingForwards?.pending_count ||
+                    uploadsStale ||
+                    unreadableRecent
+                      ? 'attention'
+                      : 'ok'
+                  }
                 />
                 <PipelineStage
                   label="Summarized"
@@ -5175,6 +5256,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                   openLabel="Browse collar files in S3"
                 />
               </div>
+              <UploadsAlert uploads={uploads} stale={uploadsStale} />
             </section>
 
             <div className="xl:col-span-2 min-w-0">
