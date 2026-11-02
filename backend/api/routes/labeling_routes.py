@@ -1230,6 +1230,7 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         entry["data"],
         dashboard_url=Config.APP_BASE_URL,
         days=days,
+        timezone_name=Config.LABELING_REPORT_TIMEZONE,
         **_recap_lookups(),
     )
 

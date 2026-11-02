@@ -78,7 +78,9 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
     assert "Good dogs on the job" not in text
     assert "3 days in a row" in text
     assert "we passed *500 labeled sessions*" in text
-    assert text.endswith("<https://insight.example.com|Open the labeling dashboard>")
+    # The dashboard link, then the period footnote last.
+    assert text.splitlines()[-2] == "<https://insight.example.com|Open the labeling dashboard>"
+    assert text.splitlines()[-1].startswith("_Period: Fri Oct 30 12:00 AM")
 
 
 def test_quiet_day_is_still_friendly():
@@ -572,3 +574,18 @@ def test_labeler_type_defaults_halo_emails_to_employee_and_saved_types_win():
     types = {r["person"]: r["labeler_type"] for r in recap["leaderboard"]}
     assert types == {"amy@halocollar.com": "employee", "Ken E": "partner", "bo@x.com": None}
     assert recap["leaderboard"][0]["emails"] == ["amy@halocollar.com"]
+
+
+def test_recap_ends_with_the_exact_period_and_time_zone():
+    from datetime import date
+
+    from backend.services.labeling_daily_report import build_daily_report, period_footnote
+
+    note = period_footnote(date(2026, 10, 26), date(2026, 11, 1), "America/Los_Angeles")
+    assert "Mon Oct 26 12:00 AM – Sun Nov 1, 2026 11:59 PM" in note
+    assert "America/Los_Angeles (PST)" in note
+    assert "PDT" in period_footnote(date(2026, 7, 4), date(2026, 7, 4), "America/Los_Angeles")
+
+    empty = {"totals": {"sessions": 0, "duration_seconds": 0}, "users": [], "dogs": [], "by_date": []}
+    text = build_daily_report("2026-11-01", empty, empty, days=7, timezone_name="America/Los_Angeles")
+    assert text.splitlines()[-1].startswith("_Period: Mon Oct 26 12:00 AM")

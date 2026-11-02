@@ -40,6 +40,33 @@ def report_day(tz_name: Optional[str], now: Optional[datetime] = None) -> str:
     return (current.date() - timedelta(days=1)).isoformat()
 
 
+def _report_tz(tz_name: Optional[str]):
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(tz_name or "America/Los_Angeles")
+    except Exception:  # noqa: BLE001 - no tz database in the image
+        return timezone(timedelta(hours=-8), "UTC-8")
+
+
+def period_footnote(start: date, end: date, tz_name: Optional[str]) -> str:
+    """
+    The exact period the recap counts. Session times are recorded without a time zone,
+    so days follow each session's own timestamp; "yesterday" is chosen in the report zone.
+    """
+    tz = _report_tz(tz_name)
+    # The zone's abbreviation on the last day (PST or PDT), plus its name.
+    abbrev = datetime(end.year, end.month, end.day, 12, tzinfo=tz).tzname()
+    zone = tz_name or "America/Los_Angeles"
+    span = (
+        f"{start.strftime('%a %b %-d')} 12:00 AM – {end.strftime('%a %b %-d, %Y')} 11:59 PM"
+    )
+    return (
+        f"_Period: {span}. Sessions count on the date in their own timestamp, which is "
+        f"recorded without a time zone. The report day is chosen in {zone} ({abbrev})._"
+    )
+
+
 def serial_key(sn: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(sn or "").lower())
 
@@ -478,12 +505,16 @@ def build_daily_report(
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
     labeler_types: Optional[Dict[str, str]] = None,
+    timezone_name: Optional[str] = None,
 ) -> str:
     """
     Slack mrkdwn for the days-long period ending on day (one day by default).
     day_data is the summary limited to that period.
     """
     end = date.fromisoformat(day)
+    footnote = "\n" + period_footnote(
+        date.fromisoformat(period_start(day, days)), end, timezone_name
+    )
     if days > 1:
         start = date.fromisoformat(period_start(day, days))
         pretty_day = f"{start.strftime('%b %-d')} – {end.strftime('%b %-d')} ({days} days)"
@@ -511,6 +542,7 @@ def build_daily_report(
             f"{quiet}, with no new labeled sessions. "
             f"So far the team has labeled *{recap['all_sessions']:,} sessions* and "
             f"*{format_minutes(recap['all_seconds'])}* of data. Thank you! :sparkles:{link}"
+            f"{footnote}"
         )
 
     labelers, dogs = recap["labelers"], recap["dogs"]
@@ -559,7 +591,7 @@ def build_daily_report(
             f":stopwatch: Milestone: over *{recap['hours_milestone']:,} hours* of labeled data!"
         )
 
-    return "\n".join(lines) + link
+    return "\n".join(lines) + link + footnote
 
 
 def post_to_slack_webhook(url: str, text: str) -> None:
