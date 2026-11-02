@@ -112,4 +112,8 @@ if __name__ == "__main__":
     print(f"Starting Gladly Conversation Analyzer on {host}:{port}")
     print(f"Max header size: {werkzeug.serving.WSGIRequestHandler.max_header_size} bytes")
     print("Liveness probe: GET /health (rss, uptime, labeling job)")
+    # Labeler emails → staging, when LABELING_GMAIL_INGEST_ENABLED=true.
+    from backend.api.routes.labeling_routes import start_gmail_ingest_poller
+    if start_gmail_ingest_poller():
+        print(f"Gmail ingest poller on ({Config.LABELING_GMAIL_INGEST_MODE} mode)")
     app.run(host=host, port=port, debug=False)

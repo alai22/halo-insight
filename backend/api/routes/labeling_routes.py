@@ -860,6 +860,10 @@ def labeling_status():
         except Exception as exc:  # noqa: BLE001
             logger.warning("Collar sync status failed: %s", redact_secrets(str(exc)))
         status["collar_sync"] = collar
+        try:
+            status["gmail_ingest"] = _gmail_ingest_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gmail ingest status failed: %s", redact_secrets(str(exc)))
         return jsonify({"success": True, "data": status})
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get labeling status")
@@ -1431,6 +1435,8 @@ def labeling_promote_forwards():
                 "error": "A labeling job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         def _run():
             return LabelingIngestService().promote_forwards(
@@ -1687,6 +1693,8 @@ def labeling_compact():
                 "error": "A labeling job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         def _run():
             return LabelingIngestService().compact_staging(
@@ -1856,6 +1864,8 @@ def labeling_process():
                 "error": "A labeling process job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         if run_async:
             _set_process_state(
@@ -2308,3 +2318,286 @@ def labeling_ml_download():
         logger.exception("Failed to sign collar-log download")
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "url": url, "key": key})
+
+
+# ---------------------------------------------------------------------------
+# Gmail ingester: reads the inbox the ai_logs group delivers to and writes
+# staging batches (docs/LABELING_GMAIL_INGEST.md). Runs beside Make.com: in
+# shadow mode it writes to its own prefix, in live mode into staging/.
+
+_GMAIL_LOCK = threading.Lock()  # held for the whole of one run
+_GMAIL_STATE: Dict[str, Any] = {
+    "running": False,
+    "kind": None,  # "poll" | "backfill" | "run"
+    "started_at": None,
+    "finished_at": None,
+    "message": None,
+    "last_error": None,
+    "last_report": None,
+    "poller_started_at": None,
+    "last_compare_at": 0.0,
+}
+_GMAIL_POLLER: Optional[threading.Thread] = None
+_GMAIL_FIRST_POLL_DELAY_SEC = 30
+_GMAIL_COMPARE_EVERY_SEC = 60 * 60
+_GMAIL_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+# Jobs that read or rewrite staging/ wait while a live run is writing into it.
+_GMAIL_BUSY_ERROR = "The Gmail ingester is writing new uploads into staging; try again in a minute"
+
+
+def _gmail_writing_staging() -> bool:
+    with _PROCESS_LOCK:
+        running = bool(_GMAIL_STATE["running"])
+    return running and (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+
+
+def _gmail_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    out = {k: v for k, v in report.items() if k not in ("batches", "warnings", "errors")}
+    out["errors"] = report.get("errors", [])[:20]
+    out["warnings"] = report.get("warnings", [])[:20]
+    out["batches"] = report.get("batches", [])[:50]
+    return out
+
+
+def run_gmail_ingest(
+    kind: str,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    dry_run: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """One ingest run. Returns None when another run holds the lock."""
+    from backend.services.labeling_gmail_ingest_service import LabelingGmailIngestService
+
+    if not _GMAIL_LOCK.acquire(blocking=False):
+        return None
+    try:
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                running=True,
+                kind=kind,
+                started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                finished_at=None,
+                message="Checking the inbox…",
+            )
+        service = LabelingGmailIngestService()
+
+        def _on_progress(message: str) -> None:
+            with _PROCESS_LOCK:
+                _GMAIL_STATE["message"] = message
+
+        report = service.run(since=since, until=until, dry_run=dry_run, on_progress=_on_progress)
+        if service.mode == "live" and not dry_run and (report["ingested"] or report["quarantined"]):
+            with _INVENTORY_LOCK:
+                _INVENTORY_CACHE["at"] = 0.0
+        compare_due = time.time() - float(_GMAIL_STATE["last_compare_at"]) > _GMAIL_COMPARE_EVERY_SEC
+        if service.mode == "shadow" and not dry_run and (kind != "poll" or compare_due or report["ingested"]):
+            try:
+                service.save_compare(service.compare_with_make())
+                _GMAIL_STATE["last_compare_at"] = time.time()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Gmail vs Make comparison failed: %s", exc)
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                last_report=_gmail_report_summary(report),
+                last_error=None,
+                message=(
+                    f"Ingested {report['ingested']} email(s)"
+                    + (f", {report['quarantined']} to forwards" if report["quarantined"] else "")
+                    + (f", {len(report['errors'])} error(s)" if report["errors"] else "")
+                    + (" (dry run)" if dry_run else "")
+                ),
+            )
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        return report
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gmail ingest run failed")
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(last_error=redact_secrets(str(exc)), message="Gmail ingest failed")
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        raise
+    finally:
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                running=False,
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+        _GMAIL_LOCK.release()
+
+
+def _gmail_poll_once() -> None:
+    live = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+    if live and _is_process_busy():
+        logger.info("Gmail ingest poll skipped: a labeling job is running")
+        return
+    try:
+        run_gmail_ingest("poll")
+    except Exception:  # noqa: BLE001
+        pass  # logged and kept in _GMAIL_STATE; the next poll tries again
+
+
+def _gmail_poll_loop() -> None:
+    time.sleep(_GMAIL_FIRST_POLL_DELAY_SEC)
+    while True:
+        _gmail_poll_once()
+        time.sleep(max(60, int(Config.LABELING_GMAIL_INGEST_POLL_SEC or 300)))
+
+
+def start_gmail_ingest_poller() -> bool:
+    """Start the background poll once per process, when enabled."""
+    global _GMAIL_POLLER
+    if not Config.LABELING_GMAIL_INGEST_ENABLED:
+        return False
+    with _PROCESS_LOCK:
+        if _GMAIL_POLLER is not None and _GMAIL_POLLER.is_alive():
+            return False
+        _GMAIL_POLLER = threading.Thread(target=_gmail_poll_loop, name="gmail-ingest", daemon=True)
+        _GMAIL_POLLER.start()
+        _GMAIL_STATE["poller_started_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    logger.info(
+        "Gmail ingest poller started (%s mode, every %ss)",
+        Config.LABELING_GMAIL_INGEST_MODE,
+        Config.LABELING_GMAIL_INGEST_POLL_SEC,
+    )
+    return True
+
+
+def _gmail_ingest_status() -> Dict[str, Any]:
+    """The `gmail_ingest` block of /status: last run, counts, errors, Make comparison."""
+    mode = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower()
+    poll_sec = int(Config.LABELING_GMAIL_INGEST_POLL_SEC or 300)
+    with _PROCESS_LOCK:
+        live = {
+            k: _GMAIL_STATE[k]
+            for k in ("running", "kind", "started_at", "finished_at", "message", "last_error", "poller_started_at")
+        }
+        last_report = _GMAIL_STATE["last_report"]
+    out: Dict[str, Any] = {
+        "enabled": bool(Config.LABELING_GMAIL_INGEST_ENABLED),
+        "configured": bool(Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON),
+        "mode": mode,
+        "mailbox": Config.LABELING_GMAIL_INGEST_MAILBOX,
+        "target_prefix": (
+            Config.LABELING_S3_STAGING_PREFIX
+            if mode == "live"
+            else Config.LABELING_GMAIL_SHADOW_PREFIX
+        ),
+        "poll_sec": poll_sec,
+        **live,
+    }
+    if last_report and last_report.get("dry_run"):
+        out["last_dry_run"] = last_report
+    now = time.time()
+    cached = _GMAIL_STATUS_CACHE["data"]
+    if not (isinstance(cached, dict) and now - float(_GMAIL_STATUS_CACHE["at"]) < _INVENTORY_TTL_SEC):
+        cached = {}
+        try:
+            from backend.services.labeling_gmail_ingest_service import LabelingGmailIngestService
+
+            service = LabelingGmailIngestService()
+            state = service.load_state()
+            cached = {
+                "last_run": state.get("last_run"),
+                "last_ingest_at": state.get("last_ingest_at"),
+                "first_run_at": state.get("first_run_at"),
+                "totals": state.get("totals"),
+                "recent_errors": (state.get("recent_errors") or [])[-5:],
+                "retrying": len(state.get("failures") or {}),
+                "compare": service.load_compare(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            cached = {"state_error": redact_secrets(str(exc))}
+        _GMAIL_STATUS_CACHE.update(at=now, data=cached)
+    out.update(cached)
+    # Stalled: enabled, but no finished run for three poll intervals.
+    finished = (out.get("last_run") or {}).get("finished_at")
+    stalled = False
+    if out["enabled"] and out.get("poller_started_at"):
+        try:
+            ref = finished or out["poller_started_at"]
+            last = datetime.strptime(ref, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            stalled = age > 3 * poll_sec + _GMAIL_FIRST_POLL_DELAY_SEC
+        except Exception:  # noqa: BLE001
+            stalled = False
+    out["stalled"] = stalled
+    return out
+
+
+@labeling_bp.route("/gmail-ingest/run", methods=["POST"])
+@require_admin_auth
+def labeling_gmail_ingest_run():
+    """
+    Run the Gmail ingester now, or backfill from a date.
+
+    JSON body (optional):
+      since: "YYYY-MM-DD" — backfill from this date (UTC) instead of the cursor
+      until: "YYYY-MM-DD" — stop before this date
+      dry_run: bool (default false) — list and parse only; write nothing
+    """
+    from backend.services.labeling_gmail_ingest_service import parse_since
+
+    body = request.get_json(silent=True) or {}
+    try:
+        since = parse_since(body["since"]) if body.get("since") else None
+        until = parse_since(body["until"]) if body.get("until") else None
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    if not Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON:
+        return jsonify({
+            "success": False,
+            "error": "LABELING_GMAIL_SERVICE_ACCOUNT_JSON is not configured on the server",
+        }), 400
+    dry_run = bool(body.get("dry_run", False))
+    live = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+    if live and not dry_run and _is_process_busy():
+        return jsonify({
+            "success": False,
+            "error": "A labeling job is running; backfill once it finishes",
+            "data": _merge_process_state(),
+        }), 409
+    if _GMAIL_LOCK.locked():
+        return jsonify({
+            "success": False,
+            "error": "A Gmail ingest run is already in progress",
+            "data": _gmail_ingest_status(),
+        }), 409
+
+    def _worker():
+        try:
+            run_gmail_ingest("backfill" if since else "run", since=since, until=until, dry_run=dry_run)
+        except Exception:  # noqa: BLE001
+            pass  # kept in _GMAIL_STATE["last_error"]
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({
+        "success": True,
+        "async": True,
+        "message": (
+            f"Gmail backfill from {body['since']} started." if since else "Gmail ingest started."
+        ),
+        "data": _gmail_ingest_status(),
+    })
+
+
+@labeling_bp.route("/gmail-ingest/compare", methods=["POST"])
+@require_admin_auth
+def labeling_gmail_ingest_compare():
+    """Compare Gmail shadow batches with Make's staging/ now. Body: {since?: "YYYY-MM-DD"}."""
+    from backend.services.labeling_gmail_ingest_service import (
+        LabelingGmailIngestService,
+        parse_since,
+    )
+
+    body = request.get_json(silent=True) or {}
+    try:
+        since = parse_since(body["since"]) if body.get("since") else None
+        service = LabelingGmailIngestService(mode="shadow")
+        result = service.compare_with_make(since=since)
+        service.save_compare(result)
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        return jsonify({"success": True, "data": result})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gmail vs Make comparison failed")
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 500

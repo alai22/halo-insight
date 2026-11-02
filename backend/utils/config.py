@@ -204,6 +204,19 @@ class Config:
     LABELING_AZURE_SAS_TOKEN: Optional[str] = os.getenv('LABELING_AZURE_SAS_TOKEN')
     LABELING_COLLAR_S3_PREFIX: str = os.getenv('LABELING_COLLAR_S3_PREFIX', 'collar-raw/')
     LABELING_COLLAR_MATCH_PAD_SEC: int = int(os.getenv('LABELING_COLLAR_MATCH_PAD_SEC', '300'))
+    # Gmail ingester: reads the inbox the ai_logs group delivers to and writes
+    # staging batches (see docs/LABELING_GMAIL_INGEST.md). Off until enabled.
+    LABELING_GMAIL_INGEST_ENABLED: bool = os.getenv('LABELING_GMAIL_INGEST_ENABLED', 'false').lower() == 'true'
+    LABELING_GMAIL_INGEST_MAILBOX: str = os.getenv('LABELING_GMAIL_INGEST_MAILBOX', 'ai_logs_ingest@halocollar.com')
+    # shadow: write to LABELING_GMAIL_SHADOW_PREFIX beside Make for comparison. live: write to staging/.
+    LABELING_GMAIL_INGEST_MODE: str = os.getenv('LABELING_GMAIL_INGEST_MODE', 'shadow')
+    LABELING_GMAIL_SHADOW_PREFIX: str = os.getenv('LABELING_GMAIL_SHADOW_PREFIX', 'staging-gmail/')
+    # Service account key: base64 of the key JSON, inline JSON, or a path. Never commit it.
+    LABELING_GMAIL_SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv('LABELING_GMAIL_SERVICE_ACCOUNT_JSON')
+    LABELING_GMAIL_INGEST_POLL_SEC: int = int(os.getenv('LABELING_GMAIL_INGEST_POLL_SEC', '300'))
+    LABELING_GMAIL_INGEST_QUERY: str = os.getenv('LABELING_GMAIL_INGEST_QUERY', 'has:attachment')
+    # First run with no cursor reads this many days back.
+    LABELING_GMAIL_INITIAL_LOOKBACK_DAYS: int = int(os.getenv('LABELING_GMAIL_INITIAL_LOOKBACK_DAYS', '3'))
     
     # Snowflake (order reconciliation) — read-only analytics queries.
     # Auth is a Programmatic Access Token (PAT), not key-pair/password.

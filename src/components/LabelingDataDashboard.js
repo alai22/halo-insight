@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Mail, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -864,6 +864,184 @@ const RECAP_PERIODS = [
   { days: 7, label: 'Last 7 days' },
   { days: 30, label: 'Last 30 days' },
 ];
+
+// Gmail ingester (replacing Make.com): last run, counts, errors and, in shadow
+// mode, how its batches compare with Make's. Fed by /status → gmail_ingest.
+function gmailIngestAttention(info) {
+  if (!info || !info.enabled) return false;
+  const compare = info.compare;
+  return Boolean(
+    info.stalled ||
+      info.last_error ||
+      info.state_error ||
+      info.last_run?.errors ||
+      (info.mode === 'shadow' && compare && !compare.agrees)
+  );
+}
+
+function GmailIngestPanel({ info, readOnly, onChanged }) {
+  const [since, setSince] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  if (!info) return null;
+  const run = info.last_run || {};
+  const compare = info.compare;
+  const attention = gmailIngestAttention(info);
+  const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
+  const post = async (url, body, okText) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const response = await axios.post(url, body);
+      if (!response.data.success) throw new Error(response.data.error || 'Request failed');
+      setNotice({ type: 'info', text: response.data.message || okText });
+      onChanged?.();
+    } catch (err) {
+      setNotice({ type: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let headline;
+  if (!info.enabled) headline = 'Off (LABELING_GMAIL_INGEST_ENABLED is not true)';
+  else if (!info.configured) headline = 'On, but no service account key is configured';
+  else if (info.running) headline = info.message || 'Checking the inbox…';
+  else if (info.stalled) headline = `No finished run since ${when(run.finished_at || info.poller_started_at)}`;
+  else headline = `Last run ${when(run.finished_at)} · ${run.ingested ?? 0} ingested`;
+
+  return (
+    <details
+      open={attention}
+      className={`group mb-4 px-3 py-2 border rounded-lg text-sm ${
+        attention ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-white border-gray-200 text-gray-700'
+      }`}
+    >
+      <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
+        <Mail className={`h-4 w-4 flex-shrink-0 ${attention ? 'text-amber-600' : 'text-gray-400'}`} />
+        <span className="font-medium">Gmail ingest</span>
+        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
+          {info.mode === 'live' ? 'live → staging/' : `shadow → ${info.target_prefix}`}
+        </span>
+        <span className="text-xs opacity-80 truncate">{headline}</span>
+        <span className="ml-auto text-xs opacity-60 group-open:hidden">Show details ▸</span>
+        <span className="ml-auto text-xs opacity-60 hidden group-open:inline">Hide ▾</span>
+      </summary>
+      <div className="pb-1 space-y-2 mt-2">
+        <p className="text-xs">
+          Reads {info.mailbox} every {Math.round((info.poll_sec || 300) / 60)} min.
+          {info.mode === 'shadow'
+            ? ' Shadow mode: writes beside Make for comparison; Process staging does not read it yet.'
+            : ' Live: writes into staging/ and skips emails Make already delivered.'}
+        </p>
+        <p className="text-xs">
+          Last run: {when(run.finished_at)} · listed {run.listed ?? 0} · ingested {run.ingested ?? 0} ·
+          to forwards {run.quarantined ?? 0} · no logs {run.no_logs ?? 0} · already there{' '}
+          {(run.skipped_processed ?? 0) + (run.skipped_delivered ?? 0)} · errors {run.errors ?? 0}
+          {info.last_ingest_at ? ` · last new email ${when(info.last_ingest_at)}` : ''}
+        </p>
+        {info.totals ? (
+          <p className="text-xs opacity-80">
+            Since {when(info.first_run_at)}: {info.totals.ingested ?? 0} ingested,{' '}
+            {info.totals.quarantined ?? 0} to forwards, {info.totals.errors ?? 0} errors
+            {info.retrying ? ` · ${info.retrying} email(s) being retried` : ''}
+          </p>
+        ) : null}
+        {info.last_error || info.state_error ? (
+          <p className="text-xs text-red-700">{info.last_error || info.state_error}</p>
+        ) : null}
+        {(info.recent_errors || []).length ? (
+          <ul className="list-disc pl-5 text-xs space-y-0.5">
+            {info.recent_errors.map((e) => (
+              <li key={`${e.message_id}-${e.at}`}>
+                {e.message_id} · {e.error} (try {e.attempts})
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {compare ? (
+          <div className="text-xs border-t border-gray-200 pt-2">
+            <p className="font-medium">
+              Gmail vs Make since {when(compare.since)}:{' '}
+              {compare.agrees ? 'they agree' : 'differences found'} (checked {when(compare.generated_at)})
+            </p>
+            <p>
+              Both {compare.both} · only Make {compare.make_only_count}
+              {compare.make_only_empty_count ? ` (${compare.make_only_empty_count} Make batches had no logs)` : ''}{' '}
+              · only Gmail {compare.gmail_only_count} · different files {compare.file_diff_count} · other
+              folder {compare.folder_mismatch_count}
+            </p>
+            {(compare.make_only || []).filter((m) => m.make_files).slice(0, 10).map((m) => (
+              <p key={`mo-${m.message_id}`} className="opacity-80">
+                Only Make: {m.message_id} in {m.make_folders.join(', ')} ({m.make_files} files)
+              </p>
+            ))}
+            {(compare.gmail_only || []).slice(0, 10).map((m) => (
+              <p key={`go-${m.message_id}`} className="opacity-80">
+                Only Gmail: {m.message_id} → {m.gmail_folder} ({m.gmail_files} files)
+              </p>
+            ))}
+            {(compare.file_diffs || []).slice(0, 10).map((m) => (
+              <p key={`fd-${m.message_id}`} className="opacity-80">
+                Files differ: {m.message_id} · Make {m.make_files}, Gmail {m.gmail_files}
+              </p>
+            ))}
+            {(compare.folder_mismatch || []).slice(0, 10).map((m) => (
+              <p key={`fm-${m.message_id}`} className="opacity-80">
+                Folder: Make {m.make_folders.join(', ')} · Gmail {m.gmail_folder}
+              </p>
+            ))}
+          </div>
+        ) : null}
+        {!readOnly && info.configured ? (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={busy || info.running}
+              onClick={() => post('/api/labeling/gmail-ingest/run', {}, 'Gmail ingest started.')}
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+            >
+              Check inbox now
+            </button>
+            <input
+              type="date"
+              value={since}
+              onChange={(e) => setSince(e.target.value)}
+              className="px-2 py-1 border border-gray-300 rounded-md text-xs bg-white"
+              aria-label="Backfill from date"
+            />
+            <button
+              type="button"
+              disabled={busy || info.running || !since}
+              onClick={() =>
+                window.confirm(
+                  `Read every email since ${since} and add the ones not already in ${info.target_prefix}?`
+                ) && post('/api/labeling/gmail-ingest/run', { since }, 'Backfill started.')
+              }
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+            >
+              Backfill from date
+            </button>
+            {info.mode === 'shadow' ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => post('/api/labeling/gmail-ingest/compare', {}, 'Comparison updated.')}
+                className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+              >
+                Compare with Make now
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {notice ? (
+          <p className={`text-xs ${notice.type === 'error' ? 'text-red-700' : 'text-gray-600'}`}>{notice.text}</p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
 
 function SlackRecapPanel({ onClose }) {
   const [day, setDay] = useState('');
@@ -4343,7 +4521,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   // Shown as a dot on the Data health tab, so problems aren't hidden behind the Overview.
   const healthNeedsAttention =
     (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
-    stagingHealthActionable;
+    stagingHealthActionable ||
+    gmailIngestAttention(status?.gmail_ingest);
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -4765,6 +4944,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
 
       {tab === 'health' ? (
         <>
+          <GmailIngestPanel info={status?.gmail_ingest} readOnly={readOnly} onChanged={fetchStatus} />
           {showStagingHealth ? (
             <details
               open={stagingHealthActionable}
