@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Hourglass, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -22,7 +22,7 @@ const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
 const STATUS_STORAGE_KEY = 'halo_labeling_status_v1';
 const RANGE_STORAGE_KEY = 'halo_labeling_range_v1';
 const DOG_CHART_LIMIT = 15;
-const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
+const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled and owner-listed collars';
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
 const COLLAR_SYNC_PROGRESS = 'Copying Azure <sn>/ai/* into collar-raw/…';
 
@@ -1874,8 +1874,8 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
     <div>
       {visible.length === 0 ? (
         <p className="text-sm text-gray-500">
-          No collars are behind. Azure is not ahead of S3, and every session with a serial has a
-          dump.
+          No collars are behind. Azure is not ahead of S3, every session with a serial has a
+          dump, and no collar has logs without app sessions.
         </p>
       ) : (
         <>
@@ -1954,7 +1954,13 @@ function CollarSessionBar({ row, maxSessions }) {
   const total = row.sessions || 0;
   const reason = missingReasonText(row);
   if (!total) {
-    return <span className="text-xs text-gray-400">No app sessions</span>;
+    return row.collar_only ? (
+      <span className="text-xs text-amber-700">
+        No app sessions · {row.collar_only} collar log{row.collar_only === 1 ? '' : 's'} waiting for labels
+      </span>
+    ) : (
+      <span className="text-xs text-gray-400">No app sessions</span>
+    );
   }
   return (
     <div
@@ -3985,16 +3991,23 @@ const LabelingDataDashboard = () => {
           : Number(snap.errors) || 0
         : 0;
       const missing = Number(base?.missing) || 0;
+      const sessions = Number(base?.sessions) || 0;
+      const collarOnly = Number(base?.collar_only) || 0;
+      // Logs on a collar with no labeled session: its app labels haven't arrived.
+      const waitingOnApp = sessions === 0 && collarOnly > 0;
       const behind =
         sn !== '_unknown' &&
         (missing > 0 ||
+          waitingOnApp ||
           notCloned > 0 ||
           (azureFiles != null && azureFiles > s3Files));
       rows.push({
         collar_sn: sn,
-        sessions: Number(base?.sessions) || 0,
+        sessions,
         matched: Number(base?.matched) || 0,
         missing,
+        collar_only: collarOnly,
+        waiting_on_app: waitingOnApp,
         s3_files: s3Files,
         azure_files: azureFiles,
         no_blobs_for_sn: Number(base?.no_blobs_for_sn) || 0,
@@ -4012,6 +4025,7 @@ const LabelingDataDashboard = () => {
     rows.sort(
       (a, b) =>
         b.missing - a.missing ||
+        Number(b.waiting_on_app) * b.collar_only - Number(a.waiting_on_app) * a.collar_only ||
         b.sessions - a.sessions ||
         String(a.collar_sn).localeCompare(String(b.collar_sn))
     );
@@ -4036,7 +4050,8 @@ const LabelingDataDashboard = () => {
   // Shown as a dot on the Data health tab, so problems aren't hidden behind the Overview.
   const healthNeedsAttention =
     (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
-    stagingHealthActionable;
+    stagingHealthActionable ||
+    (collarTotals.collars_without_sessions || 0) > 0;
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -4572,7 +4587,7 @@ const LabelingDataDashboard = () => {
                 <PipelineStage
                   label="Azure"
                   value={clone ? clone.azure_files ?? 0 : '—'}
-                  detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
+                  detail={clone ? 'Labeled and owner-listed collars' : 'Lists ai/ logs, does not copy'}
                   state={
                     azureUnreadable && clone
                       ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
@@ -4706,7 +4721,7 @@ const LabelingDataDashboard = () => {
             </p>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
             <SummaryCard
               icon={CheckCircle2}
               label="Sessions with collar data"
@@ -4724,6 +4739,18 @@ const LabelingDataDashboard = () => {
               hint={
                 collarTotals.unknown_sn
                   ? `${collarTotals.unknown_sn} with no SN`
+                  : null
+              }
+            />
+            <SummaryCard
+              icon={Hourglass}
+              label="Collar logs, no session"
+              value={collarTotals.collar_only ?? 0}
+              hint={
+                collarTotals.collars_without_sessions
+                  ? `${collarTotals.collar_only_no_sessions} on ${collarTotals.collars_without_sessions} collar${
+                      collarTotals.collars_without_sessions === 1 ? '' : 's'
+                    } with no app sessions`
                   : null
               }
             />
@@ -4767,8 +4794,9 @@ const LabelingDataDashboard = () => {
               </button>
             </div>
             <p className="text-sm text-gray-500 mb-3">
-              Labeled sessions per collar and whether each found a collar log. Collars that are
-              behind come first.
+              Labeled sessions per collar and whether each found a collar log. Collars on the
+              owner list are synced too, so a collar with logs but no app sessions shows here.
+              Collars that are behind come first.
             </p>
             <CollarCoverageList
               rows={collarPipelineRows}

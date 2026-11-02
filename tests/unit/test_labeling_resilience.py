@@ -169,11 +169,13 @@ def test_collar_sync_after_process_keeps_both_messages(monkeypatch):
     monkeypatch.setattr(routes, "_cache_clear", lambda: None)
 
     class _Service:
-        def sync(self, dry_run, inventory_only):
+        def sync(self, dry_run, inventory_only, extra_sns=None):
             assert (dry_run, inventory_only) == (False, False)
+            assert extra_sns == ["26h5232291rt"]
             return {"copied": 4}
 
     monkeypatch.setattr(routes, "LabelingCollarSyncService", _Service)
+    monkeypatch.setattr(routes, "_owner_collar_sns", lambda: ["26h5232291rt"])
     monkeypatch.setattr(routes, "sync_done_message", lambda report, _inv: "Synced 4.")
     routes._sync_collar_after_process("Processed 10.")
 
@@ -188,10 +190,11 @@ def test_collar_sync_after_process_reports_failure(monkeypatch):
     monkeypatch.setattr(routes, "_set_process_state", lambda **kw: states.append(kw) or kw)
 
     class _Service:
-        def sync(self, dry_run, inventory_only):
+        def sync(self, dry_run, inventory_only, extra_sns=None):
             raise RuntimeError("azure down")
 
     monkeypatch.setattr(routes, "LabelingCollarSyncService", _Service)
+    monkeypatch.setattr(routes, "_owner_collar_sns", lambda: [])
     routes._sync_collar_after_process("Processed 10.")
 
     assert states[-1]["running"] is False

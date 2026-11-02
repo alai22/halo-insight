@@ -796,6 +796,11 @@ def _load_collar_owners() -> Dict[str, Any]:
         return {}
 
 
+def _owner_collar_sns() -> list:
+    """Serials on the owner list, so collar sync covers collars with no app labels yet."""
+    return [r["collar_sn"] for r in _load_collar_owners().get("owners") or [] if r.get("collar_sn")]
+
+
 def _load_labeler_types() -> Dict[str, str]:
     try:
         body = json.loads(
@@ -1447,7 +1452,7 @@ def labeling_sync_collar():
             }), 409
 
         start_message = (
-            "Listing Azure collar ai/ dumps for labeled collars…"
+            "Listing Azure collar ai/ dumps for labeled and owner-listed collars…"
             if inventory_only
             else "Syncing Azure collar ai/ dumps into collar-raw/…"
         )
@@ -1468,6 +1473,7 @@ def labeling_sync_collar():
                     report = LabelingCollarSyncService().sync(
                         dry_run=dry_run,
                         inventory_only=inventory_only,
+                        extra_sns=_owner_collar_sns(),
                     )
                     _cache_clear()
                     done_message = sync_done_message(report, inventory_only)
@@ -1511,6 +1517,7 @@ def labeling_sync_collar():
             report = LabelingCollarSyncService().sync(
                 dry_run=dry_run,
                 inventory_only=inventory_only,
+                extra_sns=_owner_collar_sns(),
             )
             _cache_clear()
             done_message = sync_done_message(report, inventory_only)
@@ -1679,11 +1686,13 @@ def _sync_collar_after_process(process_message: str) -> None:
         running=True,
         job="sync-collar",
         progress=None,
-        message=f"{process_message} Syncing collar logs from Azure for labeled collars…",
+        message=f"{process_message} Syncing collar logs from Azure for labeled and owner-listed collars…",
     )
     log_rss(logger, "labeling collar sync after process start")
     try:
-        report = LabelingCollarSyncService().sync(dry_run=False, inventory_only=False)
+        report = LabelingCollarSyncService().sync(
+            dry_run=False, inventory_only=False, extra_sns=_owner_collar_sns()
+        )
         _cache_clear()
         _set_process_state(
             running=False,

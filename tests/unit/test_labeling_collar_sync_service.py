@@ -8,6 +8,7 @@ from backend.services.labeling_collar_sync_service import (
     LabelingCollarSyncService,
     classify_azure_error,
     match_coverage,
+    merge_collar_sns,
     parse_ai_log_filename,
     redact_secrets,
     resolve_azure_container_url,
@@ -263,6 +264,58 @@ def test_sync_copies_ai_only_and_skips_unchanged():
     assert report["clone"]["collars_unreadable"] == 0
     assert report["clone"]["error_samples"] == []
     assert report["clone"]["error_kind"] is None
+
+
+def test_sync_extra_sns_surface_collars_with_no_app_sessions():
+    s3 = _FakeS3(
+        {
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_collar_collected.txt": (
+                b"21:13:40.000: Collar SN: 24h4290312rt\n"
+            ),
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_durations.txt": (
+                b'{"Standing (10)": "00:02:00.0000000"}\n'
+            ),
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_user_reported.txt": b"",
+        }
+    )
+    azure = _FakeAzure(
+        {
+            "24h4290312rt/ai/ai_log_model_50f_8c_2026-07-02_21-13-44_v3.log": b"A",
+            # Owner-listed collar whose labeler's app export hasn't arrived yet.
+            "26h5232291rt/ai/ai_log_model_50f_8c_2026-07-03_10-00-00_v3.log": b"B",
+            "26h5232291rt/ai/ai_log_model_50f_8c_2026-07-03_11-00-00_v3.log": b"C",
+        }
+    )
+    svc = LabelingCollarSyncService(
+        bucket_name="test-bucket",
+        extracted_prefix="extracted-txt/",
+        collar_prefix="collar-raw/",
+        s3_client=s3,
+        azure_client=azure,
+        pad_sec=300,
+    )
+    # The labeled collar spelled differently is not listed twice.
+    report = svc.sync(dry_run=False, workers=1, extra_sns=["26h5232291rt", "24-H4290312-RT"])
+    assert report["sns"] == ["24h4290312rt", "26h5232291rt"]
+    assert report["copied"] == 3
+    totals = report["coverage"]["totals"]
+    assert totals["matched"] == 1
+    assert totals["collar_only"] == 2
+    assert totals["collar_only_no_sessions"] == 2
+    assert totals["collars_without_sessions"] == 1
+    row = next(r for r in report["coverage"]["by_sn"] if r["collar_sn"] == "26h5232291rt")
+    assert row["sessions"] == 0 and row["collar_only"] == 2
+    assert "1 collar has logs but no app sessions." in sync_done_message(report, False)
+
+
+def test_merge_collar_sns_keeps_labeled_spelling_and_drops_blanks():
+    assert merge_collar_sns(["24h4290312rt"], ["24H4290312RT", "", "26h5232291rt"]) == [
+        "24h4290312rt",
+        "26h5232291rt",
+    ]
 
 
 class _UnreadableAzure(_FakeAzure):

@@ -29,7 +29,12 @@ import boto3
 
 from ..utils.config import Config
 from ..utils.logging import get_logger
-from .labeling_data_analyzer import UNKNOWN_COLLAR_SN, in_date_window, sanitize_collar_sn
+from .labeling_data_analyzer import (
+    UNKNOWN_COLLAR_SN,
+    in_date_window,
+    sanitize_collar_sn,
+    serial_key,
+)
 
 logger = get_logger("labeling_collar_sync")
 
@@ -317,6 +322,7 @@ def match_coverage(
                 "matched": 0,
                 "missing": 0,
                 "s3_files": 0,
+                "collar_only": 0,
                 "no_blobs_for_sn": 0,
                 "no_family_logs": 0,
                 "time_gap": 0,
@@ -505,6 +511,7 @@ def match_coverage(
         _touch_sn(blob.collar_sn)["s3_files"] += 1
         if id(blob) not in used_files:
             _day_add(blob.when, "collar_only", blob.family)
+            by_sn[blob.collar_sn]["collar_only"] += 1
             on_sn = sessions_by_sn.get(blob.collar_sn) or []
             nearest = _nearest(
                 blob.when, [(at, item) for at, item in on_sn if item["family"] == blob.family]
@@ -522,6 +529,10 @@ def match_coverage(
                     "nearest_session_email": nearest[1]["email"] if nearest else None,
                 }
             )
+    # Collars with logs but no labeled session in the window: their app labels have not arrived.
+    unlabeled_sns = [
+        row for row in by_sn.values() if row["sessions"] == 0 and row["collar_only"] > 0
+    ]
     by_sn_out = sorted(
         by_sn.values(),
         key=lambda row: (-row["missing"], -row["sessions"], row["collar_sn"]),
@@ -537,6 +548,9 @@ def match_coverage(
             "ai_files": len(counted_files),
             "ai_bytes": int(sum(b.size for b in counted_files)),
             "sns": len({b.collar_sn for b in counted_files}),
+            "collar_only": sum(row["collar_only"] for row in by_sn.values()),
+            "collar_only_no_sessions": sum(row["collar_only"] for row in unlabeled_sns),
+            "collars_without_sessions": len(unlabeled_sns),
         },
         "missing_reasons": missing_reasons,
         "missing_reasons_by_family": {fam: dict(r) for fam, r in reasons_by_family.items()},
@@ -568,6 +582,16 @@ def match_coverage(
         ],
         "unmatched_samples": unmatched,
     }
+
+
+def merge_collar_sns(labeled: Iterable[str], extra: Iterable[str]) -> List[str]:
+    """Labeled SNs plus extra SNs whose serial key is new; labeled spelling wins."""
+    out = {serial_key(sn): sn for sn in labeled}
+    for raw in extra:
+        sn = sanitize_collar_sn(raw)
+        if sn != UNKNOWN_COLLAR_SN:
+            out.setdefault(serial_key(sn), sn)
+    return sorted(out.values())
 
 
 def empty_clone_row(sn: str) -> Dict[str, Any]:
@@ -672,6 +696,12 @@ def sync_done_message(report: Dict[str, Any], inventory_only: bool) -> str:
     unreadable_note = (
         f" Azure could not be read for {unreadable} of {collars} collars." if unreadable else ""
     )
+    unlabeled = int(totals.get("collars_without_sessions") or 0)
+    waiting_note = (
+        f" {unlabeled} {'collar has' if unlabeled == 1 else 'collars have'} logs but no app sessions."
+        if unlabeled
+        else ""
+    )
     if inventory_only:
         return (
             f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
@@ -680,7 +710,7 @@ def sync_done_message(report: Dict[str, Any], inventory_only: bool) -> str:
     return (
         f"Collar sync done — copied {report.get('copied', 0)} files, "
         f"{totals.get('matched', 0)} sessions matched, {totals.get('missing', 0)} missing."
-        f"{unreadable_note}"
+        f"{waiting_note}{unreadable_note}"
     )
 
 
@@ -870,11 +900,14 @@ class LabelingCollarSyncService:
         sns: Optional[List[str]] = None,
         workers: Optional[int] = None,
         summary: Optional[Dict[str, Any]] = None,
+        extra_sns: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         """
         Copy Azure <sn>/ai/* for labeled collar SNs into collar-raw/, then join.
 
         inventory_only: list Azure blobs, do not write S3.
+        extra_sns: collars to sync even with no labeled session yet (the owner list), so
+        their logs show up as waiting for app labels instead of not at all.
         """
         from .labeling_data_analyzer import LabelingDataAnalyzer
 
@@ -896,7 +929,9 @@ class LabelingCollarSyncService:
         if sns:
             report.sns = [sanitize_collar_sn(s) for s in sns if sanitize_collar_sn(s) != UNKNOWN_COLLAR_SN]
         else:
-            report.sns = self.labeled_collar_sns(files=analyzer.list_session_files())
+            report.sns = merge_collar_sns(
+                self.labeled_collar_sns(files=analyzer.list_session_files()), extra_sns or []
+            )
 
         stats: Dict[str, Dict[str, Any]] = {
             sn: empty_clone_row(sn) for sn in report.sns
