@@ -87,6 +87,7 @@ _VIEWER_ALLOWED = {
     ('GET', '/api/labeling/status'),
     ('GET', '/api/labeling/summary'),
     ('GET', '/api/labeling/collar-owners'),
+    ('GET', '/api/labeling/sessions'),
     ('GET', '/api/auth/status'),
     ('GET', '/api/auth/admin-status'),
     ('POST', '/api/auth/logout'),

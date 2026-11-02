@@ -404,6 +404,16 @@ def _maybe_start_window_refresh(window: Tuple[str, str]) -> bool:
     return True
 
 
+def _client_summary(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The summary as the dashboard gets it: per-session logs stay on the server."""
+    if not isinstance(data, dict):
+        return data
+    out = {k: v for k, v in data.items() if k != "session_log"}
+    if isinstance(out.get("gps"), dict):
+        out["gps"] = {k: v for k, v in out["gps"].items() if k != "session_log"}
+    return out
+
+
 def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: int):
     key = f"{window[0]}..{window[1]}"
     with _WINDOW_CACHE_LOCK:
@@ -436,7 +446,7 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
             "cached": True,
             "stale": stale,
             "generated_at": generated_iso,
-            "data": entry["payload"],
+            "data": _client_summary(entry["payload"]),
         })
     started = _maybe_start_window_refresh(window)
     blocked_by = None if started else _blocking_job()
@@ -450,7 +460,7 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
         "cached": entry is not None,
         "stale": True,
         "generated_at": generated_iso,
-        "data": entry["payload"] if entry else None,
+        "data": _client_summary(entry["payload"]) if entry else None,
         "blocked_by": blocked_by,
         "message": (
             "Building stats for this date range in the background."
@@ -1969,7 +1979,7 @@ def labeling_summary():
                     "cached": True,
                     "stale": bool(entry.get("stale")),
                     "generated_at": entry.get("generated_at_iso"),
-                    "data": entry["data"],
+                    "data": _client_summary(entry["data"]),
                 }
             )
 
@@ -1989,7 +1999,7 @@ def labeling_summary():
                 "cached": entry is not None,
                 "stale": True,
                 "generated_at": entry.get("generated_at_iso") if entry else None,
-                "data": entry["data"] if entry else None,
+                "data": _client_summary(entry["data"]) if entry else None,
                 "blocked_by": None if started else _blocking_job(),
                 "message": message,
             }
@@ -2000,6 +2010,61 @@ def labeling_summary():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build labeling summary")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@labeling_bp.route("/sessions", methods=["GET"])
+@require_labeling_read
+def labeling_sessions():
+    """
+    One labeler's sessions, newest first, from the summary already computed
+    (all time, or the start/end range). Never scans.
+
+    Query params:
+      user         — labeler email (required)
+      family       — activity (default) | gps
+      start, end   — optional YYYY-MM-DD, same as /summary
+    """
+    user = (request.args.get("user") or "").strip().lower()
+    if not user:
+        return jsonify({"success": False, "error": "user is required"}), 400
+    family = request.args.get("family") or "activity"
+    if family not in ("activity", "gps"):
+        return jsonify({"success": False, "error": "family must be activity or gps"}), 400
+    try:
+        window = _parse_window(request.args)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if window is not None:
+        with _WINDOW_CACHE_LOCK:
+            cached = _WINDOW_CACHE.get(f"{window[0]}..{window[1]}")
+        data = cached["payload"] if cached else None
+    else:
+        entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
+            _DEFAULT_CACHE_TTL_SEC
+        )
+        data = entry["data"] if entry else None
+    if data is None:
+        return jsonify({
+            "success": True,
+            "pending": True,
+            "sessions": [],
+            "message": "Stats for this range are not built yet.",
+        })
+    source = (data.get("gps") or {}) if family == "gps" else data
+    log = source.get("session_log")
+    if log is None:
+        # Summary built before session logs existed.
+        return jsonify({
+            "success": True,
+            "pending": False,
+            "needs_refresh": True,
+            "sessions": [],
+            "message": "Session logs appear after the next summary refresh.",
+        })
+    rows = [row for row in log if (row.get("email") or "").lower() == user]
+    rows.sort(key=lambda r: (r.get("timestamp") or "", r.get("session_id") or ""), reverse=True)
+    return jsonify({"success": True, "pending": False, "sessions": rows})
 
 
 _ML_CACHE_LOCK = threading.Lock()

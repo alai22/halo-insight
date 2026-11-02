@@ -2909,6 +2909,182 @@ function ActivityDurationTable({ rows, labelHeader, formatName }) {
   );
 }
 
+const SESSION_LOG_PAGE = 50;
+
+function sessionTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts).replace('T', ' ');
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function csvCell(value) {
+  const text = value == null ? '' : String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadSessionsCsv(rows, email, family, range) {
+  const header = ['timestamp', 'session_id', 'collar_sn', 'dog', 'duration_seconds', 'files', 'kinds', 'activities'];
+  const lines = rows.map((r) =>
+    [
+      r.timestamp,
+      r.session_id,
+      r.collar_sn,
+      r.dog,
+      r.duration_seconds,
+      r.files,
+      (r.kinds || []).join(' '),
+      Object.entries(r.activities || {})
+        .map(([label, sec]) => `${label}=${sec}`)
+        .join('; '),
+    ]
+      .map(csvCell)
+      .join(',')
+  );
+  const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const span = range.start || range.end ? `_${range.start || 'start'}_${range.end || 'today'}` : '';
+  a.href = url;
+  a.download = `sessions_${email.replace(/[^a-z0-9.@+-]/gi, '_')}_${family}${span}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Every session one labeler sent, newest first, for the selected model and date range. */
+function LabelerSessionLog({ email, family, range }) {
+  const [state, setState] = useState({ loading: true, rows: [], message: null, error: null });
+  const [limit, setLimit] = useState(SESSION_LOG_PAGE);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, rows: [], message: null, error: null });
+    setLimit(SESSION_LOG_PAGE);
+    const params = { user: email, family };
+    if (range.start) params.start = range.start;
+    if (range.end) params.end = range.end;
+    axios
+      .get('/api/labeling/sessions', { params })
+      .then((response) => {
+        if (cancelled) return;
+        const body = response.data || {};
+        setState({
+          loading: false,
+          rows: body.sessions || [],
+          message: body.pending || body.needs_refresh ? body.message : null,
+          error: body.success ? null : body.error || 'Could not load sessions',
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({
+          loading: false,
+          rows: [],
+          message: null,
+          error: err.response?.data?.error || err.message || 'Could not load sessions',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [email, family, range.start, range.end]);
+
+  const { loading, rows, message, error } = state;
+  const totalSeconds = rows.reduce((sum, r) => sum + (Number(r.duration_seconds) || 0), 0);
+  return (
+    <section className="mb-10 bg-white border border-gray-200 rounded-lg p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <h3 className="text-lg font-semibold text-gray-900">
+            Sessions from <LabelerName email={email} />
+          </h3>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {MODEL_LABELS[family]} · {describeRange(range)}
+            {!loading && rows.length
+              ? ` · ${rows.length} sessions · ${formatSecondsShort(totalSeconds)} labeled`
+              : ''}
+          </p>
+        </div>
+        {rows.length ? (
+          <button
+            type="button"
+            onClick={() => downloadSessionsCsv(rows, email, family, range)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50"
+          >
+            <DownloadCloud className="h-4 w-4" />
+            Download CSV
+          </button>
+        ) : null}
+      </div>
+      {loading ? (
+        <p className="text-sm text-gray-500 inline-flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 animate-spin" /> Loading sessions…
+        </p>
+      ) : error ? (
+        <p className="text-sm text-red-600">{error}</p>
+      ) : message ? (
+        <p className="text-sm text-gray-500">{message}</p>
+      ) : !rows.length ? (
+        <p className="text-sm text-gray-500">No sessions from this labeler in this range.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b">
+                <th className="py-2 pr-4 font-medium">When</th>
+                <th className="py-2 pr-4 font-medium">Dog · collar</th>
+                <th className="py-2 pr-4 font-medium">Duration</th>
+                <th className="py-2 pr-4 font-medium">Activities</th>
+                <th className="py-2 font-medium">Files</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, limit).map((r) => (
+                <tr key={r.session_id} className="border-b border-gray-100 align-top">
+                  <td className="py-2 pr-4 text-gray-900 whitespace-nowrap">{sessionTime(r.timestamp)}</td>
+                  <td className="py-2 pr-4 text-gray-700">
+                    {r.dog ? <span className="text-gray-900">{r.dog}</span> : null}
+                    {r.dog ? ' · ' : ''}
+                    <span className="font-mono text-xs">{r.collar_sn}</span>
+                  </td>
+                  <td className="py-2 pr-4 text-gray-700 whitespace-nowrap">
+                    {formatSecondsShort(r.duration_seconds)}
+                  </td>
+                  <td className="py-2 pr-4 text-gray-500">
+                    {Object.entries(r.activities || {}).length
+                      ? Object.entries(r.activities)
+                          .map(([label, sec]) => `${displayLabel(label)} ${formatSecondsShort(sec)}`)
+                          .join(' · ')
+                      : '—'}
+                  </td>
+                  <td className="py-2 text-gray-500 whitespace-nowrap" title={(r.kinds || []).join(', ')}>
+                    {r.files}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length > limit ? (
+            <button
+              type="button"
+              onClick={() => setLimit((n) => n + SESSION_LOG_PAGE)}
+              className="mt-3 text-sm text-blue-700 hover:text-blue-900"
+            >
+              Show {Math.min(SESSION_LOG_PAGE, rows.length - limit)} more of {rows.length - limit}
+            </button>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function LabelerTable({ rows }) {
   if (!rows?.length) return null;
   return (
@@ -3268,6 +3444,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   const tab = visibleTabs.some((t) => t.key === tabState) ? tabState : 'overview';
   // Which model the Contributors charts show.
   const [contribModel, setContribModel] = useState('activity');
+  // One labeler to focus the Contributors charts and session log on ('' = everyone).
+  const [contribLabeler, setContribLabeler] = useState('');
   const setTab = useCallback((key) => {
     setTabState(key);
     try {
@@ -3950,6 +4128,21 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
     () => buildDateLabelerStack(gps?.by_date || [], gpsLabelerKeys),
     [gps?.by_date, gpsLabelerKeys]
   );
+  const contribKeys = contribModel === 'gps' ? gpsLabelerKeys : labelerKeys;
+  // A labeler with nothing in this model or range falls back to everyone.
+  const focusLabeler = contribKeys.includes(contribLabeler) ? contribLabeler : '';
+  const contribDateStack = useMemo(() => {
+    const rows = contribModel === 'gps' ? gpsDateLabelerStack : dateLabelerStack;
+    if (!focusLabeler) return rows;
+    // Dogs and the tooltip total follow the one labeler, not the whole day.
+    const days = new Map(
+      ((contribModel === 'gps' ? gps?.by_date : data?.by_date) || []).map((d) => [d.date, d])
+    );
+    return rows.map((row) => {
+      const mine = (days.get(row.date)?.by_user || []).find((u) => u.user === focusLabeler);
+      return { ...row, total: row[focusLabeler] || 0, dogs: Number(mine?.dogs) || 0, owners: mine ? 1 : 0 };
+    });
+  }, [contribModel, gpsDateLabelerStack, dateLabelerStack, focusLabeler, gps?.by_date, data?.by_date]);
   const gpsActivityLabelerStack = useMemo(
     () => buildActivityLabelerStack(gpsActivities, gpsUsers, gpsLabelerKeys),
     [gpsActivities, gpsUsers, gpsLabelerKeys]
@@ -5171,6 +5364,20 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
             <div className="mb-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold text-gray-900">When data arrived</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={focusLabeler}
+                  onChange={(e) => setContribLabeler(e.target.value)}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded-md bg-white text-gray-700 max-w-[16rem]"
+                  aria-label="Labeler"
+                >
+                  <option value="">All labelers</option>
+                  {contribKeys.map((email) => (
+                    <option key={email} value={email}>
+                      {labelerNames.get(String(email).toLowerCase()) || email}
+                    </option>
+                  ))}
+                </select>
                 {hasGps ? (
                   <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
                     {['activity', 'gps'].map((family) => (
@@ -5189,9 +5396,11 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                     ))}
                   </div>
                 ) : null}
+                </div>
               </div>
               <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-                When labeled sessions arrived, and who sent them, for one model at a time.
+                When labeled sessions arrived, and who sent them, for one model at a time. Pick a
+                labeler to see only their days and every session they sent.
               </p>
             </div>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -5201,8 +5410,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                 description="Is labeling steady, or bunched into a few days? Labeled time each day, stacked by labeler."
               >
                 <StackedDurationChart
-                  data={contribModel === 'gps' ? gpsDateLabelerStack : dateLabelerStack}
-                  seriesKeys={contribModel === 'gps' ? gpsLabelerKeys : labelerKeys}
+                  data={contribDateStack}
+                  seriesKeys={focusLabeler ? [focusLabeler] : contribKeys}
                   colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
                   xKey="label"
                   emptyText="No dated sessions found."
@@ -5226,6 +5435,10 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
               </ChartCard>
             </div>
           </section>
+
+          {focusLabeler ? (
+            <LabelerSessionLog email={focusLabeler} family={contribModel} range={range} />
+          ) : null}
 
           <section className="mb-10">
             <div className="mb-4">

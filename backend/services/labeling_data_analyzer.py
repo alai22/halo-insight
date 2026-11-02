@@ -516,6 +516,12 @@ class LabelingDataAnalyzer:
         activity_user_reported_events: Dict[str, int] = defaultdict(int)
         sessions_seen: Dict[str, set] = defaultdict(set)
         session_duration: Dict[Tuple[str, str], float] = defaultdict(float)
+        # Per session, for the session log: labeled seconds by activity, files and kinds.
+        session_activities: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )
+        session_files: Dict[Tuple[str, str], int] = defaultdict(int)
+        session_kinds: Dict[Tuple[str, str], set] = defaultdict(set)
         session_timestamp: Dict[Tuple[str, str], str] = {}
         session_index: Dict[Tuple[str, str], int] = {}
         by_date: Dict[str, Dict[str, Any]] = {}
@@ -582,6 +588,8 @@ class LabelingDataAnalyzer:
             sessions_seen[ref.user].add(session_id)
             session_timestamp[(ref.user, session_id)] = ref.timestamp
             session_index[(ref.user, session_id)] = ref.index
+            session_files[(ref.user, session_id)] += 1
+            session_kinds[(ref.user, session_id)].add(ref.kind)
             day = (ref.timestamp or "")[:10] or "unknown"
             day_stats = by_date.setdefault(
                 day,
@@ -641,6 +649,7 @@ class LabelingDataAnalyzer:
                         day_stats["duration_seconds"] += seconds
                         day_user["duration_seconds"] += seconds
                         session_duration[(ref.user, session_id)] += seconds
+                        session_activities[(ref.user, session_id)][key] += seconds
                         dog["duration_seconds"] += seconds
                         if seconds > 0:
                             activity_collars[key].add(collar_sn)
@@ -705,6 +714,15 @@ class LabelingDataAnalyzer:
                         "index": session_index.get(key, 0),
                         "collar_sn": session_collar.get(key) or UNKNOWN_COLLAR_SN,
                         "duration_seconds": round(float(session_duration.get(key, 0.0)), 3),
+                        "files": session_files.get(key, 0),
+                        "kinds": sorted(session_kinds.get(key, ())),
+                        "activities": {
+                            label: round(float(sec), 3)
+                            for label, sec in sorted(
+                                session_activities.get(key, {}).items(), key=lambda kv: -kv[1]
+                            )
+                            if sec > 0
+                        },
                     }
                 )
         sessions_out.sort(key=lambda s: (s["user"], s["timestamp"], s["index"]))
@@ -952,7 +970,30 @@ def _format_family_ui(family_summary: Dict[str, Any]) -> Dict[str, Any]:
         "user_reported_events": family_summary.get("user_reported_events") or {},
         "dogs": family_summary.get("dogs") or [],
         "parse_errors": family_summary.get("parse_errors") or [],
+        # Kept in the server cache for /api/labeling/sessions; not sent with the summary.
+        "session_log": _session_log(family_summary),
     }
+
+
+def _session_log(family_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One row per labeled session, with the dog it was recorded on."""
+    dog_names = {
+        d.get("collar_sn"): d.get("name") for d in family_summary.get("dogs") or [] if d.get("name")
+    }
+    return [
+        {
+            "email": row.get("user"),
+            "session_id": row.get("session_id"),
+            "timestamp": row.get("timestamp") or "",
+            "collar_sn": row.get("collar_sn"),
+            "dog": dog_names.get(row.get("collar_sn")),
+            "duration_seconds": row.get("duration_seconds", 0),
+            "files": row.get("files", 0),
+            "kinds": row.get("kinds") or [],
+            "activities": row.get("activities") or {},
+        }
+        for row in family_summary.get("sessions") or []
+    ]
 
 
 def format_ui_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
