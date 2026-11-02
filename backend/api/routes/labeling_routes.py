@@ -70,6 +70,7 @@ _SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v4.json"
 _SUMMARY_CACHE_MEM_KEY = "summary:v4"
 _BG_REFRESH_LOCK = threading.Lock()
 _BG_REFRESH_RUNNING = False
+_BG_REFRESH_STARTED_AT: Optional[str] = None
 
 _PROCESS_LOCK = threading.Lock()
 _PROCESS_STATE: Dict[str, Any] = {
@@ -259,6 +260,8 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     _persist_file_snapshot(file_snapshot_payload(analyzer), entry["generated_at"])
+    # Ranges were cut from the previous snapshot; rebuild them from this one.
+    _window_cache_clear()
     return entry
 
 
@@ -436,9 +439,14 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
     generated_iso = (
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry["generated_at"])) if entry else None
     )
-    if entry is not None and not refresh:
-        stale = time.time() - entry["generated_at"] > ttl_sec
-        if stale:
+    # Refresh means new files: rescan everything, then cut the range from the new
+    # snapshot (the rescan clears the range cache when it finishes).
+    if refresh:
+        _maybe_start_background_refresh(ttl_sec)
+    full_refresh = _summary_refresh_job()
+    if entry is not None and (not refresh or full_refresh):
+        stale = time.time() - entry["generated_at"] > ttl_sec or full_refresh is not None
+        if stale and full_refresh is None:
             _maybe_start_window_refresh(window)
         return jsonify({
             "success": True,
@@ -447,6 +455,18 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
             "stale": stale,
             "generated_at": generated_iso,
             "data": _client_summary(entry["payload"]),
+            "blocked_by": full_refresh,
+        })
+    if full_refresh is not None:
+        return jsonify({
+            "success": True,
+            "pending": True,
+            "cached": False,
+            "stale": True,
+            "generated_at": None,
+            "data": None,
+            "blocked_by": full_refresh,
+            "message": "Stats for this range follow the full refresh.",
         })
     started = _maybe_start_window_refresh(window)
     blocked_by = None if started else _blocking_job()
@@ -470,16 +490,33 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
     })
 
 
+def _summary_refresh_job() -> Optional[Dict[str, Any]]:
+    """The full summary rescan, when one is running, shaped like _blocking_job."""
+    with _BG_REFRESH_LOCK:
+        if not _BG_REFRESH_RUNNING:
+            return None
+        started_at = _BG_REFRESH_STARTED_AT
+    return {
+        "job": "summary-refresh",
+        "started_at": started_at,
+        "updated_at": None,
+        "message": "Rescanning every labeling file",
+        "progress": None,
+    }
+
+
 def _maybe_start_background_refresh(ttl_sec: int) -> bool:
     """Start one summary scan off the request thread. False when a job is busy."""
     global _BG_REFRESH_RUNNING
     if _is_process_busy():
         logger.info("Deferring labeling summary refresh until the current job finishes")
         return False
+    global _BG_REFRESH_STARTED_AT
     with _BG_REFRESH_LOCK:
         if _BG_REFRESH_RUNNING:
             return True
         _BG_REFRESH_RUNNING = True
+        _BG_REFRESH_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     def _worker():
         global _BG_REFRESH_RUNNING
@@ -1162,12 +1199,21 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
     computed is used.
     """
     entry = _report_summary_entry()
+    if entry is None and _load_file_snapshot() is not None:
+        # The summary was dropped but its files are saved: re-aggregate (seconds, no scan).
+        _set_report_stage("building")
+        _rebuild_summary_from_snapshot()
+        entry = _report_summary_entry()
     if allow_scan and _report_summary_stale(entry):
         _set_report_stage("refreshing")
         entry = _compute_summary(_DEFAULT_CACHE_TTL_SEC)
     if entry is None or (not allow_scan and _load_file_snapshot() is None):
         raise RuntimeError(
-            "The labeling summary is not ready. Click Refresh on the dashboard first."
+            "The labeling summary has not been built yet. Choose All time on the dashboard "
+            "and click Refresh, then try again in a few minutes."
+            if entry is None
+            else "The saved file snapshot is missing. Choose All time on the dashboard and "
+            "click Refresh, then try again in a few minutes."
         )
     window = (period_start(day, days), day)
     key = f"{window[0]}..{window[1]}"
@@ -1537,7 +1583,9 @@ def labeling_sync_collar():
                         dry_run=dry_run,
                         inventory_only=inventory_only,
                     )
-                    _cache_clear()
+                    # Only collar coverage changed: re-join it from the snapshot (seconds)
+                    # and keep serving the last summary meanwhile.
+                    _rebuild_summary_in_background()
                     done_message = sync_done_message(report, inventory_only)
                     _set_process_state(
                         running=False,
@@ -1580,7 +1628,7 @@ def labeling_sync_collar():
                 dry_run=dry_run,
                 inventory_only=inventory_only,
             )
-            _cache_clear()
+            _rebuild_summary_in_background()
             done_message = sync_done_message(report, inventory_only)
             state = _set_process_state(
                 running=False,
@@ -1752,7 +1800,9 @@ def _sync_collar_after_process(process_message: str) -> None:
     log_rss(logger, "labeling collar sync after process start")
     try:
         report = LabelingCollarSyncService().sync(dry_run=False, inventory_only=False)
-        _cache_clear()
+        # Process just added files, so the snapshot is behind: keep the last summary
+        # but mark it for a full rescan.
+        _cache_mark_stale()
         _set_process_state(
             running=False,
             job="sync-collar",

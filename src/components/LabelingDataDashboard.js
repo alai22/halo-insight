@@ -3244,6 +3244,7 @@ const JOB_LABELS = {
   'promote-forwards': 'Promote forwards',
   'sync-collar': 'Collar sync',
   'compact-staging': 'Remove copies',
+  'summary-refresh': 'Full refresh',
 };
 
 function minutesSince(iso) {
@@ -3897,7 +3898,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
         setSummaryMessage(response.data.message || null);
         setSummaryBlockedBy(pending ? response.data.blocked_by || null : null);
         setSummaryCheckedAt(Date.now());
-        if (pending && response.data.blocked_by) attempts = 0;
+        if (response.data.blocked_by) attempts = 0;
         if (response.data.data && !pending && !response.data.stale) {
           setData(response.data.data);
           setCached(Boolean(response.data.cached));
