@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -38,6 +38,33 @@ def report_day(tz_name: Optional[str], now: Optional[datetime] = None) -> str:
         tz = timezone(timedelta(hours=-8))
     current = (now or datetime.now(timezone.utc)).astimezone(tz)
     return (current.date() - timedelta(days=1)).isoformat()
+
+
+def _report_tz(tz_name: Optional[str]):
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(tz_name or "America/Los_Angeles")
+    except Exception:  # noqa: BLE001 - no tz database in the image
+        return timezone(timedelta(hours=-8), "UTC-8")
+
+
+def period_footnote(start: date, end: date, tz_name: Optional[str]) -> str:
+    """
+    The exact period the recap counts. Session times are recorded without a time zone,
+    so days follow each session's own timestamp; "yesterday" is chosen in the report zone.
+    """
+    tz = _report_tz(tz_name)
+    # The zone's abbreviation on the last day (PST or PDT), plus its name.
+    abbrev = datetime(end.year, end.month, end.day, 12, tzinfo=tz).tzname()
+    zone = tz_name or "America/Los_Angeles"
+    span = (
+        f"{start.strftime('%a %b %-d')} 12:00 AM – {end.strftime('%a %b %-d, %Y')} 11:59 PM"
+    )
+    return (
+        f"_Period: {span}. Sessions count on the date in their own timestamp, which is "
+        f"recorded without a time zone. The report day is chosen in {zone} ({abbrev})._"
+    )
 
 
 def serial_key(sn: Any) -> str:
@@ -281,6 +308,43 @@ def _dog_leaderboard(
     ]
 
 
+def _unconfirmed(
+    day_data: Dict[str, Any],
+    all_data: Dict[str, Any],
+    owner_names: Optional[Dict[str, str]],
+    group_senders: Optional[set],
+    owner_emails: Optional[Dict[str, str]],
+    names_by_email: Optional[Dict[str, str]],
+    labeler_types: Optional[Dict[str, str]],
+) -> Dict[str, Any]:
+    """
+    Collar AI logs in the period that no app session matched, credited to the person who
+    labels most with that collar (all time) and to its dog. Usually app data that hasn't
+    arrived yet (an email that didn't get through); never part of the ranking.
+    """
+    logs = (day_data.get("collar_coverage") or {}).get("collar_only_logs") or []
+    if not logs:
+        return {"logs": 0, "by_person": {}, "by_dog": {}}
+    busiest: Dict[str, Tuple[float, str]] = {}
+    for person in _people(all_data, owner_names, group_senders, owner_emails, names_by_email, labeler_types):
+        for sn, stats in person["collars"].items():
+            key = serial_key(sn)
+            seconds = float(stats.get("seconds") or 0)
+            if key not in busiest or seconds > busiest[key][0]:
+                busiest[key] = (seconds, person["person"])
+    dog_names = {**_dogs_by_collar(all_data), **_dogs_by_collar(day_data)}
+    by_person: Dict[str, int] = {}
+    by_dog: Dict[str, int] = {}
+    for log in logs:
+        key = serial_key(log.get("collar_sn"))
+        person = (busiest.get(key) or (0, None))[1] or (owner_names or {}).get(key) or f"collar {log.get('collar_sn')}"
+        by_person[person] = by_person.get(person, 0) + 1
+        dog = dog_names.get(key)
+        if dog:
+            by_dog[dog] = by_dog.get(dog, 0) + 1
+    return {"logs": len(logs), "by_person": by_person, "by_dog": by_dog}
+
+
 def _streak(all_data: Dict[str, Any], day: str) -> int:
     """Days in a row, ending on day, that had at least one labeled session."""
     active = {
@@ -360,6 +424,23 @@ def recap_data(
             "medal": PODIUM[index] if len(labelers) > 1 and index < len(PODIUM) else None,
         })
     dog_board = _dog_leaderboard(labelers, dogs_by_collar)
+    unconfirmed = _unconfirmed(
+        day_data, all_data, owner_names, group_senders, owner_emails, names_by_email, labeler_types
+    )
+    for row in leaderboard:
+        row["unconfirmed"] = unconfirmed["by_person"].get(row["person"], 0)
+    for row in dog_board:
+        row["unconfirmed"] = unconfirmed["by_dog"].get(row["dog"], 0)
+    ranked_people = {row["person"] for row in leaderboard}
+    waiting = sorted(
+        ({"person": p, "logs": n} for p, n in unconfirmed["by_person"].items() if p not in ranked_people),
+        key=lambda r: (-r["logs"], r["person"]),
+    )
+    ranked_dogs = {row["dog"] for row in dog_board}
+    waiting_dogs = sorted(
+        ({"person": d, "logs": n} for d, n in unconfirmed["by_dog"].items() if d not in ranked_dogs),
+        key=lambda r: (-r["logs"], r["person"]),
+    )
     # Milestones are what this period pushed the all-time totals past.
     period_bound = start is not None
     return {
@@ -378,6 +459,11 @@ def recap_data(
         "dogs": _dog_names(day_data),
         "leaderboard": leaderboard,
         "dog_leaderboard": dog_board,
+        # Collar logs with no app data yet: per person, and people with nothing else.
+        "unconfirmed_logs": unconfirmed["logs"],
+        "unconfirmed_by_person": unconfirmed["by_person"],
+        "waiting_for_app_data": waiting,
+        "dogs_waiting_for_app_data": waiting_dogs,
         "streak": _streak(all_data, end),
         "session_milestone": (
             _crossed(all_sessions - sessions, all_sessions, SESSION_MILESTONE_STEP)
@@ -478,12 +564,16 @@ def build_daily_report(
     owner_emails: Optional[Dict[str, str]] = None,
     names_by_email: Optional[Dict[str, str]] = None,
     labeler_types: Optional[Dict[str, str]] = None,
+    timezone_name: Optional[str] = None,
 ) -> str:
     """
     Slack mrkdwn for the days-long period ending on day (one day by default).
     day_data is the summary limited to that period.
     """
     end = date.fromisoformat(day)
+    footnote = "\n" + period_footnote(
+        date.fromisoformat(period_start(day, days)), end, timezone_name
+    )
     if days > 1:
         start = date.fromisoformat(period_start(day, days))
         pretty_day = f"{start.strftime('%b %-d')} – {end.strftime('%b %-d')} ({days} days)"
@@ -506,11 +596,14 @@ def build_daily_report(
     link = f"\n<{dashboard_url.rstrip('/')}|Open the labeling dashboard>" if dashboard_url else ""
 
     if sessions == 0:
+        waiting_note = _waiting_note(recap)
         return (
             f":sunrise: *Labeling recap for {pretty_day}*\n"
             f"{quiet}, with no new labeled sessions. "
             f"So far the team has labeled *{recap['all_sessions']:,} sessions* and "
-            f"*{format_minutes(recap['all_seconds'])}* of data. Thank you! :sparkles:{link}"
+            f"*{format_minutes(recap['all_seconds'])}* of data. Thank you! :sparkles:"
+            + (f"\n{waiting_note}" if waiting_note else "")
+            + f"{link}{footnote}"
         )
 
     labelers, dogs = recap["labelers"], recap["dogs"]
@@ -548,6 +641,10 @@ def build_daily_report(
     if labelers > SHOUT_OUT_LIMIT:
         lines.append(f"• …and {labelers - SHOUT_OUT_LIMIT} more. Thank you all!")
 
+    waiting_note = _waiting_note(recap)
+    if waiting_note:
+        lines.append(waiting_note)
+
     if recap["streak"] >= STREAK_MIN_DAYS:
         lines.append(f":fire: {recap['streak']} days in a row with new labeled data!")
     if recap["session_milestone"]:
@@ -559,7 +656,22 @@ def build_daily_report(
             f":stopwatch: Milestone: over *{recap['hours_milestone']:,} hours* of labeled data!"
         )
 
-    return "\n".join(lines) + link
+    return "\n".join(lines) + link + footnote
+
+
+def _waiting_note(recap: Dict[str, Any]) -> Optional[str]:
+    """One line about collar logs whose app data hasn't arrived, busiest person first."""
+    total = int(recap.get("unconfirmed_logs") or 0)
+    if not total:
+        return None
+    people = sorted((recap.get("unconfirmed_by_person") or {}).items(), key=lambda kv: (-kv[1], kv[0]))
+    who = ", ".join(f"{person} {count}" for person, count in people[:SHOUT_OUT_LIMIT])
+    if len(people) > SHOUT_OUT_LIMIT:
+        who += ", …"
+    return (
+        f":hourglass_flowing_sand: {total} collar log{'s' if total != 1 else ''} with no app data "
+        f"yet ({who}). They count once the emailed logs arrive."
+    )
 
 
 def post_to_slack_webhook(url: str, text: str) -> None:

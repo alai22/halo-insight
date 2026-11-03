@@ -10,6 +10,10 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  // Email login link, for people without a Halo Google account (e.g. contractors).
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [email, setEmail] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
   
   // Check if password login is still available (expires end of Feb 2026)
   const isPasswordLoginAvailable = new Date() < PASSWORD_LOGIN_EXPIRY;
@@ -26,7 +30,29 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
       }
     };
     checkGoogleEnabled();
+    axios
+      .get('/api/auth/email-enabled')
+      .then((response) => setEmailEnabled(Boolean(response.data.enabled)))
+      .catch(() => setEmailEnabled(false));
   }, []);
+
+  const handleEmailLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setIsLoading(true);
+    try {
+      const response = await axios.post('/api/auth/request-login', { email: email.trim() });
+      if (response.data.success) {
+        setEmailSent(true);
+      } else {
+        setError(response.data.error || 'Could not send the login email.');
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not send the login email. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Check if we're returning from Google OAuth
   useEffect(() => {
@@ -145,6 +171,46 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
           </div>
         )}
 
+        {/* Email login link (not offered on the admin screen) */}
+        {emailEnabled && !requireAdmin && (
+          <div className="mb-4">
+            {googleEnabled && (
+              <div className="relative my-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-gray-300"></div>
+                </div>
+                <div className="relative flex justify-center text-sm">
+                  <span className="px-2 bg-white text-gray-500">or, without a Halo Google account</span>
+                </div>
+              </div>
+            )}
+            {emailSent ? (
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800 text-center">
+                If {email.trim()} can use Halo Insight, a login link is on its way. It expires in 30
+                minutes.
+              </div>
+            ) : (
+              <form onSubmit={handleEmailLogin} className="space-y-3">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={isLoading}
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading || !email.trim()}
+                  className="w-full bg-gray-900 text-white py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? 'Sending…' : 'Email me a login link'}
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
         {/* Divider - show when both options available */}
         {googleEnabled && isPasswordLoginAvailable && (
           <div className="relative my-4">
@@ -204,7 +270,7 @@ function Login({ onLogin, onAdminLogin, requireAdmin = false }) {
         )}
 
         {/* Show message if neither option is available */}
-        {!googleEnabled && !isPasswordLoginAvailable && (
+        {!googleEnabled && !isPasswordLoginAvailable && !(emailEnabled && !requireAdmin) && (
           <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
             <p className="text-yellow-800 text-sm text-center">
               No authentication methods available. Please contact your administrator.

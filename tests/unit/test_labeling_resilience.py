@@ -372,6 +372,8 @@ def test_file_snapshot_round_trips_through_gzip(monkeypatch):
 def test_failed_window_summary_is_reported_not_retried(monkeypatch):
     started = []
     monkeypatch.setattr(routes, "_maybe_start_window_refresh", lambda w: started.append(w) or True)
+    # A full rescan can't start here, so refresh falls back to rebuilding the range.
+    monkeypatch.setattr(routes, "_maybe_start_background_refresh", lambda _ttl: False)
     routes._window_cache_clear()
     with routes._WINDOW_CACHE_LOCK:
         routes._WINDOW_ERRORS["2026-08-01..9999-12-31"] = "boom"
@@ -582,3 +584,163 @@ def test_health_page_reads_like_a_status_page():
     assert "14h 33m ago" in html
     assert "697 MB now · peak 697 MB" in html
     assert "Idle" in html and ">OK<" in html
+
+
+def _iso(seconds_ago):
+    import time as _time
+
+    return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() - seconds_ago))
+
+
+def _persisted_job(monkeypatch, beat_seconds_ago):
+    monkeypatch.setattr(routes, "_process_snapshot", lambda: {"running": False})
+    monkeypatch.setattr(
+        routes,
+        "_load_persisted_process_state",
+        lambda: {
+            "running": True,
+            "job": "sync-collar",
+            "started_at": _iso(3600),
+            "updated_at": _iso(beat_seconds_ago),
+            "message": "Copying collar logs",
+            "progress": {"phase": "copy", "done": 340, "total": 900},
+        },
+    )
+
+
+def test_job_that_stopped_heartbeating_no_longer_blocks(monkeypatch):
+    _persisted_job(monkeypatch, beat_seconds_ago=routes._STALE_HEARTBEAT_SEC + 60)
+    assert routes._is_process_busy() is False
+    state = routes._merge_process_state()
+    assert "interrupted" in state["last_error"]
+
+
+def test_job_that_keeps_heartbeating_still_blocks(monkeypatch):
+    # Started an hour ago, but beat a minute ago: a long job, not a dead one.
+    _persisted_job(monkeypatch, beat_seconds_ago=60)
+    assert routes._is_process_busy() is True
+
+
+def test_deferred_range_names_the_job_it_waits_on(monkeypatch):
+    _persisted_job(monkeypatch, beat_seconds_ago=30)
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_CACHE.clear()
+        routes._WINDOW_ERRORS.clear()
+    body = _client().get(
+        "/api/labeling/summary?start=2026-08-01&end=2026-08-31", headers=_admin_headers()
+    ).get_json()
+    assert body["pending"] is True
+    assert body["blocked_by"]["job"] == "sync-collar"
+    assert body["blocked_by"]["progress"]["total"] == 900
+
+
+def test_heartbeat_resaves_state_while_a_job_runs(monkeypatch):
+    saved = []
+    monkeypatch.setattr(routes, "_HEARTBEAT_SEC", 0.01)
+    monkeypatch.setattr(routes, "_persist_process_state", lambda snap: saved.append(snap["running"]))
+    monkeypatch.setattr(routes, "_HEARTBEAT_THREAD", None)
+    routes._set_process_state(running=True, job="process")
+    import time as _time
+
+    _time.sleep(0.1)
+    beats = len(saved)
+    routes._set_process_state(running=False)
+    _time.sleep(0.05)
+    assert beats >= 3
+    assert routes._HEARTBEAT_THREAD is None or not routes._HEARTBEAT_THREAD.is_alive()
+
+
+def test_range_refresh_runs_the_full_refresh_first(monkeypatch):
+    full = []
+    window = []
+
+    def _start_full(_ttl):
+        full.append(_ttl)
+        monkeypatch.setattr(routes, "_BG_REFRESH_RUNNING", True)
+        monkeypatch.setattr(routes, "_BG_REFRESH_STARTED_AT", "2026-11-02T16:40:00Z")
+        return True
+
+    monkeypatch.setattr(routes, "_maybe_start_background_refresh", _start_full)
+    monkeypatch.setattr(routes, "_maybe_start_window_refresh", lambda w: window.append(w) or True)
+    routes._window_cache_clear()
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_CACHE["2026-01-01..9999-12-31"] = {"payload": {"totals": {}}, "generated_at": 0}
+
+    body = _client().get(
+        "/api/labeling/summary?start=2026-01-01&refresh=1", headers=_admin_headers()
+    ).get_json()
+    assert full and window == []
+    # The last range numbers stay up, marked stale, naming the rescan.
+    assert body["stale"] is True and body["data"] == {"totals": {}}
+    assert body["blocked_by"]["job"] == "summary-refresh"
+
+    # Polls while it runs don't start a range build from the old snapshot.
+    routes._window_cache_clear()
+    body = _client().get("/api/labeling/summary?start=2026-01-01", headers=_admin_headers()).get_json()
+    assert body["pending"] is True and window == []
+    routes._window_cache_clear()
+
+
+def test_full_summary_clears_range_cache(monkeypatch):
+    class _Analyzer:
+        last_files = []
+        texts_read = {}
+        bucket_name = "b"
+        prefix = "p"
+
+        def analyze(self, include_content):
+            return {}
+
+    monkeypatch.setattr(routes, "_configure_analyzer", lambda a: _Analyzer())
+    monkeypatch.setattr(routes, "LabelingDataAnalyzer", lambda: None)
+    monkeypatch.setattr(routes, "format_ui_summary", lambda raw: {"totals": {}})
+    monkeypatch.setattr(routes, "_attach_collar_coverage", lambda data, raw: data)
+    monkeypatch.setattr(routes, "_attach_overview", lambda data, full: None)
+    monkeypatch.setattr(routes, "_persist_summary_cache", lambda *a: None)
+    monkeypatch.setattr(routes, "_persist_file_snapshot", lambda *a: None)
+    with routes._WINDOW_CACHE_LOCK:
+        routes._WINDOW_CACHE["x..y"] = {"payload": {}, "generated_at": 0}
+    routes._compute_summary(900)
+    assert "x..y" not in routes._WINDOW_CACHE
+
+
+def test_recap_rebuilds_a_dropped_summary_from_the_snapshot(monkeypatch):
+    entries = [None]
+    rebuilt = []
+    monkeypatch.setattr(routes, "_report_summary_entry", lambda: entries[-1])
+    monkeypatch.setattr(routes, "_load_file_snapshot", lambda: {"files": []})
+
+    def _rebuild():
+        rebuilt.append(True)
+        entries.append({"data": {}, "generated_at": 10.0})
+
+    monkeypatch.setattr(routes, "_rebuild_summary_from_snapshot", _rebuild)
+    monkeypatch.setattr(routes, "_compute_window_summary", lambda w: routes._WINDOW_CACHE.__setitem__(
+        f"{w[0]}..{w[1]}", {"payload": {}, "generated_at": 11.0}))
+    monkeypatch.setattr(routes, "build_daily_report", lambda *a, **k: "recap text")
+    monkeypatch.setattr(routes, "_recap_lookups", lambda: {})
+    assert routes._build_report_text("2026-11-01", allow_scan=False) == "recap text"
+    assert rebuilt == [True]
+    routes._window_cache_clear()
+
+
+def test_collar_sync_keeps_the_summary(monkeypatch):
+    calls = []
+    monkeypatch.setattr(routes, "_cache_clear", lambda: calls.append("clear"))
+    monkeypatch.setattr(routes, "_rebuild_summary_in_background", lambda: calls.append("rebuild"))
+    monkeypatch.setattr(routes, "_is_process_busy", lambda: False)
+    monkeypatch.setattr(routes, "_set_process_state", lambda **k: {"running": False})
+    monkeypatch.setattr(routes, "_merge_process_state", lambda: {"running": False})
+
+    class _Sync:
+        def sync(self, dry_run, inventory_only, extra_sns=None):
+            return {"copied": 0}
+
+    monkeypatch.setattr(routes, "LabelingCollarSyncService", _Sync)
+    monkeypatch.setattr(routes, "_owner_collar_sns", lambda: [])
+    monkeypatch.setattr(routes, "azure_configured", lambda: True)
+    response = _client().post(
+        "/api/labeling/sync-collar", json={"async": False}, headers=_admin_headers()
+    )
+    assert response.status_code == 200
+    assert calls == ["rebuild"]

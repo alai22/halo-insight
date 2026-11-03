@@ -5,6 +5,7 @@ API routes for authentication (magic link and Google OAuth)
 from flask import Blueprint, request, jsonify, session, redirect, url_for
 from ...utils.logging import get_logger
 from ...services.auth_service import AuthService
+from ..middleware.auth import LABELING_VIEWER_ROLE
 from ...utils.email_service import EmailService
 from ...utils.config import Config
 from urllib.parse import quote
@@ -30,8 +31,8 @@ def request_login():
                 'error': 'Email is required'
             }), 400
         
-        # Validate email domain
-        if not AuthService.validate_email_domain(email):
+        # An allowed domain, or an outside labeling viewer
+        if not AuthService.can_request_login(email):
             logger.warning(f"Login attempt from unauthorized domain: {email}")
             # Don't reveal that domain check failed - just say email sent
             # This prevents email enumeration attacks
@@ -154,9 +155,14 @@ def verify_token():
             }), 400
         
         # Create session
+        session.clear()
         session['authenticated'] = True
         session['email'] = email
         session['auth_method'] = 'magic_link'
+        if Config.is_labeling_viewer_email(email):
+            # Outside viewer: read-only labeling stats, nothing else (see restrict_labeling_viewers).
+            session['role'] = LABELING_VIEWER_ROLE
+            session['admin_authenticated'] = False
         session.permanent = True  # Make session persistent
         
         logger.info(f"User authenticated successfully: {email}")
@@ -217,6 +223,7 @@ def auth_status():
                     'authenticated': True,
                     'email': email,
                     'auth_method': auth_method,
+                    'role': session.get('role'),
                     'session_available': True
                 }), 200
         except RuntimeError as session_error:
@@ -224,12 +231,9 @@ def auth_status():
             logger.debug(f"Session unavailable, checking token header: {session_error}")
             pass
         
-        # Check for auth token in headers (temporary workaround)
-        auth_token = request.headers.get('X-Auth-Token')
-        if auth_token:
-            # Simple validation - token exists means user logged in
-            # In production with proper FLASK_SECRET_KEY, this won't be needed
-            logger.info(f"Authenticated via token header (token length: {len(auth_token)})")
+        # Fallback: a signed token issued by /password-login
+        if AuthService.verify_auth_token(request.headers.get('X-Auth-Token')):
+            logger.info("Authenticated via token header")
             return jsonify({
                 'authenticated': True,
                 'email': None,
@@ -238,7 +242,6 @@ def auth_status():
         
         # Log all headers for debugging
         logger.debug(f"Auth status check - no token found. Headers: {list(request.headers.keys())}")
-        logger.debug(f"X-Auth-Token header value: {request.headers.get('X-Auth-Token', 'NOT FOUND')}")
         
         return jsonify({
             'authenticated': False,
@@ -285,37 +288,23 @@ def password_login():
             }), 400
         
         # Validate password against backend config
-        if password == Config.AUTH_PASSWORD:
-            # Try to create session if secret key is available
+        if hmac.compare_digest(password.encode(), Config.AUTH_PASSWORD.encode()):
+            session_available = True
             try:
                 session['authenticated'] = True
                 session['auth_method'] = 'password'
                 session.permanent = True  # Make session persistent
-                logger.info("User authenticated successfully via password (session created)")
             except RuntimeError as session_error:
-                # Session creation failed (no secret key) - use token-based auth instead
                 logger.warning(f"Session creation failed (likely no FLASK_SECRET_KEY): {session_error}")
-                logger.info("Falling back to token-based authentication (temporary workaround)")
-                # Return success with a simple token that frontend can store
-                # This is a temporary workaround until FLASK_SECRET_KEY is configured
-                import hashlib
-                import time
-                token_data = f"{password}:{time.time()}"
-                auth_token = hashlib.sha256(token_data.encode()).hexdigest()[:32]
-                
-                logger.info("User authenticated successfully via password (token-based, no session)")
-                return jsonify({
-                    'success': True,
-                    'message': 'Login successful',
-                    'auth_token': auth_token,  # Frontend will store this
-                    'session_available': False  # Indicates session wasn't created
-                }), 200
-            
-            logger.info("User authenticated successfully via password")
+                session_available = False
+
+            # Always issue a signed token too, so X-Auth-Token works without the cookie.
+            logger.info(f"User authenticated successfully via password (session: {session_available})")
             return jsonify({
                 'success': True,
                 'message': 'Login successful',
-                'session_available': True
+                'auth_token': AuthService.issue_auth_token(),
+                'session_available': session_available
             }), 200
         else:
             logger.warning("Failed password login attempt")

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useDeferredValue } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useDeferredValue, lazy, Suspense } from 'react';
 import { Settings, Menu, LogOut, Trash2 } from 'lucide-react';
 import PromptInput from './components/PromptInput';
 import Sidebar from './components/Sidebar';
@@ -9,6 +9,7 @@ import ModePanel from './components/ModePanel';
 import InterviewParticipantPage from './components/interview/InterviewParticipantPage';
 import SurveyParticipantPage from './components/surveys/SurveyParticipantPage';
 import { useAnalytics } from './hooks/useAnalytics';
+import { modeLoaders } from './components/modePrefetch';
 import axios from 'axios';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { getSurvicateDataSource } from './utils/constants';
@@ -16,6 +17,8 @@ import { getModeFromPath, getPathFromMode, getRouteFromPath, isPathBasedMode, is
 
 // Configure axios to send credentials (cookies) with all requests
 axios.defaults.withCredentials = true;
+
+const LabelingDataDashboard = lazy(modeLoaders['labeling-data']);
 
 // Add interceptor to include auth token in headers (temporary workaround for session issues)
 axios.interceptors.request.use(
@@ -102,6 +105,8 @@ function App() {
   const [healthStatus, setHealthStatus] = useState(null);
   const [adminMode, setAdminMode] = useState(null); // 'claude' or 'download' for admin tools
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  // 'labeling_viewer' for outside contractors: read-only labeling stats and nothing else.
+  const [authRole, setAuthRole] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Close mobile sidebar when resizing to desktop breakpoint
@@ -315,6 +320,7 @@ function App() {
         if (response.data.authenticated) {
           console.log('Initial auth check - setting authenticated to true');
           setIsAuthenticated(true);
+          setAuthRole(response.data.role || null);
           
           // Also check admin status if authenticated
           try {
@@ -376,6 +382,7 @@ function App() {
       if (response.data.authenticated) {
         console.log('handleLogin - setting authenticated to true');
         setIsAuthenticated(true);
+        setAuthRole(response.data.role || null);
         
         // Also check admin status
         try {
@@ -413,6 +420,7 @@ function App() {
       localStorage.removeItem('adminToken');
       setIsAuthenticated(false);
       setIsAdminAuthenticated(false);
+      setAuthRole(null);
       setAdminMode(null);
     }
   };
@@ -504,6 +512,27 @@ function App() {
   // If not authenticated, show login screen
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} />;
+  }
+
+  // Labeling viewers get the labeling stats alone: no sidebar, no other tools.
+  if (authRole === 'labeling_viewer') {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="flex justify-end px-6 pt-4">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
+          >
+            <LogOut className="h-4 w-4" />
+            Log out
+          </button>
+        </div>
+        <Suspense fallback={<div className="p-8 text-gray-500">Loading…</div>}>
+          <LabelingDataDashboard readOnly />
+        </Suspense>
+      </div>
+    );
   }
 
   // Admin-gated tools require admin authentication (Home launcher itself does not)

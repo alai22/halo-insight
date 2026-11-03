@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, CheckCircle2, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Hourglass, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Hourglass, Mail, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -865,6 +865,184 @@ const RECAP_PERIODS = [
   { days: 30, label: 'Last 30 days' },
 ];
 
+// Gmail ingester (replacing Make.com): last run, counts, errors and, in shadow
+// mode, how its batches compare with Make's. Fed by /status → gmail_ingest.
+function gmailIngestAttention(info) {
+  if (!info || !info.enabled) return false;
+  const compare = info.compare;
+  return Boolean(
+    info.stalled ||
+      info.last_error ||
+      info.state_error ||
+      info.last_run?.errors ||
+      (info.mode === 'shadow' && compare && !compare.agrees)
+  );
+}
+
+function GmailIngestPanel({ info, readOnly, onChanged }) {
+  const [since, setSince] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  if (!info) return null;
+  const run = info.last_run || {};
+  const compare = info.compare;
+  const attention = gmailIngestAttention(info);
+  const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
+  const post = async (url, body, okText) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const response = await axios.post(url, body);
+      if (!response.data.success) throw new Error(response.data.error || 'Request failed');
+      setNotice({ type: 'info', text: response.data.message || okText });
+      onChanged?.();
+    } catch (err) {
+      setNotice({ type: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let headline;
+  if (!info.enabled) headline = 'Off (LABELING_GMAIL_INGEST_ENABLED is not true)';
+  else if (!info.configured) headline = 'On, but no service account key is configured';
+  else if (info.running) headline = info.message || 'Checking the inbox…';
+  else if (info.stalled) headline = `No finished run since ${when(run.finished_at || info.poller_started_at)}`;
+  else headline = `Last run ${when(run.finished_at)} · ${run.ingested ?? 0} ingested`;
+
+  return (
+    <details
+      open={attention}
+      className={`group mb-4 px-3 py-2 border rounded-lg text-sm ${
+        attention ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-white border-gray-200 text-gray-700'
+      }`}
+    >
+      <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
+        <Mail className={`h-4 w-4 flex-shrink-0 ${attention ? 'text-amber-600' : 'text-gray-400'}`} />
+        <span className="font-medium">Gmail ingest</span>
+        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
+          {info.mode === 'live' ? 'live → staging/' : `shadow → ${info.target_prefix}`}
+        </span>
+        <span className="text-xs opacity-80 truncate">{headline}</span>
+        <span className="ml-auto text-xs opacity-60 group-open:hidden">Show details ▸</span>
+        <span className="ml-auto text-xs opacity-60 hidden group-open:inline">Hide ▾</span>
+      </summary>
+      <div className="pb-1 space-y-2 mt-2">
+        <p className="text-xs">
+          Reads {info.mailbox} every {Math.round((info.poll_sec || 300) / 60)} min.
+          {info.mode === 'shadow'
+            ? ' Shadow mode: writes beside Make for comparison; Process staging does not read it yet.'
+            : ' Live: writes into staging/ and skips emails Make already delivered.'}
+        </p>
+        <p className="text-xs">
+          Last run: {when(run.finished_at)} · listed {run.listed ?? 0} · ingested {run.ingested ?? 0} ·
+          to forwards {run.quarantined ?? 0} · no logs {run.no_logs ?? 0} · already there{' '}
+          {(run.skipped_processed ?? 0) + (run.skipped_delivered ?? 0)} · errors {run.errors ?? 0}
+          {info.last_ingest_at ? ` · last new email ${when(info.last_ingest_at)}` : ''}
+        </p>
+        {info.totals ? (
+          <p className="text-xs opacity-80">
+            Since {when(info.first_run_at)}: {info.totals.ingested ?? 0} ingested,{' '}
+            {info.totals.quarantined ?? 0} to forwards, {info.totals.errors ?? 0} errors
+            {info.retrying ? ` · ${info.retrying} email(s) being retried` : ''}
+          </p>
+        ) : null}
+        {info.last_error || info.state_error ? (
+          <p className="text-xs text-red-700">{info.last_error || info.state_error}</p>
+        ) : null}
+        {(info.recent_errors || []).length ? (
+          <ul className="list-disc pl-5 text-xs space-y-0.5">
+            {info.recent_errors.map((e) => (
+              <li key={`${e.message_id}-${e.at}`}>
+                {e.message_id} · {e.error} (try {e.attempts})
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {compare ? (
+          <div className="text-xs border-t border-gray-200 pt-2">
+            <p className="font-medium">
+              Gmail vs Make since {when(compare.since)}:{' '}
+              {compare.agrees ? 'they agree' : 'differences found'} (checked {when(compare.generated_at)})
+            </p>
+            <p>
+              Both {compare.both} · only Make {compare.make_only_count}
+              {compare.make_only_empty_count ? ` (${compare.make_only_empty_count} Make batches had no logs)` : ''}{' '}
+              · only Gmail {compare.gmail_only_count} · different files {compare.file_diff_count} · other
+              folder {compare.folder_mismatch_count}
+            </p>
+            {(compare.make_only || []).filter((m) => m.make_files).slice(0, 10).map((m) => (
+              <p key={`mo-${m.message_id}`} className="opacity-80">
+                Only Make: {m.message_id} in {m.make_folders.join(', ')} ({m.make_files} files)
+              </p>
+            ))}
+            {(compare.gmail_only || []).slice(0, 10).map((m) => (
+              <p key={`go-${m.message_id}`} className="opacity-80">
+                Only Gmail: {m.message_id} → {m.gmail_folder} ({m.gmail_files} files)
+              </p>
+            ))}
+            {(compare.file_diffs || []).slice(0, 10).map((m) => (
+              <p key={`fd-${m.message_id}`} className="opacity-80">
+                Files differ: {m.message_id} · Make {m.make_files}, Gmail {m.gmail_files}
+              </p>
+            ))}
+            {(compare.folder_mismatch || []).slice(0, 10).map((m) => (
+              <p key={`fm-${m.message_id}`} className="opacity-80">
+                Folder: Make {m.make_folders.join(', ')} · Gmail {m.gmail_folder}
+              </p>
+            ))}
+          </div>
+        ) : null}
+        {!readOnly && info.configured ? (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={busy || info.running}
+              onClick={() => post('/api/labeling/gmail-ingest/run', {}, 'Gmail ingest started.')}
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+            >
+              Check inbox now
+            </button>
+            <input
+              type="date"
+              value={since}
+              onChange={(e) => setSince(e.target.value)}
+              className="px-2 py-1 border border-gray-300 rounded-md text-xs bg-white"
+              aria-label="Backfill from date"
+            />
+            <button
+              type="button"
+              disabled={busy || info.running || !since}
+              onClick={() =>
+                window.confirm(
+                  `Read every email since ${since} and add the ones not already in ${info.target_prefix}?`
+                ) && post('/api/labeling/gmail-ingest/run', { since }, 'Backfill started.')
+              }
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+            >
+              Backfill from date
+            </button>
+            {info.mode === 'shadow' ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => post('/api/labeling/gmail-ingest/compare', {}, 'Comparison updated.')}
+                className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-xs hover:bg-gray-50 disabled:opacity-50"
+              >
+                Compare with Make now
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {notice ? (
+          <p className={`text-xs ${notice.type === 'error' ? 'text-red-700' : 'text-gray-600'}`}>{notice.text}</p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function SlackRecapPanel({ onClose }) {
   const [day, setDay] = useState('');
   // 1 = that day; 7 or 30 = the days ending on that day.
@@ -1514,8 +1692,21 @@ function listNames(names, max = 3) {
 }
 
 /** A ranked shout-out list: medal, name, who or what it goes with, and labeled time. */
-function ShoutOutList({ rows, empty, showAll, onToggle }) {
-  if (!rows.length) return <p className="text-sm text-gray-500">{empty}</p>;
+function ShoutOutList({ rows, empty, showAll, onToggle, waiting = [] }) {
+  const waitingNote = waiting.length ? (
+    <p className="mt-3 text-xs text-amber-800" title="Not counted in the ranking until their emailed logs arrive.">
+      Waiting for app data:{' '}
+      {waiting.map((w) => `${w.person} (${w.logs} collar log${w.logs === 1 ? '' : 's'})`).join(', ')}
+    </p>
+  ) : null;
+  if (!rows.length) {
+    return (
+      <div>
+        <p className="text-sm text-gray-500">{empty}</p>
+        {waitingNote}
+      </div>
+    );
+  }
   return (
     <div>
       <ul className="divide-y divide-gray-100">
@@ -1534,6 +1725,14 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
             <span className="text-right tabular-nums whitespace-nowrap">
               <span className="block text-gray-900">{formatSecondsShort(row.seconds)}</span>
               <span className="block text-xs text-gray-500">{row.sessions} sessions</span>
+              {row.unconfirmed ? (
+                <span
+                  className="block text-xs text-amber-700"
+                  title="Collar logs from this period with no app data yet, usually an email that hasn't arrived. Not counted in the ranking."
+                >
+                  +{row.unconfirmed} collar log{row.unconfirmed === 1 ? '' : 's'}, no app data
+                </span>
+              ) : null}
             </span>
           </li>
         ))}
@@ -1543,6 +1742,7 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
           {showAll ? `Show top ${SHOUT_OUT_ROWS}` : `Show all ${rows.length}`}
         </button>
       ) : null}
+      {waitingNote}
     </div>
   );
 }
@@ -1567,6 +1767,8 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
   const prevLabel = allTime
     ? 'the 7 days before'
     : `${formatShortDay(change.previous_start)} – ${formatShortDay(change.previous_end)}`;
+  // The leaderboards cover the dashboard's date range; the Slack recap picks its own period.
+  const rankedOver = allTime ? 'over all time' : `from ${rangeLabel}`;
   const minutes = (s) => formatSecondsShort(s);
   const attention =
     nextStep && !nextStep.loading && nextStep.tone !== 'ok' ? nextStep : null;
@@ -1666,9 +1868,14 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
       </ChartCard>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
-        <ChartCard title="Top dogs" description="The good dogs, ranked by labeled time, with their people.">
+        <ChartCard
+          kicker={rangeLabel}
+          title="Top dogs"
+          description={`The good dogs, ranked by labeled time ${rankedOver}, with their people.`}
+        >
           <ShoutOutList
             empty="No named dogs in this range."
+            waiting={(recap.dogs_waiting_for_app_data || []).map((w) => ({ ...w, person: `🐶 ${w.person}` }))}
             showAll={showAllShoutOuts}
             onToggle={() => setShowAllShoutOuts((v) => !v)}
             rows={(recap.dog_leaderboard || []).map((row) => ({
@@ -1678,16 +1885,19 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
               secondary: listNames(row.people),
               sessions: row.sessions,
               seconds: row.seconds,
+              unconfirmed: row.unconfirmed,
             }))}
           />
         </ChartCard>
         <ChartCard
+          kicker={rangeLabel}
           title="Top people"
-          description="Owners and labelers, ranked by labeled time. The list Slack posts."
-          action={<EditLabelersButton onClick={onEditLabelers} />}
+          description={`Owners and labelers, ranked by labeled time ${rankedOver}. The Slack recap ranks the same way for the day, week or month it covers, so it can differ.`}
+          action={onEditLabelers ? <EditLabelersButton onClick={onEditLabelers} /> : null}
         >
           <ShoutOutList
             empty="Nobody labeled in this range."
+            waiting={recap.waiting_for_app_data || []}
             showAll={showAllShoutOuts}
             onToggle={() => setShowAllShoutOuts((v) => !v)}
             rows={recap.leaderboard.map((row) => ({
@@ -1698,6 +1908,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
               secondary: row.dogs.length ? `🐶 ${listNames(row.dogs)}` : null,
               sessions: row.sessions,
               seconds: row.seconds,
+              unconfirmed: row.unconfirmed,
             }))}
           />
         </ChartCard>
@@ -1797,7 +2008,7 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
       <ChartCard
         title="Progress by person"
         description={`Green labels have ${minLabel} or more. Amber ones are started but short; the time shown is what they have so far.`}
-        action={<EditLabelersButton onClick={onEditLabelers} />}
+        action={onEditLabelers ? <EditLabelersButton onClick={onEditLabelers} /> : null}
       >
         {people.length === 0 ? (
           <p className="text-sm text-gray-500">Nobody here in this range.</p>
@@ -2606,6 +2817,70 @@ function formatFileSize(bytes) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Why emailed logs may be missing: Make.com stopped uploading, or uploads landed
+ * where Process staging can't read them.
+ */
+function UploadsAlert({ uploads, stale }) {
+  const [open, setOpen] = useState(false);
+  const recent = uploads?.unreadable_recent_count || 0;
+  if (!uploads || (!stale && !recent)) return null;
+  const rows = uploads.unreadable || [];
+  return (
+    <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-950">
+      {stale ? (
+        <p>
+          <span className="font-medium">
+            {uploads.last_upload_at
+              ? `No new uploads from Make.com since ${formatUpdatedAt(uploads.last_upload_at)} (${formatAge(uploads.last_upload_at)}).`
+              : 'No uploads from Make.com found in staging.'}
+          </span>{' '}
+          If labelers emailed logs since then, check the Make scenario: it stops when it runs out of
+          operations, and emails from that time may need a re-run from that date.
+        </p>
+      ) : null}
+      {recent ? (
+        <div className={stale ? 'mt-2' : ''}>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="font-medium underline decoration-amber-400 hover:text-amber-800 text-left"
+          >
+            {recent} upload{recent === 1 ? '' : 's'} in the last {uploads.unreadable_recent_days} days
+            can&rsquo;t be read
+          </button>
+          <span className="text-amber-900/80">
+            {' '}
+            · these emails left no session files Process staging can use.
+          </span>
+          {open ? (
+            <div className="mt-2">
+              <ul className="space-y-2 text-xs">
+                {rows.map((b) => (
+                  <li key={`${b.folder}/${b.message_id}`} className="border-t border-amber-200 pt-2">
+                    <div className="font-mono break-all">
+                      {b.folder}/{b.message_id}
+                    </div>
+                    <div className="text-amber-900/80">
+                      {b.received_at ? `Email received ${formatUpdatedAt(b.received_at)}` : 'Email time unknown'}
+                      {b.uploaded_at ? ` · uploaded ${formatUpdatedAt(b.uploaded_at)}` : ''}
+                    </div>
+                    <div>{b.reason}</div>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-amber-900/80">
+                Re-run the Make scenario from the email&rsquo;s date, or ask the labeler to send it
+                again. Process staging skips duplicates, so a re-send is safe.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Side panel listing the AI logs mirrored into collar-raw/, per collar, with the sessions each one matched. */
 function CollarFilesDrawer({ coverage, collarRows, collar, onChangeCollar, onClose, collarInfo }) {
   const [usage, setUsage] = useState('all');
@@ -2915,6 +3190,182 @@ function ActivityDurationTable({ rows, labelHeader, formatName }) {
   );
 }
 
+const SESSION_LOG_PAGE = 50;
+
+function sessionTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts).replace('T', ' ');
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function csvCell(value) {
+  const text = value == null ? '' : String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadSessionsCsv(rows, email, family, range) {
+  const header = ['timestamp', 'session_id', 'collar_sn', 'dog', 'duration_seconds', 'files', 'kinds', 'activities'];
+  const lines = rows.map((r) =>
+    [
+      r.timestamp,
+      r.session_id,
+      r.collar_sn,
+      r.dog,
+      r.duration_seconds,
+      r.files,
+      (r.kinds || []).join(' '),
+      Object.entries(r.activities || {})
+        .map(([label, sec]) => `${label}=${sec}`)
+        .join('; '),
+    ]
+      .map(csvCell)
+      .join(',')
+  );
+  const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const span = range.start || range.end ? `_${range.start || 'start'}_${range.end || 'today'}` : '';
+  a.href = url;
+  a.download = `sessions_${email.replace(/[^a-z0-9.@+-]/gi, '_')}_${family}${span}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Every session one labeler sent, newest first, for the selected model and date range. */
+function LabelerSessionLog({ email, family, range }) {
+  const [state, setState] = useState({ loading: true, rows: [], message: null, error: null });
+  const [limit, setLimit] = useState(SESSION_LOG_PAGE);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, rows: [], message: null, error: null });
+    setLimit(SESSION_LOG_PAGE);
+    const params = { user: email, family };
+    if (range.start) params.start = range.start;
+    if (range.end) params.end = range.end;
+    axios
+      .get('/api/labeling/sessions', { params })
+      .then((response) => {
+        if (cancelled) return;
+        const body = response.data || {};
+        setState({
+          loading: false,
+          rows: body.sessions || [],
+          message: body.pending || body.needs_refresh ? body.message : null,
+          error: body.success ? null : body.error || 'Could not load sessions',
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({
+          loading: false,
+          rows: [],
+          message: null,
+          error: err.response?.data?.error || err.message || 'Could not load sessions',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [email, family, range.start, range.end]);
+
+  const { loading, rows, message, error } = state;
+  const totalSeconds = rows.reduce((sum, r) => sum + (Number(r.duration_seconds) || 0), 0);
+  return (
+    <section className="mb-10 bg-white border border-gray-200 rounded-lg p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <h3 className="text-lg font-semibold text-gray-900">
+            Sessions from <LabelerName email={email} />
+          </h3>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {MODEL_LABELS[family]} · {describeRange(range)}
+            {!loading && rows.length
+              ? ` · ${rows.length} sessions · ${formatSecondsShort(totalSeconds)} labeled`
+              : ''}
+          </p>
+        </div>
+        {rows.length ? (
+          <button
+            type="button"
+            onClick={() => downloadSessionsCsv(rows, email, family, range)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50"
+          >
+            <DownloadCloud className="h-4 w-4" />
+            Download CSV
+          </button>
+        ) : null}
+      </div>
+      {loading ? (
+        <p className="text-sm text-gray-500 inline-flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 animate-spin" /> Loading sessions…
+        </p>
+      ) : error ? (
+        <p className="text-sm text-red-600">{error}</p>
+      ) : message ? (
+        <p className="text-sm text-gray-500">{message}</p>
+      ) : !rows.length ? (
+        <p className="text-sm text-gray-500">No sessions from this labeler in this range.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b">
+                <th className="py-2 pr-4 font-medium">When</th>
+                <th className="py-2 pr-4 font-medium">Dog · collar</th>
+                <th className="py-2 pr-4 font-medium">Duration</th>
+                <th className="py-2 pr-4 font-medium">Activities</th>
+                <th className="py-2 font-medium">Files</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, limit).map((r) => (
+                <tr key={r.session_id} className="border-b border-gray-100 align-top">
+                  <td className="py-2 pr-4 text-gray-900 whitespace-nowrap">{sessionTime(r.timestamp)}</td>
+                  <td className="py-2 pr-4 text-gray-700">
+                    {r.dog ? <span className="text-gray-900">{r.dog}</span> : null}
+                    {r.dog ? ' · ' : ''}
+                    <span className="font-mono text-xs">{r.collar_sn}</span>
+                  </td>
+                  <td className="py-2 pr-4 text-gray-700 whitespace-nowrap">
+                    {formatSecondsShort(r.duration_seconds)}
+                  </td>
+                  <td className="py-2 pr-4 text-gray-500">
+                    {Object.entries(r.activities || {}).length
+                      ? Object.entries(r.activities)
+                          .map(([label, sec]) => `${displayLabel(label)} ${formatSecondsShort(sec)}`)
+                          .join(' · ')
+                      : '—'}
+                  </td>
+                  <td className="py-2 text-gray-500 whitespace-nowrap" title={(r.kinds || []).join(', ')}>
+                    {r.files}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length > limit ? (
+            <button
+              type="button"
+              onClick={() => setLimit((n) => n + SESSION_LOG_PAGE)}
+              className="mt-3 text-sm text-blue-700 hover:text-blue-900"
+            >
+              Show {Math.min(SESSION_LOG_PAGE, rows.length - limit)} more of {rows.length - limit}
+            </button>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function LabelerTable({ rows }) {
   if (!rows?.length) return null;
   return (
@@ -3069,77 +3520,161 @@ function describeRange(range) {
   return 'all time';
 }
 
-/** Start and end date for every stat on the page, with quick presets. */
-function DateRangeBar({ range, onChange, building, ready, error, onRetry }) {
+const JOB_LABELS = {
+  process: 'Process staging',
+  'promote-forwards': 'Promote forwards',
+  'sync-collar': 'Collar sync',
+  'compact-staging': 'Remove copies',
+  'summary-refresh': 'Full refresh',
+};
+
+function minutesSince(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
+/** "Collar sync · started 14 min ago · 340/900" for a job a summary is waiting on. */
+function describeBlockingJob(job) {
+  if (!job) return null;
+  const parts = [JOB_LABELS[job.job] || 'A labeling job'];
+  const mins = minutesSince(job.started_at);
+  if (mins !== null) parts.push(mins < 1 ? 'started just now' : `started ${mins} min ago`);
+  const progress = job.progress;
+  if (progress?.total > 0) parts.push(`${progress.done}/${progress.total}`);
+  return parts.join(' · ');
+}
+
+/** Start and end date for every stat on the page: a compact button that opens presets. */
+function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRetry }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
   const today = localDayOffset(0);
+  // "Last N days" are whole days ending yesterday, the same periods the Slack recap uses,
+  // so the rankings here match what it posts.
+  const yesterday = localDayOffset(1);
   const presets = [
     { label: 'All time', start: '', end: '' },
-    { label: 'Last 30 days', start: localDayOffset(29), end: '' },
-    { label: 'Last 90 days', start: localDayOffset(89), end: '' },
+    { label: 'Yesterday', start: yesterday, end: yesterday },
+    { label: 'Last 7 days', start: localDayOffset(7), end: yesterday },
+    { label: 'Last 30 days', start: localDayOffset(30), end: yesterday },
+    { label: 'Last 90 days', start: localDayOffset(90), end: yesterday },
     { label: 'This year', start: `${today.slice(0, 4)}-01-01`, end: '' },
   ];
   const active = presets.find((p) => p.start === range.start && p.end === range.end);
-  const inputClass = 'px-2 py-1 text-sm border border-gray-300 rounded-md bg-white';
+  const label = active ? active.label : describeRange(range);
+  const inputClass = 'w-full px-2 py-1 text-sm border border-gray-300 rounded-md bg-white';
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
-      <span className="text-sm font-medium text-gray-700">Date range</span>
-      <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
-        {presets.map((preset) => (
-          <button
-            key={preset.label}
-            type="button"
-            onClick={() => onChange({ start: preset.start, end: preset.end })}
-            className={`px-2.5 py-1 ${
-              active === preset ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            {preset.label}
-          </button>
-        ))}
-      </div>
-      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-        From
-        <input
-          type="date"
-          value={range.start}
-          max={range.end || undefined}
-          onChange={(e) => onChange({ ...range, start: e.target.value })}
-          className={inputClass}
-        />
-      </label>
-      <label className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-        To
-        <input
-          type="date"
-          value={range.end}
-          min={range.start || undefined}
-          onChange={(e) => onChange({ ...range, end: e.target.value })}
-          className={inputClass}
-        />
-      </label>
-      <span className="text-xs text-gray-500 ml-auto">
-        {error ? (
-          <span className="inline-flex items-center gap-2 text-amber-800">
-            <AlertCircle className="h-3 w-3" />
-            {error}
-            <button type="button" onClick={onRetry} className="underline hover:text-amber-950">
-              Retry
-            </button>
-          </span>
-        ) : building ? (
-          <span className="inline-flex items-center gap-1.5">
-            <RefreshCw className="h-3 w-3 animate-spin" />
-            Building stats for this range ({describeRange(range)})…
-          </span>
-        ) : ready && (range.start || range.end) ? (
-          `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
-        ) : null}
-      </span>
+    <div ref={rootRef} className="relative inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50"
+        title={building ? waitingOn ? `Range stats wait for ${waitingOn}` : 'Building stats for this range…' : undefined}
+      >
+        {building && !error ? (
+          <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+        ) : error ? (
+          <AlertCircle className="h-4 w-4 text-amber-600" />
+        ) : (
+          <Calendar className="h-4 w-4 text-gray-500" />
+        )}
+        {label}
+        <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full mt-2 z-30 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+          <div className="flex flex-col">
+            {presets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  onChange({ start: preset.start, end: preset.end });
+                  setOpen(false);
+                }}
+                className={`text-left px-2.5 py-1.5 rounded-md text-sm ${
+                  active === preset ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 text-xs text-gray-500">
+              From
+              <input
+                type="date"
+                value={range.start}
+                max={range.end || undefined}
+                onChange={(e) => onChange({ ...range, start: e.target.value })}
+                className={inputClass}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-gray-500">
+              To
+              <input
+                type="date"
+                value={range.end}
+                min={range.start || undefined}
+                onChange={(e) => onChange({ ...range, end: e.target.value })}
+                className={inputClass}
+              />
+            </label>
+          </div>
+          <p className="mt-3 text-xs text-gray-500">
+            {error ? (
+              <span className="text-amber-800">
+                {error}{' '}
+                <button type="button" onClick={onRetry} className="underline hover:text-amber-950">
+                  Retry
+                </button>
+              </span>
+            ) : building ? (
+              waitingOn ? `Range stats wait for ${waitingOn}.` : `Building stats ${describeRange(range)}…`
+            ) : ready && (range.start || range.end) ? (
+              `Sessions and collar logs ${describeRange(range)}. Staging counts are not filtered.`
+            ) : (
+              'Every session and collar log.'
+            )}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">
+            Yesterday and &ldquo;Last N days&rdquo; end yesterday, matching the Slack recap.
+          </p>
+        </div>
+      ) : null}
+      {error ? (
+        <button type="button" onClick={onRetry} className="text-xs text-amber-800 underline hover:text-amber-950">
+          Retry range
+        </button>
+      ) : null}
     </div>
   );
 }
 
-const LabelingDataDashboard = () => {
+/**
+ * readOnly: a labeling viewer (outside contractor). Shows the stats only: no jobs,
+ * editors, Slack recap or pay. The server enforces the same limits.
+ */
+const LabelingDataDashboard = ({ readOnly = false }) => {
   const stored = useMemo(() => readStoredSummary(), []);
   const [range, setRange] = useState(() => readStoredRange());
   const rangeActive = Boolean(range.start || range.end);
@@ -3190,9 +3725,17 @@ const LabelingDataDashboard = () => {
     return map;
   }, [collarOwners]);
   const [recapOpen, setRecapOpen] = useState(false);
-  const [tab, setTabState] = useState(readInitialTab);
+  const visibleTabs = useMemo(
+    () => (readOnly ? LABELING_TABS.filter((t) => t.key !== 'compensation') : LABELING_TABS),
+    [readOnly]
+  );
+  const [tabState, setTabState] = useState(readInitialTab);
+  // A viewer who lands on #compensation sees the Overview instead.
+  const tab = visibleTabs.some((t) => t.key === tabState) ? tabState : 'overview';
   // Which model the Contributors charts show.
   const [contribModel, setContribModel] = useState('activity');
+  // One labeler to focus the Contributors charts and session log on ('' = everyone).
+  const [contribLabeler, setContribLabeler] = useState('');
   const setTab = useCallback((key) => {
     setTabState(key);
     try {
@@ -3219,6 +3762,9 @@ const LabelingDataDashboard = () => {
   const [generatedAt, setGeneratedAt] = useState(stored?.generatedAt || null);
   const [summaryPending, setSummaryPending] = useState(false);
   const [summaryMessage, setSummaryMessage] = useState(null);
+  // The job a pending summary is waiting on, and when we last asked the server.
+  const [summaryBlockedBy, setSummaryBlockedBy] = useState(null);
+  const [summaryCheckedAt, setSummaryCheckedAt] = useState(null);
   const [expandedUser, setExpandedUser] = useState(null);
   const wasProcessingRef = useRef(false);
   const autoPromoteAttemptedRef = useRef(false);
@@ -3306,12 +3852,13 @@ const LabelingDataDashboard = () => {
     const requestKey = rangeKeyRef.current;
     try {
       const response = await axios.get('/api/labeling/summary', {
-        params: { ...rangeParams, ...(refresh ? { refresh: 1 } : {}) },
+        params: { ...rangeParams, ...(refresh && !readOnly ? { refresh: 1 } : {}) },
       });
       if (requestKey !== rangeKeyRef.current) return true;
       if (response.data.success && response.data.error) {
         setRangeError(response.data.error);
         setSummaryPending(false);
+        setSummaryBlockedBy(null);
         setStale(false);
         return false;
       }
@@ -3324,6 +3871,8 @@ const LabelingDataDashboard = () => {
         const nextStale = Boolean(response.data.stale) || pending;
         setSummaryPending(pending);
         setSummaryMessage(response.data.message || null);
+        setSummaryBlockedBy(pending ? response.data.blocked_by || null : null);
+        setSummaryCheckedAt(Date.now());
         setCached(nextCached);
         setStale(nextStale);
         if (nextGenerated) setGeneratedAt(nextGenerated);
@@ -3355,7 +3904,7 @@ const LabelingDataDashboard = () => {
       setLoading(false);
     }
     return true;
-  }, [rangeParams, rangeActive]);
+  }, [rangeParams, rangeActive, readOnly]);
 
   const processStaging = useCallback(async () => {
     setError(null);
@@ -3592,12 +4141,12 @@ const LabelingDataDashboard = () => {
   // Auto-promote tiny quarantine batches on load; larger ones need a click.
   useEffect(() => {
     const pending = status?.pending_forwards;
-    if (statusFromCache || !pending || autoPromoteAttemptedRef.current) return;
+    if (readOnly || statusFromCache || !pending || autoPromoteAttemptedRef.current) return;
     if (processing || processInfo?.running) return;
     if (!pending.auto_promote || !(pending.pending_count > 0)) return;
     autoPromoteAttemptedRef.current = true;
     promoteForwards({ silent: true });
-  }, [status?.pending_forwards, statusFromCache, processing, processInfo?.running, promoteForwards]);
+  }, [readOnly, status?.pending_forwards, statusFromCache, processing, processInfo?.running, promoteForwards]);
 
   // If server returned a stale snapshot, poll briefly so background rescan can land
   useEffect(() => {
@@ -3607,12 +4156,18 @@ const LabelingDataDashboard = () => {
     const id = setInterval(async () => {
       attempts += 1;
       // A full scan can take several minutes. Keep the last charts up meanwhile.
+      // Waiting on a running job does not count toward giving up.
       if (cancelled || attempts > 60) {
         clearInterval(id);
         if (!cancelled && rangeActive) {
           setSummaryPending(false);
+          setSummaryBlockedBy(null);
           setStale(false);
           setRangeError('Stats for this range are still building on the server.');
+        } else if (!cancelled) {
+          // Stop the spinner instead of leaving it up with no poll behind it.
+          setSummaryPending(false);
+          setError('The summary is still building on the server. Use Refresh to check again.');
         }
         return;
       }
@@ -3622,12 +4177,17 @@ const LabelingDataDashboard = () => {
         if (response.data.error) {
           setRangeError(response.data.error);
           setSummaryPending(false);
+          setSummaryBlockedBy(null);
           setStale(false);
           clearInterval(id);
           return;
         }
         const pending = Boolean(response.data.pending);
         setSummaryPending(pending);
+        setSummaryMessage(response.data.message || null);
+        setSummaryBlockedBy(pending ? response.data.blocked_by || null : null);
+        setSummaryCheckedAt(Date.now());
+        if (response.data.blocked_by) attempts = 0;
         if (response.data.data && !pending && !response.data.stale) {
           setData(response.data.data);
           setCached(Boolean(response.data.cached));
@@ -3858,6 +4418,21 @@ const LabelingDataDashboard = () => {
     () => buildDateLabelerStack(gps?.by_date || [], gpsLabelerKeys),
     [gps?.by_date, gpsLabelerKeys]
   );
+  const contribKeys = contribModel === 'gps' ? gpsLabelerKeys : labelerKeys;
+  // A labeler with nothing in this model or range falls back to everyone.
+  const focusLabeler = contribKeys.includes(contribLabeler) ? contribLabeler : '';
+  const contribDateStack = useMemo(() => {
+    const rows = contribModel === 'gps' ? gpsDateLabelerStack : dateLabelerStack;
+    if (!focusLabeler) return rows;
+    // Dogs and the tooltip total follow the one labeler, not the whole day.
+    const days = new Map(
+      ((contribModel === 'gps' ? gps?.by_date : data?.by_date) || []).map((d) => [d.date, d])
+    );
+    return rows.map((row) => {
+      const mine = (days.get(row.date)?.by_user || []).find((u) => u.user === focusLabeler);
+      return { ...row, total: row[focusLabeler] || 0, dogs: Number(mine?.dogs) || 0, owners: mine ? 1 : 0 };
+    });
+  }, [contribModel, gpsDateLabelerStack, dateLabelerStack, focusLabeler, gps?.by_date, data?.by_date]);
   const gpsActivityLabelerStack = useMemo(
     () => buildActivityLabelerStack(gpsActivities, gpsUsers, gpsLabelerKeys),
     [gpsActivities, gpsUsers, gpsLabelerKeys]
@@ -3866,6 +4441,10 @@ const LabelingDataDashboard = () => {
   const stagingEmails = Object.keys(status?.staging_by_email || {});
   const outputEmails = status?.output_emails || [];
   const unprocessedEmails = stagingEmails.filter((e) => !outputEmails.includes(e));
+  // Make.com uploads: when the last one landed, and recent ones Process can't read.
+  const uploads = status?.uploads || null;
+  const uploadsStale = Boolean(uploads?.stale) && !statusFromCache;
+  const unreadableRecent = uploads?.unreadable_recent_count || 0;
   const userChartHeight = Math.max(220, userContributionData.length * 48 + 48);
   const gpsUserChartHeight = Math.max(180, gpsUserContributionData.length * 48 + 48);
   const hasGps =
@@ -4051,6 +4630,9 @@ const LabelingDataDashboard = () => {
   const healthNeedsAttention =
     (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
     stagingHealthActionable ||
+    gmailIngestAttention(status?.gmail_ingest) ||
+    uploadsStale ||
+    unreadableRecent > 0 ||
     (collarTotals.collars_without_sessions || 0) > 0;
 
   if ((loading || summaryPending) && !data) {
@@ -4059,14 +4641,40 @@ const LabelingDataDashboard = () => {
         <div className="text-center">
           <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-4" />
           <p className="text-gray-600">
-            {summaryPending ? 'Building the summary in the background…' : 'Loading labeling data from S3...'}
+            {summaryBlockedBy
+              ? `Waiting for ${JOB_LABELS[summaryBlockedBy.job] || 'a labeling job'} to finish…`
+              : summaryPending
+                ? 'Building the summary in the background…'
+                : 'Loading labeling data from S3...'}
           </p>
           <p className="text-xs text-gray-400 mt-2">
-            {summaryMessage ||
-              (summaryPending
-                ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
-                : 'Scanning extracted-txt and summing durations')}
+            {summaryBlockedBy
+              ? `${rangeActive ? 'Stats for this date range' : 'The summary'} start building once it is done.`
+              : summaryMessage ||
+                (summaryPending
+                  ? 'The site stays up while extracted-txt is scanned. This page updates when the scan finishes.'
+                  : 'Scanning extracted-txt and summing durations')}
           </p>
+          {summaryBlockedBy ? (
+            <p className="text-xs text-gray-500 mt-3">
+              {describeBlockingJob(summaryBlockedBy)}
+              {summaryBlockedBy.message ? ` · ${summaryBlockedBy.message}` : ''}
+            </p>
+          ) : null}
+          {summaryPending && summaryCheckedAt ? (
+            <p className="text-xs text-gray-400 mt-1">
+              Last checked {new Date(summaryCheckedAt).toLocaleTimeString()} · checking every 5 seconds
+            </p>
+          ) : null}
+          {summaryPending && rangeActive ? (
+            <button
+              type="button"
+              onClick={() => changeRange({ start: '', end: '' })}
+              className="mt-4 px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50"
+            >
+              Show all time instead
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -4131,7 +4739,25 @@ const LabelingDataDashboard = () => {
             ) : null}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+          <DateRangeBar
+            range={range}
+            onChange={changeRange}
+            building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
+            waitingOn={describeBlockingJob(summaryBlockedBy)}
+            ready={dataMatchesRange}
+            error={rangeError}
+            onRetry={() => {
+              setRangeError(null);
+              fetchSummary({ refresh: true });
+            }}
+          />
+          {readOnly ? (
+            <span className="text-xs text-gray-500 border border-gray-200 rounded-full px-2.5 py-1 bg-white">
+              View only
+            </span>
+          ) : (
+          <>
           <button
             type="button"
             onClick={processStaging}
@@ -4179,6 +4805,8 @@ const LabelingDataDashboard = () => {
             <MessageSquare className="h-4 w-4" />
             Slack recap
           </button>
+          </>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -4194,25 +4822,13 @@ const LabelingDataDashboard = () => {
         </div>
       </div>
 
-      <DateRangeBar
-        range={range}
-        onChange={changeRange}
-        building={!rangeError && (!dataMatchesRange || (summaryPending && rangeActive))}
-        ready={dataMatchesRange}
-        error={rangeError}
-        onRetry={() => {
-          setRangeError(null);
-          fetchSummary({ refresh: true });
-        }}
-      />
-
       {error && data ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
           Couldn’t refresh summary ({error}). Showing last results.
         </div>
       ) : null}
 
-      {pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
+      {!readOnly && pendingForwards?.pending_count > 0 && !pendingForwards.auto_promote && !promoting ? (
         <div className="mb-4 p-3 bg-violet-50 border border-violet-200 rounded-lg text-sm text-violet-950 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="font-medium">Forwarded quarantine ready to promote</div>
@@ -4239,7 +4855,7 @@ const LabelingDataDashboard = () => {
         </div>
       ) : null}
 
-      {(pendingForwards?.unresolved || []).length > 0 ? (
+      {!readOnly && (pendingForwards?.unresolved || []).length > 0 ? (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
           {(pendingForwards.unresolved || []).length} forward batch(es) have no recoverable
           original From in meta/body — add <span className="font-mono">Email Body</span> in Make or
@@ -4393,7 +5009,7 @@ const LabelingDataDashboard = () => {
       ) : null}
 
       <div className="mb-6 flex gap-1 border-b border-gray-200" role="tablist">
-        {LABELING_TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.key}
             type="button"
@@ -4420,15 +5036,15 @@ const LabelingDataDashboard = () => {
           nextStep={nextStep}
           onOpenHealth={() => setTab('health')}
           typeOverrides={typeOverrides}
-          onEditLabelers={() => setLabelersOpen(true)}
+          onEditLabelers={readOnly ? null : () => setLabelersOpen(true)}
         />
       ) : null}
 
-      {tab === 'compensation' ? (
+      {tab === 'compensation' && !readOnly ? (
         <CompensationTab data={data} typeOverrides={typeOverrides} onEditLabelers={() => setLabelersOpen(true)} />
       ) : null}
 
-      {labelersOpen ? (
+      {labelersOpen && !readOnly ? (
         <LabelerTypesEditor
           people={data?.overview?.compensation?.people || []}
           overrides={typeOverrides}
@@ -4439,6 +5055,7 @@ const LabelingDataDashboard = () => {
 
       {tab === 'health' ? (
         <>
+          <GmailIngestPanel info={status?.gmail_ingest} readOnly={readOnly} onChanged={fetchStatus} />
           {showStagingHealth ? (
             <details
               open={stagingHealthActionable}
@@ -4504,7 +5121,7 @@ const LabelingDataDashboard = () => {
                     stay in staging until someone inspects them.
                   </p>
                 ) : null}
-                {duplicateRefs > 0 ? (
+                {duplicateRefs > 0 && !readOnly ? (
                   <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
                     <button
                       type="button"
@@ -4563,15 +5180,26 @@ const LabelingDataDashboard = () => {
                     pendingForwards?.pending_count
                       ? ` · ${pendingForwards.pending_count} forwards waiting`
                       : ''
-                  }`}
+                  }${uploads?.last_upload_at ? ` · last upload ${formatAge(uploads.last_upload_at)}` : ''}`}
                   state={
                     unprocessedEmails.length
                       ? 'Ready to summarize'
                       : pendingForwards?.pending_count
                         ? 'Forwards waiting to promote'
-                        : 'No new labelers waiting'
+                        : uploadsStale
+                          ? `No uploads for ${uploads.stale_after_hours}h+ · check Make.com`
+                          : unreadableRecent
+                            ? `${unreadableRecent} upload${unreadableRecent === 1 ? '' : 's'} unreadable`
+                            : 'No new labelers waiting'
                   }
-                  tone={unprocessedEmails.length || pendingForwards?.pending_count ? 'attention' : 'ok'}
+                  tone={
+                    unprocessedEmails.length ||
+                    pendingForwards?.pending_count ||
+                    uploadsStale ||
+                    unreadableRecent
+                      ? 'attention'
+                      : 'ok'
+                  }
                 />
                 <PipelineStage
                   label="Summarized"
@@ -4597,7 +5225,7 @@ const LabelingDataDashboard = () => {
                   }
                   tone={clone && !azureUnreadable ? 'ok' : 'attention'}
                   action={
-                    <button
+                    readOnly ? null : <button
                       type="button"
                       onClick={checkAzure}
                       disabled={processing || !azureConfigured}
@@ -4646,7 +5274,7 @@ const LabelingDataDashboard = () => {
                       : 'ok'
                   }
                   action={
-                    <button
+                    readOnly ? null : <button
                       type="button"
                       onClick={syncCollar}
                       disabled={processing || !azureConfigured}
@@ -4669,6 +5297,7 @@ const LabelingDataDashboard = () => {
                   openLabel="Browse collar files in S3"
                 />
               </div>
+              <UploadsAlert uploads={uploads} stale={uploadsStale} />
             </section>
 
             <div className="xl:col-span-2 min-w-0">
@@ -4775,7 +5404,7 @@ const LabelingDataDashboard = () => {
           <section className="min-w-0 bg-white border border-gray-200 rounded-lg p-5 mb-6">
             <div className="flex items-baseline justify-between gap-3">
               <h3 className="text-lg font-semibold text-gray-900 mb-1">By collar</h3>
-              <button
+              {readOnly ? null : <button
                 type="button"
                 onClick={() => setOwnersOpen(true)}
                 className="text-xs text-blue-700 hover:text-blue-900"
@@ -4791,7 +5420,7 @@ const LabelingDataDashboard = () => {
                       ).length
                     } without one`
                   : ''}
-              </button>
+              </button>}
             </div>
             <p className="text-sm text-gray-500 mb-3">
               Labeled sessions per collar and whether each found a collar log. Collars on the
@@ -4993,9 +5622,9 @@ const LabelingDataDashboard = () => {
         />
       ) : null}
 
-      {recapOpen ? <SlackRecapPanel onClose={() => setRecapOpen(false)} /> : null}
+      {recapOpen && !readOnly ? <SlackRecapPanel onClose={() => setRecapOpen(false)} /> : null}
 
-      {ownersOpen ? (
+      {ownersOpen && !readOnly ? (
         <CollarOwnersEditor
           owners={collarOwners}
           updatedAt={collarOwnersUpdatedAt}
@@ -5067,6 +5696,20 @@ const LabelingDataDashboard = () => {
             <div className="mb-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold text-gray-900">When data arrived</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={focusLabeler}
+                  onChange={(e) => setContribLabeler(e.target.value)}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded-md bg-white text-gray-700 max-w-[16rem]"
+                  aria-label="Labeler"
+                >
+                  <option value="">All labelers</option>
+                  {contribKeys.map((email) => (
+                    <option key={email} value={email}>
+                      {labelerNames.get(String(email).toLowerCase()) || email}
+                    </option>
+                  ))}
+                </select>
                 {hasGps ? (
                   <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-xs">
                     {['activity', 'gps'].map((family) => (
@@ -5085,9 +5728,11 @@ const LabelingDataDashboard = () => {
                     ))}
                   </div>
                 ) : null}
+                </div>
               </div>
               <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-                When labeled sessions arrived, and who sent them, for one model at a time.
+                When labeled sessions arrived, and who sent them, for one model at a time. Pick a
+                labeler to see only their days and every session they sent.
               </p>
             </div>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -5097,8 +5742,8 @@ const LabelingDataDashboard = () => {
                 description="Is labeling steady, or bunched into a few days? Labeled time each day, stacked by labeler."
               >
                 <StackedDurationChart
-                  data={contribModel === 'gps' ? gpsDateLabelerStack : dateLabelerStack}
-                  seriesKeys={contribModel === 'gps' ? gpsLabelerKeys : labelerKeys}
+                  data={contribDateStack}
+                  seriesKeys={focusLabeler ? [focusLabeler] : contribKeys}
                   colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
                   xKey="label"
                   emptyText="No dated sessions found."
@@ -5122,6 +5767,10 @@ const LabelingDataDashboard = () => {
               </ChartCard>
             </div>
           </section>
+
+          {focusLabeler ? (
+            <LabelerSessionLog email={focusLabeler} family={contribModel} range={range} />
+          ) : null}
 
           <section className="mb-10">
             <div className="mb-4">

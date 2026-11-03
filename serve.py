@@ -55,6 +55,13 @@ def before_request():
         g.service_container = None
 
 
+# API routes are copied from api_app below, so its before_request hooks do not run
+# here. Outside labeling viewers reach read-only labeling stats and nothing else.
+from backend.api.middleware.auth import restrict_labeling_viewers
+
+app.before_request(restrict_labeling_viewers)
+
+
 @app.route("/health")
 def liveness():
     """ALB and Docker probe this path. Keep it local and always HTTP 200."""
@@ -105,4 +112,8 @@ if __name__ == "__main__":
     print(f"Starting Gladly Conversation Analyzer on {host}:{port}")
     print(f"Max header size: {werkzeug.serving.WSGIRequestHandler.max_header_size} bytes")
     print("Liveness probe: GET /health (rss, uptime, labeling job)")
+    # Labeler emails → staging, when LABELING_GMAIL_INGEST_ENABLED=true.
+    from backend.api.routes.labeling_routes import start_gmail_ingest_poller
+    if start_gmail_ingest_poller():
+        print(f"Gmail ingest poller on ({Config.LABELING_GMAIL_INGEST_MODE} mode)")
     app.run(host=host, port=port, debug=False)

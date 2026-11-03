@@ -104,6 +104,10 @@ def create_app():
             # Set to None so routes can handle gracefully
             g.service_container = None
     
+    # Outside labeling viewers reach read-only labeling stats and nothing else
+    from backend.api.middleware.auth import restrict_labeling_viewers
+    app.before_request(restrict_labeling_viewers)
+
     # Register analytics middleware (after service container is available)
     service_container = get_service_container()
     analytics_service = service_container.get_analytics_service()

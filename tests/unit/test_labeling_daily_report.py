@@ -78,7 +78,9 @@ def test_report_celebrates_labelers_by_owner_name_and_counts_both_models():
     assert "Good dogs on the job" not in text
     assert "3 days in a row" in text
     assert "we passed *500 labeled sessions*" in text
-    assert text.endswith("<https://insight.example.com|Open the labeling dashboard>")
+    # The dashboard link, then the period footnote last.
+    assert text.splitlines()[-2] == "<https://insight.example.com|Open the labeling dashboard>"
+    assert text.splitlines()[-1].startswith("_Period: Fri Oct 30 12:00 AM")
 
 
 def test_quiet_day_is_still_friendly():
@@ -443,6 +445,7 @@ def test_recap_data_gives_the_dashboard_the_same_leaderboard_as_slack():
         "sessions": 3,
         "seconds": 1200.0,
         "medal": ":first_place_medal:",
+        "unconfirmed": 0,
     }
     assert recap["leaderboard"][1]["medal"] == ":second_place_medal:"
     assert recap["session_milestone"] == 500
@@ -543,9 +546,9 @@ def test_dog_leaderboard_ranks_dogs_with_their_people():
     recap = recap_data("2026-10-30", day, day, start="2026-10-30")
     assert recap["dog_leaderboard"] == [
         {"dog": "Reese", "people": ["ken@x.com", "amy@x.com"], "sessions": 7, "seconds": 600.0,
-         "medal": ":first_place_medal:"},
+         "medal": ":first_place_medal:", "unconfirmed": 0},
         {"dog": "Bear", "people": ["amy@x.com"], "sessions": 3, "seconds": 400.0,
-         "medal": ":second_place_medal:"},
+         "medal": ":second_place_medal:", "unconfirmed": 0},
     ]
 
 
@@ -572,3 +575,58 @@ def test_labeler_type_defaults_halo_emails_to_employee_and_saved_types_win():
     types = {r["person"]: r["labeler_type"] for r in recap["leaderboard"]}
     assert types == {"amy@halocollar.com": "employee", "Ken E": "partner", "bo@x.com": None}
     assert recap["leaderboard"][0]["emails"] == ["amy@halocollar.com"]
+
+
+def test_recap_ends_with_the_exact_period_and_time_zone():
+    from datetime import date
+
+    from backend.services.labeling_daily_report import build_daily_report, period_footnote
+
+    note = period_footnote(date(2026, 10, 26), date(2026, 11, 1), "America/Los_Angeles")
+    assert "Mon Oct 26 12:00 AM – Sun Nov 1, 2026 11:59 PM" in note
+    assert "America/Los_Angeles (PST)" in note
+    assert "PDT" in period_footnote(date(2026, 7, 4), date(2026, 7, 4), "America/Los_Angeles")
+
+    empty = {"totals": {"sessions": 0, "duration_seconds": 0}, "users": [], "dogs": [], "by_date": []}
+    text = build_daily_report("2026-11-01", empty, empty, days=7, timezone_name="America/Los_Angeles")
+    assert text.splitlines()[-1].startswith("_Period: Mon Oct 26 12:00 AM")
+
+
+def test_collar_logs_without_app_data_are_shown_but_not_ranked():
+    from backend.services.labeling_daily_report import recap_data
+
+    def user(email, sn, seconds, sessions=1):
+        return {
+            "email": email, "sessions": sessions, "total_duration_seconds": seconds,
+            "collars": [{"collar_sn": sn, "sessions": sessions, "total_duration_seconds": seconds}],
+        }
+
+    all_data = {
+        "totals": {"sessions": 30, "duration_seconds": 9000},
+        "users": [user("lindsey@x.com", "SN-JOEY", 8000, 25), user("ben@x.com", "SN-BEAR", 1000, 5)],
+        "dogs": [{"collar_sn": "SN-JOEY", "name": "Joey"}, {"collar_sn": "SN-BEAR", "name": "Bear"}],
+        "by_date": [],
+    }
+    week = {
+        "totals": {"sessions": 2, "duration_seconds": 600},
+        "users": [user("ben@x.com", "SN-BEAR", 600, 2)],
+        "dogs": [{"collar_sn": "SN-BEAR", "name": "Bear"}],
+        "by_date": [],
+        # Lindsey's emails didn't arrive; her collar still logged three sessions, Ben's one.
+        "collar_coverage": {"collar_only_logs": [
+            {"collar_sn": "SN-JOEY"}, {"collar_sn": "sn-joey"}, {"collar_sn": "SN-JOEY"},
+            {"collar_sn": "SN-BEAR"},
+        ]},
+    }
+    names = {"lindsey@x.com": "Lindsey", "ben@x.com": "Ben"}
+    recap = recap_data("2026-11-01", week, all_data, start="2026-10-26", names_by_email=names)
+    # The ranking is app data only.
+    assert [row["person"] for row in recap["leaderboard"]] == ["Ben"]
+    assert recap["leaderboard"][0]["unconfirmed"] == 1
+    assert recap["dog_leaderboard"][0]["unconfirmed"] == 1
+    assert recap["waiting_for_app_data"] == [{"person": "Lindsey", "logs": 3}]
+    assert recap["dogs_waiting_for_app_data"] == [{"person": "Joey", "logs": 3}]
+    assert recap["unconfirmed_logs"] == 4
+
+    text = build_daily_report("2026-11-01", week, all_data, days=7, names_by_email=names)
+    assert ":hourglass_flowing_sand: 4 collar logs with no app data yet (Lindsey 3, Ben 1)" in text

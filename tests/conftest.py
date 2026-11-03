@@ -37,6 +37,25 @@ def client(app: Flask):
 
 
 @pytest.fixture
+def auth_client(app: Flask):
+    """Test client with a logged-in user session"""
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess['authenticated'] = True
+    return client
+
+
+@pytest.fixture
+def admin_client(app: Flask):
+    """Test client with a logged-in admin session"""
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess['authenticated'] = True
+        sess['admin_authenticated'] = True
+    return client
+
+
+@pytest.fixture
 def mock_storage_service() -> IStorageService:
     """Create a mock storage service"""
     mock = Mock(spec=IStorageService)

@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Dict, Optional
 from flask import Blueprint, request, jsonify, g
+from ..middleware.auth import require_auth
 from ...models.response import SearchResult
 from ...utils.logging import get_logger
 from ...core.exceptions import ValidationError, NotFoundError, ServiceUnavailableError
@@ -83,6 +84,7 @@ topic_extraction_thread: Optional[threading.Thread] = None
 
 
 @conversation_bp.route('/summary')
+@require_auth
 def conversations_summary():
     """Get conversation data summary"""
     # Get service from container (injected via Flask's g)
@@ -112,6 +114,7 @@ def conversations_summary():
 
 
 @conversation_bp.route('/search', methods=['POST'])
+@require_auth
 def conversations_search():
     """Search conversations"""
     # Get service from container (injected via Flask's g)
@@ -148,6 +151,7 @@ def conversations_search():
 
 
 @conversation_bp.route('/<conversation_id>', methods=['GET'])
+@require_auth
 def get_conversation(conversation_id):
     """Get all items for a specific conversation ID"""
     # Get service from container (injected via Flask's g)
@@ -180,6 +184,7 @@ def get_conversation(conversation_id):
 
 
 @conversation_bp.route('/topic-trends', methods=['GET'])
+@require_auth
 def get_topic_trends():
     """Get conversation topic trends for a specific date (uses pre-extracted topics)"""
     try:
@@ -395,6 +400,7 @@ def get_topic_trends():
 
 
 @conversation_bp.route('/extract-topics', methods=['POST'])
+@require_auth
 def extract_topics():
     """Start topic extraction in background thread (async)"""
     global topic_extraction_state, topic_extraction_thread
@@ -637,6 +643,7 @@ def _run_topic_extraction(conversation_service, claude_service, start_date: str,
 
 
 @conversation_bp.route('/extract-topics-status', methods=['GET'])
+@require_auth
 def get_extract_topics_status():
     """Get status of running topic extraction"""
     global topic_extraction_state
@@ -670,6 +677,7 @@ def get_extract_topics_status():
 
 
 @conversation_bp.route('/topic-extraction-status', methods=['GET'])
+@require_auth
 def get_topic_extraction_status():
     """Get status of extracted topics by date"""
     try:
@@ -690,6 +698,7 @@ def get_topic_extraction_status():
 
 
 @conversation_bp.route('/conversation-count', methods=['GET'])
+@require_auth
 def get_conversation_count():
     """Get count of conversations for a specific date or date range, including already-extracted count"""
     try:
@@ -766,6 +775,7 @@ def get_conversation_count():
 
 
 @conversation_bp.route('/topic-trends-over-time', methods=['GET'])
+@require_auth
 def get_topic_trends_over_time():
     """Get topic trends over a date range (for time-series chart)"""
     try:
@@ -887,6 +897,7 @@ def get_topic_trends_over_time():
 
 
 @conversation_bp.route('/sentiment-trends-over-time', methods=['GET'])
+@require_auth
 def get_sentiment_trends_over_time():
     """Get sentiment trends over a date range (for time-series chart)"""
     try:
@@ -1075,6 +1086,7 @@ def get_sentiment_trends_over_time():
 
 
 @conversation_bp.route('/extraction-timestamps', methods=['GET'])
+@require_auth
 def get_extraction_timestamps():
     """Get extraction timestamps for conversations to help identify which need re-extraction"""
     try:

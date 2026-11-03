@@ -23,14 +23,20 @@ class TestHealthRoutes:
 class TestClaudeRoutes:
     """Test suite for Claude API routes"""
     
-    def test_claude_chat_missing_message(self, client):
+    def test_claude_chat_missing_message(self, admin_client, mock_claude_service):
         """Test Claude chat endpoint with missing message"""
-        response = client.post('/api/claude/chat', json={})
+        with patch('app.get_service_container') as mock_get_container:
+            from backend.core.service_container import ServiceContainer
+            container = ServiceContainer()
+            container.get_claude_service(override=mock_claude_service)
+            mock_get_container.return_value = container
+
+            response = admin_client.post('/api/claude/chat', json={})
         assert response.status_code == 400
         data = json.loads(response.data)
         assert 'error' in data
     
-    def test_claude_chat_with_mock_service(self, client, mock_claude_service):
+    def test_claude_chat_with_mock_service(self, admin_client, mock_claude_service):
         """Test Claude chat endpoint with mocked service"""
         # Patch the service container to return our mock
         with patch('app.get_service_container') as mock_get_container:
@@ -39,7 +45,7 @@ class TestClaudeRoutes:
             container.get_claude_service(override=mock_claude_service)
             mock_get_container.return_value = container
             
-            response = client.post('/api/claude/chat', json={
+            response = admin_client.post('/api/claude/chat', json={
                 'message': 'Hello',
                 'model': 'claude-haiku-4-5'
             })
@@ -49,7 +55,7 @@ class TestClaudeRoutes:
             assert data['success'] is True
             assert 'response' in data
     
-    def test_claude_chat_streaming(self, client, mock_claude_service):
+    def test_claude_chat_streaming(self, admin_client, mock_claude_service):
         """Test Claude chat endpoint with streaming"""
         with patch('app.get_service_container') as mock_get_container:
             from backend.core.service_container import ServiceContainer
@@ -57,7 +63,7 @@ class TestClaudeRoutes:
             container.get_claude_service(override=mock_claude_service)
             mock_get_container.return_value = container
             
-            response = client.post('/api/claude/chat', json={
+            response = admin_client.post('/api/claude/chat', json={
                 'message': 'Hello',
                 'stream': True
             })
@@ -71,7 +77,7 @@ class TestClaudeRoutes:
 class TestConversationRoutes:
     """Test suite for conversation API routes"""
     
-    def test_conversation_summary(self, client, mock_storage_service):
+    def test_conversation_summary(self, auth_client, mock_storage_service):
         """Test conversation summary endpoint"""
         with patch('app.get_service_container') as mock_get_container:
             from backend.core.service_container import ServiceContainer
@@ -79,7 +85,7 @@ class TestConversationRoutes:
             container.get_storage_service(override=mock_storage_service)
             mock_get_container.return_value = container
             
-            response = client.get('/api/conversations/summary')
+            response = auth_client.get('/api/conversations/summary')
             assert response.status_code == 200
             data = json.loads(response.data)
             assert 'success' in data
@@ -87,7 +93,7 @@ class TestConversationRoutes:
             assert 'summary' in data  # Returns summary as formatted string
             assert isinstance(data['summary'], str)
     
-    def test_conversation_search(self, client, mock_storage_service):
+    def test_conversation_search(self, auth_client, mock_storage_service):
         """Test conversation search endpoint"""
         with patch('app.get_service_container') as mock_get_container:
             from backend.core.service_container import ServiceContainer
@@ -95,7 +101,7 @@ class TestConversationRoutes:
             container.get_storage_service(override=mock_storage_service)
             mock_get_container.return_value = container
             
-            response = client.post('/api/conversations/search', json={
+            response = auth_client.post('/api/conversations/search', json={
                 'query': 'test',
                 'limit': 10
             })
@@ -103,9 +109,9 @@ class TestConversationRoutes:
             data = json.loads(response.data)
             assert 'results' in data or 'items' in data
     
-    def test_conversation_search_missing_query(self, client):
+    def test_conversation_search_missing_query(self, auth_client):
         """Test conversation search with missing query"""
-        response = client.post('/api/conversations/search', json={})
+        response = auth_client.post('/api/conversations/search', json={})
         assert response.status_code == 400
 
 

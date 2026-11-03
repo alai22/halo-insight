@@ -204,6 +204,19 @@ class Config:
     LABELING_AZURE_SAS_TOKEN: Optional[str] = os.getenv('LABELING_AZURE_SAS_TOKEN')
     LABELING_COLLAR_S3_PREFIX: str = os.getenv('LABELING_COLLAR_S3_PREFIX', 'collar-raw/')
     LABELING_COLLAR_MATCH_PAD_SEC: int = int(os.getenv('LABELING_COLLAR_MATCH_PAD_SEC', '300'))
+    # Gmail ingester: reads the inbox the ai_logs group delivers to and writes
+    # staging batches (see docs/LABELING_GMAIL_INGEST.md). Off until enabled.
+    LABELING_GMAIL_INGEST_ENABLED: bool = os.getenv('LABELING_GMAIL_INGEST_ENABLED', 'false').lower() == 'true'
+    LABELING_GMAIL_INGEST_MAILBOX: str = os.getenv('LABELING_GMAIL_INGEST_MAILBOX', 'ai_logs_ingest@halocollar.com')
+    # shadow: write to LABELING_GMAIL_SHADOW_PREFIX beside Make for comparison. live: write to staging/.
+    LABELING_GMAIL_INGEST_MODE: str = os.getenv('LABELING_GMAIL_INGEST_MODE', 'shadow')
+    LABELING_GMAIL_SHADOW_PREFIX: str = os.getenv('LABELING_GMAIL_SHADOW_PREFIX', 'staging-gmail/')
+    # Service account key: base64 of the key JSON, inline JSON, or a path. Never commit it.
+    LABELING_GMAIL_SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv('LABELING_GMAIL_SERVICE_ACCOUNT_JSON')
+    LABELING_GMAIL_INGEST_POLL_SEC: int = int(os.getenv('LABELING_GMAIL_INGEST_POLL_SEC', '300'))
+    LABELING_GMAIL_INGEST_QUERY: str = os.getenv('LABELING_GMAIL_INGEST_QUERY', 'has:attachment')
+    # First run with no cursor reads this many days back.
+    LABELING_GMAIL_INITIAL_LOOKBACK_DAYS: int = int(os.getenv('LABELING_GMAIL_INITIAL_LOOKBACK_DAYS', '3'))
     
     # Snowflake (order reconciliation) — read-only analytics queries.
     # Auth is a Programmatic Access Token (PAT), not key-pair/password.
@@ -329,6 +342,9 @@ class Config:
     ADMIN_PASSWORD: str = os.getenv('ADMIN_PASSWORD', '')
     # Admin email(s) for Google SSO admin access (comma-separated for multiple admins)
     ADMIN_EMAIL: Optional[str] = os.getenv('ADMIN_EMAIL', '')
+    # Outside people who may log in by email link to view labeling stats only
+    # (comma-separated emails, e.g. a contractor). They see no other tool and run no jobs.
+    LABELING_VIEWER_EMAILS: str = os.getenv('LABELING_VIEWER_EMAILS', '')
     # Domains allowed for magic link and Google SSO (comma-separated, no @)
     # Example: halocollar.com,softeq.com
     ALLOWED_EMAIL_DOMAINS: str = os.getenv('ALLOWED_EMAIL_DOMAINS', 'halocollar.com')
@@ -339,6 +355,12 @@ class Config:
         parts = {d.strip().lower() for d in cls.ALLOWED_EMAIL_DOMAINS.split(',') if d.strip()}
         return frozenset(parts) if parts else frozenset({'halocollar.com'})
     
+    @classmethod
+    def is_labeling_viewer_email(cls, email: str) -> bool:
+        """True for an email listed in LABELING_VIEWER_EMAILS."""
+        viewers = [e.strip().lower() for e in cls.LABELING_VIEWER_EMAILS.split(',') if e.strip()]
+        return bool(email) and email.strip().lower() in viewers
+
     @classmethod
     def is_admin_email(cls, email: str) -> bool:
         """Check if email is an admin email"""

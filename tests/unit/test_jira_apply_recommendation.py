@@ -14,7 +14,7 @@ def jira_ready():
         yield
 
 
-def test_apply_priority_updates_and_comments(jira_ready, client):
+def test_apply_priority_updates_and_comments(jira_ready, auth_client):
     with patch('backend.api.routes.jira_routes.JiraClient') as mock_cls:
         inst = MagicMock()
         mock_cls.return_value = inst
@@ -26,7 +26,7 @@ def test_apply_priority_updates_and_comments(jira_ready, client):
         }
         inst.resolve_priority_display_name.return_value = 'Critical'
 
-        res = client.post(
+        res = auth_client.post(
             '/api/jira/issues/HALO-1/apply-recommendation',
             json={
                 'kind': 'reprior',
@@ -45,7 +45,7 @@ def test_apply_priority_updates_and_comments(jira_ready, client):
         assert 'Bug Triage Copilot' in args[1]
 
 
-def test_apply_stale_summary_409(jira_ready, client):
+def test_apply_stale_summary_409(jira_ready, auth_client):
     with patch('backend.api.routes.jira_routes.JiraClient') as mock_cls:
         inst = MagicMock()
         mock_cls.return_value = inst
@@ -55,7 +55,7 @@ def test_apply_stale_summary_409(jira_ready, client):
                 'priority': {'name': 'Major'},
             },
         }
-        res = client.post(
+        res = auth_client.post(
             '/api/jira/issues/HALO-2/apply-recommendation',
             json={
                 'kind': 'title',
@@ -69,7 +69,7 @@ def test_apply_stale_summary_409(jira_ready, client):
         inst.update_issue_fields.assert_not_called()
 
 
-def test_apply_no_changes_422(jira_ready, client):
+def test_apply_no_changes_422(jira_ready, auth_client):
     with patch('backend.api.routes.jira_routes.JiraClient') as mock_cls:
         inst = MagicMock()
         mock_cls.return_value = inst
@@ -79,7 +79,7 @@ def test_apply_no_changes_422(jira_ready, client):
                 'priority': {'name': 'Major'},
             },
         }
-        res = client.post(
+        res = auth_client.post(
             '/api/jira/issues/HALO-3/apply-recommendation',
             json={
                 'kind': 'reprior',
@@ -91,7 +91,7 @@ def test_apply_no_changes_422(jira_ready, client):
         assert res.get_json().get('error_code') == 'NO_CHANGES'
 
 
-def test_apply_jira_403_message(jira_ready, client):
+def test_apply_jira_403_message(jira_ready, auth_client):
     with patch('backend.api.routes.jira_routes.JiraClient') as mock_cls:
         inst = MagicMock()
         mock_cls.return_value = inst
@@ -109,7 +109,7 @@ def test_apply_jira_403_message(jira_ready, client):
         err.response = resp
         inst.update_issue_fields.side_effect = err
 
-        res = client.post(
+        res = auth_client.post(
             '/api/jira/issues/HALO-4/apply-recommendation',
             json={
                 'kind': 'reprior',

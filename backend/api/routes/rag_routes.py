@@ -3,6 +3,7 @@ API routes for RAG-powered analysis
 """
 
 from flask import Blueprint, request, jsonify, g
+from ..middleware.auth import require_auth
 from ...utils.logging import get_logger
 from ...utils.config import Config
 from ...core.exceptions import ValidationError, ServiceUnavailableError
@@ -14,6 +15,7 @@ rag_bp = Blueprint('rag', __name__, url_prefix='/api/conversations')
 
 
 @rag_bp.route('/ask', methods=['POST'])
+@require_auth
 def conversations_ask():
     """Ask Claude about conversation data with detailed RAG process information"""
     # Get services from container (injected via Flask's g)
@@ -63,6 +65,7 @@ def conversations_ask():
     return jsonify(result)
 
 @rag_bp.route('/refresh', methods=['POST'])
+@require_auth
 def refresh_conversations():
     """Refresh conversation data from storage"""
     # Get service from container (injected via Flask's g)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import gzip
 import hmac
 import json
+from functools import wraps
 import re
 import threading
 import time
@@ -17,7 +18,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import boto3
 from flask import Blueprint, jsonify, request, session
 
-from backend.api.middleware.auth import require_admin_auth
+from backend.api.middleware.auth import (
+    is_labeling_viewer,
+    require_admin_auth,
+    require_labeling_read,
+)
 from backend.services.labeling_data_analyzer import (
     LabelingDataAnalyzer,
     file_snapshot_payload,
@@ -65,6 +70,7 @@ _SUMMARY_CACHE_KEY = "labeling-jobs/summary_cache_v4.json"
 _SUMMARY_CACHE_MEM_KEY = "summary:v4"
 _BG_REFRESH_LOCK = threading.Lock()
 _BG_REFRESH_RUNNING = False
+_BG_REFRESH_STARTED_AT: Optional[str] = None
 
 _PROCESS_LOCK = threading.Lock()
 _PROCESS_STATE: Dict[str, Any] = {
@@ -77,7 +83,10 @@ _PROCESS_STATE: Dict[str, Any] = {
     "message": None,
     "progress": None,
 }
-_STALE_RUNNING_SEC = 2 * 60 * 60  # allow restart if marked running > 2h
+# A running job re-saves its state every minute. One that has not for 5 minutes died
+# (usually a deploy restarted the container) and no longer blocks other work.
+_HEARTBEAT_SEC = 60
+_STALE_HEARTBEAT_SEC = 5 * 60
 _PROCESS_STATUS_KEY = "labeling-jobs/process_status.json"
 # Who each collar belongs to, edited on the dashboard. Kept in S3, not the repo.
 _COLLAR_OWNERS_KEY = "labeling-jobs/collar_owners.json"
@@ -251,6 +260,8 @@ def _compute_summary(ttl_sec: int) -> Dict[str, Any]:
     entry = _cache_set_memory(_SUMMARY_CACHE_MEM_KEY, data, ttl_sec)
     _persist_summary_cache(data, entry["generated_at"], ttl_sec)
     _persist_file_snapshot(file_snapshot_payload(analyzer), entry["generated_at"])
+    # Ranges were cut from the previous snapshot; rebuild them from this one.
+    _window_cache_clear()
     return entry
 
 
@@ -396,6 +407,16 @@ def _maybe_start_window_refresh(window: Tuple[str, str]) -> bool:
     return True
 
 
+def _client_summary(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The summary as the dashboard gets it: per-session logs stay on the server."""
+    if not isinstance(data, dict):
+        return data
+    out = {k: v for k, v in data.items() if k != "session_log"}
+    if isinstance(out.get("gps"), dict):
+        out["gps"] = {k: v for k, v in out["gps"].items() if k != "session_log"}
+    return out
+
+
 def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: int):
     key = f"{window[0]}..{window[1]}"
     with _WINDOW_CACHE_LOCK:
@@ -418,9 +439,14 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
     generated_iso = (
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry["generated_at"])) if entry else None
     )
-    if entry is not None and not refresh:
-        stale = time.time() - entry["generated_at"] > ttl_sec
-        if stale:
+    # Refresh means new files: rescan everything, then cut the range from the new
+    # snapshot (the rescan clears the range cache when it finishes).
+    if refresh:
+        _maybe_start_background_refresh(ttl_sec)
+    full_refresh = _summary_refresh_job()
+    if entry is not None and (not refresh or full_refresh):
+        stale = time.time() - entry["generated_at"] > ttl_sec or full_refresh is not None
+        if stale and full_refresh is None:
             _maybe_start_window_refresh(window)
         return jsonify({
             "success": True,
@@ -428,16 +454,34 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
             "cached": True,
             "stale": stale,
             "generated_at": generated_iso,
-            "data": entry["payload"],
+            "data": _client_summary(entry["payload"]),
+            "blocked_by": full_refresh,
+        })
+    if full_refresh is not None:
+        return jsonify({
+            "success": True,
+            "pending": True,
+            "cached": False,
+            "stale": True,
+            "generated_at": None,
+            "data": None,
+            "blocked_by": full_refresh,
+            "message": "Stats for this range follow the full refresh.",
         })
     started = _maybe_start_window_refresh(window)
+    blocked_by = None if started else _blocking_job()
+    if not started:
+        logger.info(
+            "Deferring labeling range %s until %s finishes", key, (blocked_by or {}).get("job")
+        )
     return jsonify({
         "success": True,
         "pending": True,
         "cached": entry is not None,
         "stale": True,
         "generated_at": generated_iso,
-        "data": entry["payload"] if entry else None,
+        "data": _client_summary(entry["payload"]) if entry else None,
+        "blocked_by": blocked_by,
         "message": (
             "Building stats for this date range in the background."
             if started
@@ -446,16 +490,33 @@ def _window_summary_response(window: Tuple[str, str], refresh: bool, ttl_sec: in
     })
 
 
+def _summary_refresh_job() -> Optional[Dict[str, Any]]:
+    """The full summary rescan, when one is running, shaped like _blocking_job."""
+    with _BG_REFRESH_LOCK:
+        if not _BG_REFRESH_RUNNING:
+            return None
+        started_at = _BG_REFRESH_STARTED_AT
+    return {
+        "job": "summary-refresh",
+        "started_at": started_at,
+        "updated_at": None,
+        "message": "Rescanning every labeling file",
+        "progress": None,
+    }
+
+
 def _maybe_start_background_refresh(ttl_sec: int) -> bool:
     """Start one summary scan off the request thread. False when a job is busy."""
     global _BG_REFRESH_RUNNING
     if _is_process_busy():
         logger.info("Deferring labeling summary refresh until the current job finishes")
         return False
+    global _BG_REFRESH_STARTED_AT
     with _BG_REFRESH_LOCK:
         if _BG_REFRESH_RUNNING:
             return True
         _BG_REFRESH_RUNNING = True
+        _BG_REFRESH_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     def _worker():
         global _BG_REFRESH_RUNNING
@@ -555,20 +616,24 @@ def _merge_process_state() -> Dict[str, Any]:
     persisted = _load_persisted_process_state()
     if not persisted:
         return mem
-    # If S3 says running but started long ago, treat as stale
-    if persisted.get("running") and persisted.get("started_at"):
+    # S3 says running but this process is not: trust it only while it keeps beating.
+    beat = persisted.get("updated_at") or persisted.get("started_at")
+    if persisted.get("running") and beat:
         try:
-            started = datetime.strptime(
-                persisted["started_at"], "%Y-%m-%dT%H:%M:%SZ"
-            ).replace(tzinfo=timezone.utc)
-            age = (datetime.now(timezone.utc) - started).total_seconds()
-            if age > _STALE_RUNNING_SEC:
+            last = datetime.strptime(beat, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            silent = (datetime.now(timezone.utc) - last).total_seconds()
+            if silent > _STALE_HEARTBEAT_SEC:
+                logger.warning(
+                    "Labeling job %s stopped reporting %ds ago; treating it as not running",
+                    persisted.get("job"),
+                    int(silent),
+                )
                 persisted = {
                     **persisted,
                     "running": False,
                     "last_error": persisted.get("last_error")
-                    or "Process marked stale (exceeded 2h); you can start again.",
-                    "message": "Stale job cleared",
+                    or "Job stopped reporting (likely interrupted by a restart); you can start again.",
+                    "message": "Interrupted job cleared",
                 }
         except Exception:  # noqa: BLE001
             pass
@@ -581,6 +646,7 @@ def _merge_process_state() -> Dict[str, Any]:
             "job": persisted.get("job"),
             "started_at": persisted.get("started_at"),
             "finished_at": persisted.get("finished_at"),
+            "updated_at": persisted.get("updated_at"),
             "last_error": persisted.get("last_error"),
             "last_report": persisted.get("last_report"),
             "message": persisted.get("message"),
@@ -589,12 +655,51 @@ def _merge_process_state() -> Dict[str, Any]:
     )
 
 
+_HEARTBEAT_THREAD: Optional[threading.Thread] = None
+
+
+def _heartbeat_loop() -> None:
+    while True:
+        time.sleep(_HEARTBEAT_SEC)
+        with _PROCESS_LOCK:
+            if not _PROCESS_STATE["running"]:
+                return
+            snap = _process_fields()
+        _persist_process_state(snap)
+
+
+def _ensure_heartbeat() -> None:
+    """Keep the S3 state fresh while a job runs, even through long silent phases."""
+    global _HEARTBEAT_THREAD
+    with _PROCESS_LOCK:
+        if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():
+            return
+        _HEARTBEAT_THREAD = threading.Thread(target=_heartbeat_loop, daemon=True)
+        _HEARTBEAT_THREAD.start()
+
+
 def _set_process_state(**kwargs: Any) -> Dict[str, Any]:
     with _PROCESS_LOCK:
         _PROCESS_STATE.update(kwargs)
         snap = _process_fields()
     _persist_process_state(snap)
+    if snap["running"]:
+        _ensure_heartbeat()
     return _annotate_runtime(snap)
+
+
+def _blocking_job() -> Optional[Dict[str, Any]]:
+    """The job a deferred summary is waiting on, for the dashboard to name."""
+    state = _merge_process_state()
+    if not state.get("running"):
+        return None
+    return {
+        "job": state.get("job"),
+        "started_at": state.get("started_at"),
+        "updated_at": state.get("updated_at"),
+        "message": state.get("message"),
+        "progress": state.get("progress"),
+    }
 
 
 def _progress_callback(job: str):
@@ -730,7 +835,7 @@ def _staging_inventory() -> Dict[str, Any]:
 
 
 @labeling_bp.route("/status", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
 def labeling_status():
     """Staging vs processed output inventory + process job state."""
     try:
@@ -755,6 +860,10 @@ def labeling_status():
         except Exception as exc:  # noqa: BLE001
             logger.warning("Collar sync status failed: %s", redact_secrets(str(exc)))
         status["collar_sync"] = collar
+        try:
+            status["gmail_ingest"] = _gmail_ingest_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gmail ingest status failed: %s", redact_secrets(str(exc)))
         return jsonify({"success": True, "data": status})
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get labeling status")
@@ -910,7 +1019,7 @@ def _rebuild_summary_in_background() -> None:
 
 
 @labeling_bp.route("/collar-owners", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
 def labeling_collar_owners():
     """The collar → owner list. Empty until someone saves one."""
     body = _load_collar_owners()
@@ -1099,12 +1208,21 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
     computed is used.
     """
     entry = _report_summary_entry()
+    if entry is None and _load_file_snapshot() is not None:
+        # The summary was dropped but its files are saved: re-aggregate (seconds, no scan).
+        _set_report_stage("building")
+        _rebuild_summary_from_snapshot()
+        entry = _report_summary_entry()
     if allow_scan and _report_summary_stale(entry):
         _set_report_stage("refreshing")
         entry = _compute_summary(_DEFAULT_CACHE_TTL_SEC)
     if entry is None or (not allow_scan and _load_file_snapshot() is None):
         raise RuntimeError(
-            "The labeling summary is not ready. Click Refresh on the dashboard first."
+            "The labeling summary has not been built yet. Choose All time on the dashboard "
+            "and click Refresh, then try again in a few minutes."
+            if entry is None
+            else "The saved file snapshot is missing. Choose All time on the dashboard and "
+            "click Refresh, then try again in a few minutes."
         )
     window = (period_start(day, days), day)
     key = f"{window[0]}..{window[1]}"
@@ -1121,6 +1239,7 @@ def _build_report_text(day: str, allow_scan: bool, days: int = 1) -> str:
         entry["data"],
         dashboard_url=Config.APP_BASE_URL,
         days=days,
+        timezone_name=Config.LABELING_REPORT_TIMEZONE,
         **_recap_lookups(),
     )
 
@@ -1321,6 +1440,8 @@ def labeling_promote_forwards():
                 "error": "A labeling job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         def _run():
             return LabelingIngestService().promote_forwards(
@@ -1475,7 +1596,9 @@ def labeling_sync_collar():
                         inventory_only=inventory_only,
                         extra_sns=_owner_collar_sns(),
                     )
-                    _cache_clear()
+                    # Only collar coverage changed: re-join it from the snapshot (seconds)
+                    # and keep serving the last summary meanwhile.
+                    _rebuild_summary_in_background()
                     done_message = sync_done_message(report, inventory_only)
                     _set_process_state(
                         running=False,
@@ -1519,7 +1642,7 @@ def labeling_sync_collar():
                 inventory_only=inventory_only,
                 extra_sns=_owner_collar_sns(),
             )
-            _cache_clear()
+            _rebuild_summary_in_background()
             done_message = sync_done_message(report, inventory_only)
             state = _set_process_state(
                 running=False,
@@ -1577,6 +1700,8 @@ def labeling_compact():
                 "error": "A labeling job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         def _run():
             return LabelingIngestService().compact_staging(
@@ -1693,7 +1818,9 @@ def _sync_collar_after_process(process_message: str) -> None:
         report = LabelingCollarSyncService().sync(
             dry_run=False, inventory_only=False, extra_sns=_owner_collar_sns()
         )
-        _cache_clear()
+        # Process just added files, so the snapshot is behind: keep the last summary
+        # but mark it for a full rescan.
+        _cache_mark_stale()
         _set_process_state(
             running=False,
             job="sync-collar",
@@ -1746,6 +1873,8 @@ def labeling_process():
                 "error": "A labeling process job is already running",
                 "data": state,
             }), 409
+        if _gmail_writing_staging():
+            return jsonify({"success": False, "error": _GMAIL_BUSY_ERROR}), 409
 
         if run_async:
             _set_process_state(
@@ -1855,8 +1984,28 @@ def labeling_process():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+def _without_pay_for_viewers(f):
+    """Labeling viewers (outside contractors) never receive labeler pay eligibility."""
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        result = f(*args, **kwargs)
+        if not is_labeling_viewer():
+            return result
+        response, status = (result if isinstance(result, tuple) else (result, None))
+        body = response.get_json(silent=True)
+        overview = ((body or {}).get("data") or {}).get("overview")
+        if isinstance(overview, dict) and "compensation" in overview:
+            overview.pop("compensation")
+            response.set_data(json.dumps(body))
+        return (response, status) if status is not None else response
+
+    return decorated
+
+
 @labeling_bp.route("/summary", methods=["GET"])
-@require_admin_auth
+@require_labeling_read
+@_without_pay_for_viewers
 def labeling_summary():
     """
     Summarize processed labeling exports under extracted-txt/.
@@ -1872,13 +2021,18 @@ def labeling_summary():
                    (inclusive) are counted. Built and cached apart from the full summary.
     """
     try:
-        refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        # Viewers read what is there; only admins start a rescan.
+        refresh = (
+            request.args.get("refresh", "").lower() in ("1", "true", "yes")
+            and not is_labeling_viewer()
+        )
         try:
             ttl = int(request.args.get("ttl", _DEFAULT_CACHE_TTL_SEC))
         except ValueError:
             ttl = _DEFAULT_CACHE_TTL_SEC
 
-        ttl_sec = ttl if ttl > 0 else _DEFAULT_CACHE_TTL_SEC
+        # A tiny ttl would make every poll start a rescan; viewers get the default.
+        ttl_sec = ttl if ttl > 0 and not is_labeling_viewer() else _DEFAULT_CACHE_TTL_SEC
         window = _parse_window(request.args)
         if window is not None:
             return _window_summary_response(window, refresh, ttl_sec)
@@ -1895,7 +2049,7 @@ def labeling_summary():
                     "cached": True,
                     "stale": bool(entry.get("stale")),
                     "generated_at": entry.get("generated_at_iso"),
-                    "data": entry["data"],
+                    "data": _client_summary(entry["data"]),
                 }
             )
 
@@ -1915,7 +2069,8 @@ def labeling_summary():
                 "cached": entry is not None,
                 "stale": True,
                 "generated_at": entry.get("generated_at_iso") if entry else None,
-                "data": entry["data"] if entry else None,
+                "data": _client_summary(entry["data"]) if entry else None,
+                "blocked_by": None if started else _blocking_job(),
                 "message": message,
             }
         )
@@ -1925,6 +2080,61 @@ def labeling_summary():
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build labeling summary")
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@labeling_bp.route("/sessions", methods=["GET"])
+@require_labeling_read
+def labeling_sessions():
+    """
+    One labeler's sessions, newest first, from the summary already computed
+    (all time, or the start/end range). Never scans.
+
+    Query params:
+      user         — labeler email (required)
+      family       — activity (default) | gps
+      start, end   — optional YYYY-MM-DD, same as /summary
+    """
+    user = (request.args.get("user") or "").strip().lower()
+    if not user:
+        return jsonify({"success": False, "error": "user is required"}), 400
+    family = request.args.get("family") or "activity"
+    if family not in ("activity", "gps"):
+        return jsonify({"success": False, "error": "family must be activity or gps"}), 400
+    try:
+        window = _parse_window(request.args)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if window is not None:
+        with _WINDOW_CACHE_LOCK:
+            cached = _WINDOW_CACHE.get(f"{window[0]}..{window[1]}")
+        data = cached["payload"] if cached else None
+    else:
+        entry = _cache_get_memory(_SUMMARY_CACHE_MEM_KEY) or _load_summary_cache_s3(
+            _DEFAULT_CACHE_TTL_SEC
+        )
+        data = entry["data"] if entry else None
+    if data is None:
+        return jsonify({
+            "success": True,
+            "pending": True,
+            "sessions": [],
+            "message": "Stats for this range are not built yet.",
+        })
+    source = (data.get("gps") or {}) if family == "gps" else data
+    log = source.get("session_log")
+    if log is None:
+        # Summary built before session logs existed.
+        return jsonify({
+            "success": True,
+            "pending": False,
+            "needs_refresh": True,
+            "sessions": [],
+            "message": "Session logs appear after the next summary refresh.",
+        })
+    rows = [row for row in log if (row.get("email") or "").lower() == user]
+    rows.sort(key=lambda r: (r.get("timestamp") or "", r.get("session_id") or ""), reverse=True)
+    return jsonify({"success": True, "pending": False, "sessions": rows})
 
 
 _ML_CACHE_LOCK = threading.Lock()
@@ -2117,3 +2327,286 @@ def labeling_ml_download():
         logger.exception("Failed to sign collar-log download")
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "url": url, "key": key})
+
+
+# ---------------------------------------------------------------------------
+# Gmail ingester: reads the inbox the ai_logs group delivers to and writes
+# staging batches (docs/LABELING_GMAIL_INGEST.md). Runs beside Make.com: in
+# shadow mode it writes to its own prefix, in live mode into staging/.
+
+_GMAIL_LOCK = threading.Lock()  # held for the whole of one run
+_GMAIL_STATE: Dict[str, Any] = {
+    "running": False,
+    "kind": None,  # "poll" | "backfill" | "run"
+    "started_at": None,
+    "finished_at": None,
+    "message": None,
+    "last_error": None,
+    "last_report": None,
+    "poller_started_at": None,
+    "last_compare_at": 0.0,
+}
+_GMAIL_POLLER: Optional[threading.Thread] = None
+_GMAIL_FIRST_POLL_DELAY_SEC = 30
+_GMAIL_COMPARE_EVERY_SEC = 60 * 60
+_GMAIL_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+# Jobs that read or rewrite staging/ wait while a live run is writing into it.
+_GMAIL_BUSY_ERROR = "The Gmail ingester is writing new uploads into staging; try again in a minute"
+
+
+def _gmail_writing_staging() -> bool:
+    with _PROCESS_LOCK:
+        running = bool(_GMAIL_STATE["running"])
+    return running and (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+
+
+def _gmail_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    out = {k: v for k, v in report.items() if k not in ("batches", "warnings", "errors")}
+    out["errors"] = report.get("errors", [])[:20]
+    out["warnings"] = report.get("warnings", [])[:20]
+    out["batches"] = report.get("batches", [])[:50]
+    return out
+
+
+def run_gmail_ingest(
+    kind: str,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    dry_run: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """One ingest run. Returns None when another run holds the lock."""
+    from backend.services.labeling_gmail_ingest_service import LabelingGmailIngestService
+
+    if not _GMAIL_LOCK.acquire(blocking=False):
+        return None
+    try:
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                running=True,
+                kind=kind,
+                started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                finished_at=None,
+                message="Checking the inbox…",
+            )
+        service = LabelingGmailIngestService()
+
+        def _on_progress(message: str) -> None:
+            with _PROCESS_LOCK:
+                _GMAIL_STATE["message"] = message
+
+        report = service.run(since=since, until=until, dry_run=dry_run, on_progress=_on_progress)
+        if service.mode == "live" and not dry_run and (report["ingested"] or report["quarantined"]):
+            with _INVENTORY_LOCK:
+                _INVENTORY_CACHE["at"] = 0.0
+        compare_due = time.time() - float(_GMAIL_STATE["last_compare_at"]) > _GMAIL_COMPARE_EVERY_SEC
+        if service.mode == "shadow" and not dry_run and (kind != "poll" or compare_due or report["ingested"]):
+            try:
+                service.save_compare(service.compare_with_make())
+                _GMAIL_STATE["last_compare_at"] = time.time()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Gmail vs Make comparison failed: %s", exc)
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                last_report=_gmail_report_summary(report),
+                last_error=None,
+                message=(
+                    f"Ingested {report['ingested']} email(s)"
+                    + (f", {report['quarantined']} to forwards" if report["quarantined"] else "")
+                    + (f", {len(report['errors'])} error(s)" if report["errors"] else "")
+                    + (" (dry run)" if dry_run else "")
+                ),
+            )
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        return report
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gmail ingest run failed")
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(last_error=redact_secrets(str(exc)), message="Gmail ingest failed")
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        raise
+    finally:
+        with _PROCESS_LOCK:
+            _GMAIL_STATE.update(
+                running=False,
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+        _GMAIL_LOCK.release()
+
+
+def _gmail_poll_once() -> None:
+    live = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+    if live and _is_process_busy():
+        logger.info("Gmail ingest poll skipped: a labeling job is running")
+        return
+    try:
+        run_gmail_ingest("poll")
+    except Exception:  # noqa: BLE001
+        pass  # logged and kept in _GMAIL_STATE; the next poll tries again
+
+
+def _gmail_poll_loop() -> None:
+    time.sleep(_GMAIL_FIRST_POLL_DELAY_SEC)
+    while True:
+        _gmail_poll_once()
+        time.sleep(max(60, int(Config.LABELING_GMAIL_INGEST_POLL_SEC or 300)))
+
+
+def start_gmail_ingest_poller() -> bool:
+    """Start the background poll once per process, when enabled."""
+    global _GMAIL_POLLER
+    if not Config.LABELING_GMAIL_INGEST_ENABLED:
+        return False
+    with _PROCESS_LOCK:
+        if _GMAIL_POLLER is not None and _GMAIL_POLLER.is_alive():
+            return False
+        _GMAIL_POLLER = threading.Thread(target=_gmail_poll_loop, name="gmail-ingest", daemon=True)
+        _GMAIL_POLLER.start()
+        _GMAIL_STATE["poller_started_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    logger.info(
+        "Gmail ingest poller started (%s mode, every %ss)",
+        Config.LABELING_GMAIL_INGEST_MODE,
+        Config.LABELING_GMAIL_INGEST_POLL_SEC,
+    )
+    return True
+
+
+def _gmail_ingest_status() -> Dict[str, Any]:
+    """The `gmail_ingest` block of /status: last run, counts, errors, Make comparison."""
+    mode = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower()
+    poll_sec = int(Config.LABELING_GMAIL_INGEST_POLL_SEC or 300)
+    with _PROCESS_LOCK:
+        live = {
+            k: _GMAIL_STATE[k]
+            for k in ("running", "kind", "started_at", "finished_at", "message", "last_error", "poller_started_at")
+        }
+        last_report = _GMAIL_STATE["last_report"]
+    out: Dict[str, Any] = {
+        "enabled": bool(Config.LABELING_GMAIL_INGEST_ENABLED),
+        "configured": bool(Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON),
+        "mode": mode,
+        "mailbox": Config.LABELING_GMAIL_INGEST_MAILBOX,
+        "target_prefix": (
+            Config.LABELING_S3_STAGING_PREFIX
+            if mode == "live"
+            else Config.LABELING_GMAIL_SHADOW_PREFIX
+        ),
+        "poll_sec": poll_sec,
+        **live,
+    }
+    if last_report and last_report.get("dry_run"):
+        out["last_dry_run"] = last_report
+    now = time.time()
+    cached = _GMAIL_STATUS_CACHE["data"]
+    if not (isinstance(cached, dict) and now - float(_GMAIL_STATUS_CACHE["at"]) < _INVENTORY_TTL_SEC):
+        cached = {}
+        try:
+            from backend.services.labeling_gmail_ingest_service import LabelingGmailIngestService
+
+            service = LabelingGmailIngestService()
+            state = service.load_state()
+            cached = {
+                "last_run": state.get("last_run"),
+                "last_ingest_at": state.get("last_ingest_at"),
+                "first_run_at": state.get("first_run_at"),
+                "totals": state.get("totals"),
+                "recent_errors": (state.get("recent_errors") or [])[-5:],
+                "retrying": len(state.get("failures") or {}),
+                "compare": service.load_compare(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            cached = {"state_error": redact_secrets(str(exc))}
+        _GMAIL_STATUS_CACHE.update(at=now, data=cached)
+    out.update(cached)
+    # Stalled: enabled, but no finished run for three poll intervals.
+    finished = (out.get("last_run") or {}).get("finished_at")
+    stalled = False
+    if out["enabled"] and out.get("poller_started_at"):
+        try:
+            ref = finished or out["poller_started_at"]
+            last = datetime.strptime(ref, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            stalled = age > 3 * poll_sec + _GMAIL_FIRST_POLL_DELAY_SEC
+        except Exception:  # noqa: BLE001
+            stalled = False
+    out["stalled"] = stalled
+    return out
+
+
+@labeling_bp.route("/gmail-ingest/run", methods=["POST"])
+@require_admin_auth
+def labeling_gmail_ingest_run():
+    """
+    Run the Gmail ingester now, or backfill from a date.
+
+    JSON body (optional):
+      since: "YYYY-MM-DD" — backfill from this date (UTC) instead of the cursor
+      until: "YYYY-MM-DD" — stop before this date
+      dry_run: bool (default false) — list and parse only; write nothing
+    """
+    from backend.services.labeling_gmail_ingest_service import parse_since
+
+    body = request.get_json(silent=True) or {}
+    try:
+        since = parse_since(body["since"]) if body.get("since") else None
+        until = parse_since(body["until"]) if body.get("until") else None
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    if not Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON:
+        return jsonify({
+            "success": False,
+            "error": "LABELING_GMAIL_SERVICE_ACCOUNT_JSON is not configured on the server",
+        }), 400
+    dry_run = bool(body.get("dry_run", False))
+    live = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
+    if live and not dry_run and _is_process_busy():
+        return jsonify({
+            "success": False,
+            "error": "A labeling job is running; backfill once it finishes",
+            "data": _merge_process_state(),
+        }), 409
+    if _GMAIL_LOCK.locked():
+        return jsonify({
+            "success": False,
+            "error": "A Gmail ingest run is already in progress",
+            "data": _gmail_ingest_status(),
+        }), 409
+
+    def _worker():
+        try:
+            run_gmail_ingest("backfill" if since else "run", since=since, until=until, dry_run=dry_run)
+        except Exception:  # noqa: BLE001
+            pass  # kept in _GMAIL_STATE["last_error"]
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({
+        "success": True,
+        "async": True,
+        "message": (
+            f"Gmail backfill from {body['since']} started." if since else "Gmail ingest started."
+        ),
+        "data": _gmail_ingest_status(),
+    })
+
+
+@labeling_bp.route("/gmail-ingest/compare", methods=["POST"])
+@require_admin_auth
+def labeling_gmail_ingest_compare():
+    """Compare Gmail shadow batches with Make's staging/ now. Body: {since?: "YYYY-MM-DD"}."""
+    from backend.services.labeling_gmail_ingest_service import (
+        LabelingGmailIngestService,
+        parse_since,
+    )
+
+    body = request.get_json(silent=True) or {}
+    try:
+        since = parse_since(body["since"]) if body.get("since") else None
+        service = LabelingGmailIngestService(mode="shadow")
+        result = service.compare_with_make(since=since)
+        service.save_compare(result)
+        _GMAIL_STATUS_CACHE["at"] = 0.0
+        return jsonify({"success": True, "data": result})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gmail vs Make comparison failed")
+        return jsonify({"success": False, "error": redact_secrets(str(exc))}), 500

@@ -123,35 +123,39 @@ class AuthService(IAuthService):
         cls._cleanup_expired_tokens()
         return len(cls._tokens)
 
-    # Admin header tokens (X-Admin-Token) are stateless and signed, so they work
-    # across workers and restarts. Changing ADMIN_PASSWORD revokes them.
+    @classmethod
+    def can_request_login(cls, email: str) -> bool:
+        """An allowed domain, or an outside email listed as a labeling viewer."""
+        return cls.validate_email_domain(email) or Config.is_labeling_viewer_email(email)
+
+    # Header tokens (X-Admin-Token, X-Auth-Token) are stateless and signed, so they
+    # work across workers and restarts. Changing the matching password revokes them.
     ADMIN_TOKEN_TTL_SECONDS = 12 * 60 * 60
+    AUTH_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
     @staticmethod
-    def _admin_token_key() -> Optional[bytes]:
-        """Signing key for admin tokens, or None when admin password login is off."""
-        if not Config.ADMIN_PASSWORD:
+    def _token_key(kind: str, password: str) -> Optional[bytes]:
+        """Signing key for one kind of token, or None when that password login is off."""
+        if not password:
             return None
-        material = f"admin-token:{Config.ADMIN_PASSWORD}:{Config.FLASK_SECRET_KEY or ''}"
+        material = f"{kind}-token:{password}:{Config.FLASK_SECRET_KEY or ''}"
         return hashlib.sha256(material.encode()).digest()
 
-    @classmethod
-    def _sign_admin_expiry(cls, key: bytes, expires_at: int) -> str:
-        return hmac.new(key, f"admin:{expires_at}".encode(), hashlib.sha256).hexdigest()
+    @staticmethod
+    def _sign_expiry(kind: str, key: bytes, expires_at: int) -> str:
+        return hmac.new(key, f"{kind}:{expires_at}".encode(), hashlib.sha256).hexdigest()
 
     @classmethod
-    def issue_admin_token(cls) -> Optional[str]:
-        """Issue a signed admin token of the form '<expires_at>.<signature>'."""
-        key = cls._admin_token_key()
+    def _issue(cls, kind: str, password: str, ttl: int) -> Optional[str]:
+        key = cls._token_key(kind, password)
         if key is None:
             return None
-        expires_at = int(time.time()) + cls.ADMIN_TOKEN_TTL_SECONDS
-        return f"{expires_at}.{cls._sign_admin_expiry(key, expires_at)}"
+        expires_at = int(time.time()) + ttl
+        return f"{expires_at}.{cls._sign_expiry(kind, key, expires_at)}"
 
     @classmethod
-    def verify_admin_token(cls, token: Optional[str]) -> bool:
-        """True only for an unexpired token issued by issue_admin_token."""
-        key = cls._admin_token_key()
+    def _verify(cls, kind: str, password: str, token: Optional[str]) -> bool:
+        key = cls._token_key(kind, password)
         if key is None or not token or '.' not in token:
             return False
         expires_part, signature = token.split('.', 1)
@@ -161,5 +165,25 @@ class AuthService(IAuthService):
             return False
         if expires_at < time.time():
             return False
-        expected = cls._sign_admin_expiry(key, expires_at)
+        expected = cls._sign_expiry(kind, key, expires_at)
         return hmac.compare_digest(expected.encode(), signature.encode())
+
+    @classmethod
+    def issue_admin_token(cls) -> Optional[str]:
+        """Issue a signed admin token of the form '<expires_at>.<signature>'."""
+        return cls._issue('admin', Config.ADMIN_PASSWORD, cls.ADMIN_TOKEN_TTL_SECONDS)
+
+    @classmethod
+    def verify_admin_token(cls, token: Optional[str]) -> bool:
+        """True only for an unexpired token issued by issue_admin_token."""
+        return cls._verify('admin', Config.ADMIN_PASSWORD, token)
+
+    @classmethod
+    def issue_auth_token(cls) -> Optional[str]:
+        """Issue a signed token for the shared-password login (X-Auth-Token)."""
+        return cls._issue('auth', Config.AUTH_PASSWORD, cls.AUTH_TOKEN_TTL_SECONDS)
+
+    @classmethod
+    def verify_auth_token(cls, token: Optional[str]) -> bool:
+        """True only for an unexpired token issued by issue_auth_token."""
+        return cls._verify('auth', Config.AUTH_PASSWORD, token)
