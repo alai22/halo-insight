@@ -95,3 +95,59 @@ def test_admin_can_still_rebuild_inline(calls):
     )
     assert response.status_code == 200
     assert calls == [("process", True)]
+
+
+@pytest.fixture
+def notices(monkeypatch):
+    sent = []
+    monkeypatch.setattr(routes, "_notify_scheduled_job", lambda job, ok, detail: sent.append((job, ok, detail)))
+    return sent
+
+
+def test_scheduled_process_posts_success(calls, notices):
+    _client().post("/api/labeling/process", json={}, headers={"X-Report-Secret": "s3cret"})
+    assert [(job, ok) for job, ok, _ in notices] == [("Process staging", True)]
+    assert "copied 0 files" in notices[0][2]
+
+
+def test_scheduled_process_posts_failure(calls, notices, monkeypatch):
+    class _Broken:
+        def process_staging(self, **kw):
+            raise RuntimeError("S3 is down")
+
+    monkeypatch.setattr(routes, "LabelingIngestService", _Broken)
+    _client().post("/api/labeling/process", json={}, headers={"X-Report-Secret": "s3cret"})
+    assert notices == [("Process staging", False, "S3 is down")]
+
+
+def test_scheduled_compact_posts_its_result(calls, notices):
+    _client().post("/api/labeling/compact", json={}, headers={"X-Report-Secret": "s3cret"})
+    assert [(job, ok) for job, ok, _ in notices] == [("Remove duplicate copies", True)]
+
+
+def test_an_admin_run_posts_nothing(calls, notices):
+    headers = {"X-Admin-Token": AuthService.issue_admin_token()}
+    _client().post("/api/labeling/process", json={}, headers=headers)
+    _client().post("/api/labeling/compact", json={}, headers=headers)
+    assert notices == []
+
+
+def test_notice_goes_to_the_first_channel_and_never_raises(monkeypatch):
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_WEBHOOK_URL", None)
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_CHANNEL", "C1:data-labeling,C2:other")
+    monkeypatch.setattr(routes.Config, "LABELING_REPORT_SLACK_TOKEN", "xoxb-test")
+    monkeypatch.setattr(routes.Config, "APP_BASE_URL", "https://insight.example.com/")
+    posted = []
+    monkeypatch.setattr(routes, "post_to_slack", lambda token, channel, text: posted.append((channel, text)))
+    routes._notify_scheduled_job("Process staging", False, "S3 is down")
+    assert posted == [(
+        "C1",
+        ":x: Scheduled *Process staging* failed. S3 is down"
+        "\n<https://insight.example.com|Open the dashboard>",
+    )]
+
+    def _boom(*a):
+        raise RuntimeError("channel_not_found")
+
+    monkeypatch.setattr(routes, "post_to_slack", _boom)
+    routes._notify_scheduled_job("Process staging", True, "Done")  # logged, not raised

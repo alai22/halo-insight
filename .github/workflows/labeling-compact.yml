@@ -48,3 +48,17 @@ jobs:
           done
           echo "Gave up: another labeling job kept running."
           exit 1
+      - name: Tell Slack the run could not start
+        # The server posts how a run ends; this covers runs it never received.
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.LABELING_REPORT_SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "LABELING_REPORT_SLACK_WEBHOOK_URL is not set; skipping the Slack notice."
+            exit 0
+          fi
+          jq -n --arg run "$RUN_URL" \
+            '{text: (":x: Scheduled *Remove duplicate copies* failed: the server did not start it. <" + $run + "|See the GitHub run>")}' \
+            | curl -fsS -X POST -H "Content-Type: application/json" -d @- "$WEBHOOK"

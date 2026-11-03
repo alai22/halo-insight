@@ -1294,6 +1294,31 @@ def _scheduled_or_admin(f):
     return decorated
 
 
+def _scheduled_only() -> bool:
+    """The scheduled job's secret and no admin session: a run nobody is watching."""
+    try:
+        return _scheduled_request() and not session.get("admin_authenticated")
+    except RuntimeError:
+        return _scheduled_request()
+
+
+def _notify_scheduled_job(job: str, ok: bool, detail: str) -> None:
+    """Tell the recap channel how a scheduled run ended. Never fails the job."""
+    if not _report_configured():
+        logger.info("Scheduled %s finished (ok=%s); Slack is not set up", job, ok)
+        return
+    icon, outcome = (":white_check_mark:", "succeeded") if ok else (":x:", "failed")
+    link = f"\n<{Config.APP_BASE_URL.rstrip('/')}|Open the dashboard>" if Config.APP_BASE_URL else ""
+    text = f"{icon} Scheduled *{job}* {outcome}. {detail}{link}"
+    channels = _report_channels()
+    try:
+        _, errors = _post_report(text, [channels[0]["id"]] if channels else [])
+        for error in errors:
+            logger.warning("Scheduled %s Slack notice failed: %s", job, error)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Scheduled %s Slack notice failed: %s", job, redact_secrets(str(exc)))
+
+
 def _report_request_authorized() -> bool:
     """The scheduled job sends X-Report-Secret; a person needs an admin session."""
     if _scheduled_request():
@@ -1712,7 +1737,8 @@ def labeling_compact():
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
         run_async = bool(body.get("async", True))
-        if _scheduled_request() and not session.get("admin_authenticated"):
+        scheduled = _scheduled_only()
+        if scheduled:
             run_async = True
 
         if _is_process_busy():
@@ -1755,6 +1781,10 @@ def labeling_compact():
                         progress=None,
                         message=_compact_done_message(report),
                     )
+                    if scheduled:
+                        _notify_scheduled_job(
+                            "Remove duplicate copies", True, _compact_done_message(report)
+                        )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling compact failed")
                     _set_process_state(
@@ -1765,6 +1795,10 @@ def labeling_compact():
                         progress=None,
                         message="Removing duplicate copies failed",
                     )
+                    if scheduled:
+                        _notify_scheduled_job(
+                            "Remove duplicate copies", False, redact_secrets(str(exc))
+                        )
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -1827,8 +1861,11 @@ def _should_sync_collar_after_process(
     return clear_output or int(report.get("copied") or 0) > 0
 
 
-def _sync_collar_after_process(process_message: str) -> None:
-    """Run a collar sync as the tail of a process job; keeps the job running until it ends."""
+def _sync_collar_after_process(process_message: str, notify: bool = False) -> None:
+    """
+    Run a collar sync as the tail of a process job; keeps the job running until it ends.
+    With notify (a scheduled run), the outcome is posted to Slack.
+    """
     _set_process_state(
         running=True,
         job="sync-collar",
@@ -1851,6 +1888,10 @@ def _sync_collar_after_process(process_message: str) -> None:
             last_error=None,
             message=f"{process_message} {sync_done_message(report, False)}",
         )
+        if notify:
+            _notify_scheduled_job(
+                "Process staging", True, f"{process_message} {sync_done_message(report, False)}"
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Collar sync after process failed")
         _set_process_state(
@@ -1863,6 +1904,12 @@ def _sync_collar_after_process(process_message: str) -> None:
             ),
             message="Collar sync after processing failed",
         )
+        if notify:
+            _notify_scheduled_job(
+                "Process staging",
+                False,
+                f"{process_message} The collar sync after it failed: {redact_secrets(str(exc))}",
+            )
     finally:
         log_rss(logger, "labeling collar sync after process end")
 
@@ -1889,7 +1936,8 @@ def labeling_process():
         sync_collar = bool(body.get("sync_collar", True))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
-        if _scheduled_request() and not session.get("admin_authenticated"):
+        scheduled = _scheduled_only()
+        if scheduled:
             # The shared secret never wipes extracted-txt or holds a request open.
             clear_output, run_async = False, True
 
@@ -1932,7 +1980,7 @@ def labeling_process():
                         report, clear_output, dry_run, sync_collar
                     ):
                         _set_process_state(last_report=report)
-                        _sync_collar_after_process(_process_done_message(report))
+                        _sync_collar_after_process(_process_done_message(report), notify=scheduled)
                         return
                     _set_process_state(
                         running=False,
@@ -1943,6 +1991,8 @@ def labeling_process():
                         progress=None,
                         message=_process_done_message(report),
                     )
+                    if scheduled:
+                        _notify_scheduled_job("Process staging", True, _process_done_message(report))
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling process failed")
                     _set_process_state(
@@ -1953,6 +2003,8 @@ def labeling_process():
                         progress=None,
                         message="Process failed",
                     )
+                    if scheduled:
+                        _notify_scheduled_job("Process staging", False, redact_secrets(str(exc)))
                 finally:
                     log_rss(logger, "labeling process end")
 

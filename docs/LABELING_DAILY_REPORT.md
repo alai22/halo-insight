@@ -115,6 +115,18 @@ If another labeling job is running (for example a Gmail ingest check), both work
 wait 2 minutes and try again, up to 6 times. If Process is already running, the
 scheduled Process run counts as done.
 
+### Slack notices
+
+When a scheduled run ends, the server posts whether it succeeded or failed, with the same
+summary the dashboard shows, to the channel the daily recap goes to (the webhook's
+channel, or the first one in `LABELING_REPORT_SLACK_CHANNEL`). Runs started from the
+dashboard post nothing.
+
+If the server never starts the run (it is down, the secret is wrong, or other jobs kept it
+busy), the workflow posts the failure itself with a link to the GitHub run. That needs one
+more repository secret, `LABELING_REPORT_SLACK_WEBHOOK_URL`, an incoming webhook for the
+same channel. Without it the workflow still fails in GitHub, but Slack hears nothing.
+
 ## Switching apps
 
 When IT sets up a dedicated Slack app, repeat step 1 with that app, replace
