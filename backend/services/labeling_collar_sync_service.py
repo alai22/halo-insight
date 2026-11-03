@@ -43,6 +43,7 @@ INDEX_KEY_SUFFIX = "labeling-jobs/session_collar_index_v1.json"
 DEFAULT_WINDOW_DURATION_SEC = 15 * 60
 UNMATCHED_SAMPLE_LIMIT = 25
 ERROR_SAMPLE_LIMIT = 3
+UNRECOGNIZED_PATTERN_LIMIT = 5
 ERROR_SAMPLE_CHARS = 300
 QUERY_REDACT_RE = re.compile(r"\?[^ \n]+")
 
@@ -585,6 +586,23 @@ def match_coverage(
     }
 
 
+def summarize_unrecognized_logs(items: Iterable[Tuple[str, str]]) -> Dict[str, Any]:
+    """Count ai/ files whose name doesn't parse, with a few samples per name pattern."""
+    items = list(items)
+    by_pattern: Dict[str, Dict[str, Any]] = {}
+    for sn, filename in items:
+        match = AI_LOG_TS_RE.search(filename)
+        pattern = filename[: match.start()].rstrip("_") if match else filename
+        row = by_pattern.setdefault(pattern, {"pattern": pattern, "count": 0, "collars": set(), "sample": filename})
+        row["count"] += 1
+        row["collars"].add(sn)
+    patterns = sorted(by_pattern.values(), key=lambda r: -r["count"])[:UNRECOGNIZED_PATTERN_LIMIT]
+    return {
+        "count": len(items),
+        "patterns": [{**r, "collars": sorted(r["collars"])} for r in patterns],
+    }
+
+
 def merge_collar_sns(labeled: Iterable[str], extra: Iterable[str]) -> List[str]:
     """Labeled SNs plus extra SNs whose serial key is new; labeled spelling wins."""
     out = {serial_key(sn): sn for sn in labeled}
@@ -780,8 +798,14 @@ class LabelingCollarSyncService:
         return sorted(sns)
 
     def list_collar_ai_files(self) -> List[CollarAiFile]:
-        """List mirrored AI dumps already in S3 under collar-raw/."""
+        """
+        List mirrored AI dumps already in S3 under collar-raw/.
+
+        Files under ai/ whose name doesn't parse are kept in self.unrecognized_logs
+        (collar SN, filename), so a renamed log shows up on the dashboard.
+        """
         out: List[CollarAiFile] = []
+        self.unrecognized_logs = []
         paginator = self.s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.collar_prefix):
             for obj in page.get("Contents", []) or []:
@@ -795,6 +819,7 @@ class LabelingCollarSyncService:
                 sn = sanitize_collar_sn(parts[0])
                 parsed = parse_ai_log_filename(parts[-1])
                 if not parsed:
+                    self.unrecognized_logs.append((sn, parts[-1]))
                     continue
                 out.append(
                     CollarAiFile(
@@ -823,12 +848,20 @@ class LabelingCollarSyncService:
                 region=self.region,
                 s3_client=self.s3_client,
             ).analyze(include_content=True, window=window)
+        files = self.list_collar_ai_files()
         coverage = match_coverage(
             sessions_from_analyze(summary),
-            self.list_collar_ai_files(),
+            files,
             pad_sec=self.pad_sec,
             window=window,
         )
+        # by_sn s3_files counts the window; Azure counts are all-time, so compare with this.
+        all_time: Dict[str, int] = defaultdict(int)
+        for blob in files:
+            all_time[blob.collar_sn] += 1
+        for row in coverage.get("by_sn") or []:
+            row["s3_files_total"] = all_time.get(row["collar_sn"], 0)
+        coverage["unrecognized_logs"] = summarize_unrecognized_logs(self.unrecognized_logs)
         coverage["azure_configured"] = azure_configured() or self._azure_client is not None
         coverage["collar_prefix"] = self.collar_prefix
         coverage["pad_sec"] = self.pad_sec

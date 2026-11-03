@@ -9,6 +9,7 @@ from backend.services.labeling_collar_sync_service import (
     classify_azure_error,
     match_coverage,
     merge_collar_sns,
+    summarize_unrecognized_logs,
     parse_ai_log_filename,
     redact_secrets,
     resolve_azure_container_url,
@@ -316,6 +317,39 @@ def test_merge_collar_sns_keeps_labeled_spelling_and_drops_blanks():
         "24h4290312rt",
         "26h5232291rt",
     ]
+
+
+def test_build_coverage_reports_unrecognized_logs_and_all_time_counts():
+    s3 = _FakeS3(
+        {
+            "collar-raw/sn1/ai/ai_log_model_50f_8c_2026-07-02_21-13-44_v3.log": b"A",
+            "collar-raw/sn1/ai/ai_log_model_50f_8c_2026-06-01_10-00-00_v3.log": b"B",
+            "collar-raw/sn1/ai/mystery_dump_2026-07-02_21-13-44.bin": b"C",
+            "collar-raw/sn1/logs/20260702_211344_console.log": b"D",
+        }
+    )
+    svc = LabelingCollarSyncService(
+        bucket_name="test-bucket", collar_prefix="collar-raw/", s3_client=s3, azure_client=_FakeAzure({})
+    )
+    cov = svc.build_coverage(summary={"files": []}, window=("2026-07-01", "2026-07-31"))
+    row = next(r for r in cov["by_sn"] if r["collar_sn"] == "sn1")
+    assert row["s3_files"] == 1
+    assert row["s3_files_total"] == 2
+    assert cov["unrecognized_logs"]["count"] == 1
+    assert cov["unrecognized_logs"]["patterns"][0]["pattern"] == "mystery_dump"
+
+
+def test_summarize_unrecognized_logs_groups_by_name_pattern():
+    out = summarize_unrecognized_logs(
+        [("a", "x_new_2026-01-01_00-00-00.log"), ("b", "x_new_2026-01-02_00-00-00.log"), ("a", "odd.log")]
+    )
+    assert out["count"] == 3
+    assert out["patterns"][0] == {
+        "pattern": "x_new",
+        "count": 2,
+        "collars": ["a", "b"],
+        "sample": "x_new_2026-01-01_00-00-00.log",
+    }
 
 
 class _UnreadableAzure(_FakeAzure):
