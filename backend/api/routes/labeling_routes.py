@@ -1274,11 +1274,29 @@ def _send_daily_report(
             _REPORT_RUNNING.update({"day": None, "days": None, "stage": None, "started_at": None})
 
 
-def _report_request_authorized() -> bool:
-    """The scheduled job sends X-Report-Secret; a person needs an admin session."""
+def _scheduled_request() -> bool:
+    """True when the request carries the scheduled jobs' X-Report-Secret."""
     secret = Config.LABELING_REPORT_SECRET
     sent = request.headers.get("X-Report-Secret") or ""
-    if secret and sent and hmac.compare_digest(sent.encode(), secret.encode()):
+    return bool(secret and sent and hmac.compare_digest(sent.encode(), secret.encode()))
+
+
+def _scheduled_or_admin(f):
+    """Let the scheduled jobs in with X-Report-Secret; everyone else needs admin auth."""
+    admin_only = require_admin_auth(f)
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if _scheduled_request():
+            return f(*args, **kwargs)
+        return admin_only(*args, **kwargs)
+
+    return decorated
+
+
+def _report_request_authorized() -> bool:
+    """The scheduled job sends X-Report-Secret; a person needs an admin session."""
+    if _scheduled_request():
         return True
     try:
         return bool(session.get("admin_authenticated"))
@@ -1676,7 +1694,7 @@ def labeling_sync_collar():
 
 
 @labeling_bp.route("/compact", methods=["POST"])
-@require_admin_auth
+@_scheduled_or_admin
 def labeling_compact():
     """
     Delete duplicate extracted copies under staging/<email>/<message-id>/.
@@ -1687,11 +1705,15 @@ def labeling_compact():
     JSON body (optional):
       dry_run: bool (default false)
       async: bool (default true)
+    Called weekly by .github/workflows/labeling-compact.yml with X-Report-Secret,
+    which always runs in the background.
     """
     try:
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
         run_async = bool(body.get("async", True))
+        if _scheduled_request() and not session.get("admin_authenticated"):
+            run_async = True
 
         if _is_process_busy():
             state = _merge_process_state()
@@ -1846,7 +1868,7 @@ def _sync_collar_after_process(process_message: str) -> None:
 
 
 @labeling_bp.route("/process", methods=["POST"])
-@require_admin_auth
+@_scheduled_or_admin
 def labeling_process():
     """
     Process staging/ → extracted-txt/<email>/<collar-sn>/.
@@ -1857,6 +1879,8 @@ def labeling_process():
       async: bool (default true) — run in background; poll GET /status
       sync_collar: bool (default true) — async only: when new files were copied,
         sync Azure collar logs afterwards so new sessions and collars can match
+    Called daily by .github/workflows/labeling-process.yml with X-Report-Secret,
+    which always gets an incremental run in the background.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -1865,6 +1889,9 @@ def labeling_process():
         sync_collar = bool(body.get("sync_collar", True))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
+        if _scheduled_request() and not session.get("admin_authenticated"):
+            # The shared secret never wipes extracted-txt or holds a request open.
+            clear_output, run_async = False, True
 
         if _is_process_busy():
             state = _merge_process_state()

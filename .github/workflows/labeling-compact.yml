@@ -1,0 +1,50 @@
+# Remove duplicate copies from labeling staging every Monday, before the morning Process
+# run. Make re-uploads whole trees, and every Process run lists and compares each copy,
+# so they slow it down. Keeps the latest copy; copies with a different size are left alone.
+# The server does the work; this only triggers it.
+# Uses the same repo secrets as labeling-daily-report.yml (see docs/LABELING_DAILY_REPORT.md).
+name: Labeling remove duplicate copies
+
+on:
+  schedule:
+    # Mondays 14:00 UTC, an hour before Process staging.
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only report what would be removed"
+        type: boolean
+        default: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Ask the server to remove duplicate copies
+        env:
+          URL: ${{ secrets.LABELING_REPORT_URL }}
+          SECRET: ${{ secrets.LABELING_REPORT_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n --argjson dry_run "$DRY_RUN" '{dry_run: $dry_run}')
+          # 409 means another labeling job is running: wait and try again.
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o response.json -w '%{http_code}' -X POST "${URL%/}/api/labeling/compact" \
+              -H "Content-Type: application/json" \
+              -H "X-Report-Secret: $SECRET" \
+              -d "$body")
+            cat response.json; echo
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              exit 0
+            fi
+            if [ "$code" != "409" ]; then
+              echo "Server answered $code"
+              exit 1
+            fi
+            echo "Another labeling job is running (attempt $attempt); waiting 2 minutes."
+            sleep 120
+          done
+          echo "Gave up: another labeling job kept running."
+          exit 1

@@ -1,0 +1,48 @@
+# Process new staging uploads into extracted-txt every morning, before the daily recap,
+# so the recap and the charts include yesterday's emails. When new files are copied, the
+# server also syncs collar logs from Azure. The server does the work; this only triggers it.
+# Uses the same repo secrets as labeling-daily-report.yml (see docs/LABELING_DAILY_REPORT.md).
+name: Labeling process staging
+
+on:
+  schedule:
+    # 15:00 UTC, an hour before the daily recap at 16:00.
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Ask the server to process staging
+        env:
+          URL: ${{ secrets.LABELING_REPORT_URL }}
+          SECRET: ${{ secrets.LABELING_REPORT_SECRET }}
+        run: |
+          set -euo pipefail
+          # 409 means another labeling job is running. If it is a process run (or the collar
+          # sync after one), that covers us; otherwise (Gmail ingest, compact, promote) wait
+          # and try again.
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o response.json -w '%{http_code}' -X POST "${URL%/}/api/labeling/process" \
+              -H "Content-Type: application/json" \
+              -H "X-Report-Secret: $SECRET" \
+              -d '{}')
+            cat response.json; echo
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              exit 0
+            fi
+            if [ "$code" = "409" ] && jq -e '.data.job == "process" or .data.job == "sync-collar"' response.json >/dev/null; then
+              echo "A process job is already running; nothing to do."
+              exit 0
+            fi
+            if [ "$code" != "409" ]; then
+              echo "Server answered $code"
+              exit 1
+            fi
+            echo "Another labeling job is running (attempt $attempt); waiting 2 minutes."
+            sleep 120
+          done
+          echo "Gave up: another labeling job kept running."
+          exit 1

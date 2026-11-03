@@ -659,7 +659,8 @@ function healthGaps({
       tone: 'info',
       count: duplicateRefs,
       title: `${plural(duplicateRefs, 'duplicate copy', 'duplicate copies')} in staging`,
-      cause: 'Make re-uploads whole trees. Charts already ignore the copies; they only use space.',
+      cause:
+        'Make re-uploads whole trees. Charts already ignore the copies, but every Process run still lists and compares each one, so they slow it down as well as using space. A scheduled job removes them every Monday.',
       action: { key: 'compact', label: 'Remove duplicate copies', secondary: true },
     });
   }
@@ -5457,8 +5458,9 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                     Make is re-uploading each labeler’s full extracted tree. Staging has{' '}
                     {stagingHealth.raw_extracted_files} files and about{' '}
                     {stagingHealth.unique_files_after_dedupe} are unique ({stagingHealth.duplicate_ratio}×).
-                    Process staging folds those copies into the charts. It does not stop the next email
-                    from stacking another tree.
+                    Process staging folds those copies into the charts, but it lists and compares every
+                    copy on each run, so they make Process slower. It does not stop the next email from
+                    stacking another tree. A scheduled job removes duplicate copies every Monday.
                   </p>
                 ) : null}
                 {chartsBehind ? (
