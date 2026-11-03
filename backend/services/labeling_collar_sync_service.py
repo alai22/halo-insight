@@ -136,20 +136,21 @@ def parse_ai_log_filename(filename: str) -> Optional[Dict[str, Any]]:
     ai_gps_log_model_gps_04_2025-12-11_14-45-40.log → gps
     ai_log_model_8c_80f_v2_2025-12-11_14-36-23_v2.log → activity
     ai_log_fftnet_v3_4c_2026-10-29_12-11-00_v5.log → activity (the posture model since Aug 2026)
+    ai_log_ei_activity_5c_2026-10-31_00-27-04_v5.log → activity (firmware since Oct 31 2026)
+
+    Any other ai_log_<model>_ name counts too, so a renamed model isn't silently dropped:
+    gps when the model name says gps, activity otherwise.
     """
     if not filename or not isinstance(filename, str):
         return None
     base = filename.rsplit("/", 1)[-1]
-    lowered = base.lower()
-    if "ai_gps_log" in lowered:
-        family = "gps"
-    elif "ai_log_model" in lowered or "ai_log_fftnet" in lowered:
-        family = "activity"
-    else:
-        return None
     match = AI_LOG_TS_RE.search(base)
     if not match:
         return None
+    model = base[: match.start()].lower()
+    if not (model.startswith("ai_log_") or model.startswith("ai_gps_log")):
+        return None
+    family = "gps" if "gps" in model else "activity"
     ts = (
         f"{match.group('date')}T{match.group('h')}:{match.group('m')}:{match.group('s')}"
     )
