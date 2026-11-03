@@ -14,7 +14,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Mail, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Hourglass, Mail, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
 
 const PROCESS_POLL_MS = 4000;
@@ -22,7 +22,7 @@ const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
 const STATUS_STORAGE_KEY = 'halo_labeling_status_v1';
 const RANGE_STORAGE_KEY = 'halo_labeling_range_v1';
 const DOG_CHART_LIMIT = 15;
-const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled collars';
+const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled and owner-listed collars';
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
 const COLLAR_SYNC_PROGRESS = 'Copying Azure <sn>/ai/* into collar-raw/…';
 
@@ -428,7 +428,7 @@ function collarNextStep({
         .filter((row) => row.count > 0)
         .sort((a, b) => b.count - a.count),
       footnote:
-        'Azure is copied, so syncing again will not change these until the collars upload more logs.',
+        'Azure is copied, so syncing again will not change these. What needs doing, at the top of this tab, says what will.',
     };
   }
   return {
@@ -436,6 +436,245 @@ function collarNextStep({
     title: 'Every labeled session has collar data',
     body: 'Azure and S3 match, and each session found a collar log near its time.',
   };
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+const GAP_STAGES = [
+  { key: 'email', label: 'Emails into staging' },
+  { key: 'staging', label: 'Staging into charts' },
+  { key: 'collar', label: 'Collar logs into S3' },
+  { key: 'match', label: 'Matching app and collar data' },
+  { key: 'tidy', label: 'Housekeeping' },
+];
+
+/**
+ * Every gap in the pipeline, in pipeline order, with what fixes it. A gap has an
+ * action when a button on this page fixes it, otherwise `todo` says what to do
+ * outside the page (the inbox, Make, the labeler, the code).
+ */
+function healthGaps({
+  uploads,
+  uploadsStale,
+  unreadableRecent,
+  gmailIngest,
+  pendingForwards,
+  chartsBehind,
+  uniqueFiles,
+  outputFiles,
+  unprocessedEmails,
+  nextStep,
+  clone,
+  waitingOnSyncTotal,
+  coverage,
+  stackedTrees,
+  duplicateRefs,
+  incompleteSessions,
+}) {
+  const gaps = [];
+  const add = (gap) => gaps.push({ tone: 'attention', ...gap });
+  const gmailOn = Boolean(gmailIngest?.enabled && gmailIngest?.configured);
+  const backfill = gmailOn
+    ? 'Backfill from that date with Gmail ingest (below)'
+    : 'Re-run the Make scenario from that date';
+
+  if (uploadsStale) {
+    add({
+      key: 'uploads_stale',
+      stage: 'email',
+      title: uploads?.last_upload_at
+        ? `No new uploads since ${formatAge(uploads.last_upload_at)}`
+        : 'No uploads found in staging',
+      cause: 'Make may have run out of operations, or the emails went to spam.',
+      todo: `Check the Make scenario and the inbox's spam folder. ${backfill}.`,
+    });
+  }
+  if (gmailIngestAttention(gmailIngest)) {
+    add({
+      key: 'gmail',
+      stage: 'email',
+      title: 'Gmail ingest needs a look',
+      cause: gmailIngest.last_error || gmailIngest.state_error || 'It stalled, errored, or disagrees with Make.',
+      todo: 'Open Gmail ingest below for the details.',
+    });
+  }
+  if (unreadableRecent > 0) {
+    add({
+      key: 'unreadable_uploads',
+      stage: 'email',
+      count: unreadableRecent,
+      title: `${plural(unreadableRecent, 'upload')} left no session files`,
+      cause: 'The email arrived, but its attachment had nothing Process staging can read.',
+      todo: 'Open the list under Data pipeline. Ask the labeler to send those sessions again.',
+    });
+  }
+  const pendingForwardCount = Number(pendingForwards?.pending_count) || 0;
+  if (pendingForwardCount > 0) {
+    add({
+      key: 'forwards',
+      stage: 'email',
+      count: pendingForwardCount,
+      title: `${plural(pendingForwardCount, 'forwarded email')} waiting to be credited`,
+      cause: 'Forwards wait in quarantine until they are credited to the original labeler.',
+      action: { key: 'promote', label: 'Promote forwards' },
+    });
+  }
+  const unresolvedForwards = (pendingForwards?.unresolved || []).length;
+  if (unresolvedForwards > 0) {
+    add({
+      key: 'forwards_unresolved',
+      stage: 'email',
+      count: unresolvedForwards,
+      title: `${plural(unresolvedForwards, 'forward')} with no original sender`,
+      cause: 'The forwarded email does not say who sent it first.',
+      todo: 'Promote them from the command line with --map <message-id>=<labeler email>.',
+    });
+  }
+
+  const behindBy = Math.max(0, (uniqueFiles || 0) - (outputFiles || 0));
+  if (chartsBehind || unprocessedEmails.length) {
+    add({
+      key: 'charts_behind',
+      stage: 'staging',
+      count: behindBy || unprocessedEmails.length,
+      title: behindBy
+        ? `${plural(behindBy, 'staging file')} not in the charts yet`
+        : `${plural(unprocessedEmails.length, 'labeler')} not in the charts yet`,
+      cause: 'Emails reached staging, but the summary was built before them.',
+      action: { key: 'process', label: 'Process staging' },
+    });
+  }
+
+  if (nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured') {
+    add({
+      key: 'azure',
+      stage: 'collar',
+      tone: 'error',
+      title: nextStep.title,
+      cause: 'Collar logs cannot be copied until Azure can be read.',
+      todo: nextStep.body,
+    });
+  }
+  const notCloned = Number(clone?.not_cloned) || 0;
+  if (notCloned > 0 || waitingOnSyncTotal > 0) {
+    add({
+      key: 'not_synced',
+      stage: 'collar',
+      count: notCloned || waitingOnSyncTotal,
+      title: notCloned
+        ? `${plural(notCloned, 'collar log')} in Azure not copied to S3`
+        : `${plural(waitingOnSyncTotal, 'session')} newer than the last collar sync`,
+      cause: notCloned
+        ? 'The last Azure check found logs that are not in S3.'
+        : 'Their collar logs may be in Azure already.',
+      action: { key: 'sync', label: 'Sync collar data' },
+    });
+  }
+  const unrecognized = coverage?.unrecognized_logs;
+  if (unrecognized?.count > 0) {
+    const top = unrecognized.patterns?.[0];
+    add({
+      key: 'unrecognized_logs',
+      stage: 'collar',
+      tone: 'error',
+      count: unrecognized.count,
+      title: `${plural(unrecognized.count, 'collar log')} with a name the parser does not know`,
+      cause: top
+        ? `For example ${top.sample} on ${plural(top.collars.length, 'collar')}. These are in S3 but never matched, often after a firmware change.`
+        : 'These are in S3 but never matched, often after a firmware change.',
+      todo: 'Add the new name to parse_ai_log_filename, and ask the firmware team what changed.',
+    });
+  }
+
+  const totals = coverage?.totals || {};
+  const reasons = coverage?.missing_reasons || {};
+  const collarOnly = Number(totals.collar_only) || 0;
+  if (collarOnly > 0) {
+    const byLabeler = {};
+    (coverage?.collar_only_logs || []).forEach((log) =>
+      (log.labelers || []).forEach((email) => {
+        byLabeler[email] = (byLabeler[email] || 0) + 1;
+      })
+    );
+    const who = Object.entries(byLabeler)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([email, n]) => `${email.split('@')[0]} (${n})`);
+    add({
+      key: 'collar_only',
+      stage: 'match',
+      count: collarOnly,
+      title: `${plural(collarOnly, 'collar log')} with no app session`,
+      cause: `The collar recorded a session but its app email has not been processed${
+        who.length ? `: ${who.join(', ')}` : ''
+      }. Usually spam, Make out of operations, or not sent yet.`,
+      todo: `Find those emails in the inbox, spam included. ${
+        gmailOn ? 'Backfill them with Gmail ingest' : 'Re-run Make for them'
+      }, then Process staging.`,
+      action: { key: 'reason:collar_only', label: 'List them', secondary: true },
+    });
+  }
+  const noLogs = (Number(reasons.no_blobs_for_sn) || 0) + (Number(reasons.no_family_logs) || 0);
+  if (noLogs > 0) {
+    add({
+      key: 'no_logs',
+      stage: 'match',
+      count: noLogs,
+      title: `${plural(noLogs, 'session')} on collars with no logs of that type`,
+      cause: 'The collar has not uploaded those logs to Azure, or the serial in the app is wrong.',
+      todo: 'Ask the labeler to leave the collar charging on wifi, then Sync collar data. Check the serial under By collar.',
+      action: { key: `reason:${reasons.no_blobs_for_sn ? 'no_blobs_for_sn' : 'no_family_logs'}`, label: 'List them', secondary: true },
+    });
+  }
+  const timeGap = Number(reasons.time_gap) || 0;
+  if (timeGap > 0) {
+    add({
+      key: 'time_gap',
+      tone: 'info',
+      stage: 'match',
+      count: timeGap,
+      title: `${plural(timeGap, 'session')} with logs, but none near the session time`,
+      cause: 'A steady gap across rows is a clock offset. Gaps of days mean the logs for that time are missing or unreadable.',
+      todo: 'Check the gap column in the list. Days apart: the collar has not uploaded yet, or see unknown log names above.',
+      action: { key: 'reason:time_gap', label: 'List them', secondary: true },
+    });
+  }
+  const appProblems = (Number(reasons.unknown_sn) || 0) + (Number(reasons.bad_timestamp) || 0);
+  if (appProblems > 0) {
+    add({
+      key: 'app_problems',
+      stage: 'match',
+      count: appProblems,
+      title: `${plural(appProblems, 'session')} with no serial or time in the app data`,
+      cause: 'The app files do not say which collar or when, so nothing can match them.',
+      todo: 'Ask the labeler which collar they used and when.',
+      action: { key: `reason:${reasons.unknown_sn ? 'unknown_sn' : 'bad_timestamp'}`, label: 'List them', secondary: true },
+    });
+  }
+
+  if (stackedTrees && duplicateRefs > 0) {
+    add({
+      key: 'duplicates',
+      stage: 'tidy',
+      tone: 'info',
+      count: duplicateRefs,
+      title: `${plural(duplicateRefs, 'duplicate copy', 'duplicate copies')} in staging`,
+      cause: 'Make re-uploads whole trees. Charts already ignore the copies; they only use space.',
+      action: { key: 'compact', label: 'Remove duplicate copies', secondary: true },
+    });
+  }
+  if (incompleteSessions > 0) {
+    add({
+      key: 'incomplete',
+      stage: 'tidy',
+      tone: 'info',
+      count: incompleteSessions,
+      title: `${plural(incompleteSessions, 'session')} missing a file`,
+      cause: 'One of collar_collected, durations or user_reported never arrived. Processing keeps them incomplete.',
+      todo: 'Ask the labeler to send those sessions again. The list is under Staging health.',
+    });
+  }
+  return gaps;
 }
 
 const NEXT_STEP_STYLES = {
@@ -478,6 +717,93 @@ function CollarNextStep({ step, onPickReason }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Count on a header button when it has work to do. */
+function GapBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span className="ml-0.5 min-w-[1.25rem] px-1.5 rounded-full bg-white/90 text-gray-900 text-xs font-semibold tabular-nums">
+      {count}
+    </span>
+  );
+}
+
+const GAP_DOT = { error: 'bg-red-500', attention: 'bg-amber-500', info: 'bg-sky-400' };
+
+/** The gaps from healthGaps, grouped by pipeline stage, each with its fix. */
+function WhatNeedsDoing({ gaps, loading, busy, onAction }) {
+  if (loading) return null;
+  if (!gaps.length) {
+    return (
+      <div className="mb-6 border rounded-lg px-4 py-3 bg-emerald-50 border-emerald-200 text-emerald-900 flex items-center gap-2 text-sm">
+        <CheckCircle2 className="h-4 w-4" />
+        <span className="font-medium">Nothing needs doing.</span>
+        Every email is in the charts and every session found its collar log.
+      </div>
+    );
+  }
+  return (
+    <section className="mb-6 bg-white border border-gray-200 rounded-lg p-4">
+      <h2 className="text-lg font-semibold text-gray-900">What needs doing</h2>
+      <p className="text-sm text-gray-500 mb-3">
+        Gaps in pipeline order. Fix the earliest first: later ones often clear with it.
+      </p>
+      <div className="space-y-4">
+        {GAP_STAGES.map((stage) => {
+          const rows = gaps.filter((gap) => gap.stage === stage.key);
+          if (!rows.length) return null;
+          return (
+            <div key={stage.key}>
+              <div className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-1">
+                {stage.label}
+              </div>
+              <ul className="divide-y divide-gray-100">
+                {rows.map((gap) => (
+                  <li
+                    key={gap.key}
+                    className="py-2 flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-4"
+                  >
+                    <div className="flex items-start gap-2 min-w-0 flex-1">
+                      <span className={`h-2 w-2 rounded-full mt-1.5 flex-shrink-0 ${GAP_DOT[gap.tone]}`} />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-900">{gap.title}</div>
+                        <div className="text-xs text-gray-600 mt-0.5 break-words">{gap.cause}</div>
+                        {gap.todo ? (
+                          <div className="text-xs text-gray-800 mt-1">
+                            <span className="font-medium">To fix: </span>
+                            {gap.todo}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    {gap.action ? (
+                      <button
+                        type="button"
+                        onClick={() => onAction(gap.action.key)}
+                        disabled={busy && !gap.action.key.startsWith('reason:')}
+                        className={`shrink-0 self-start inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm disabled:opacity-50 ${
+                          gap.action.secondary
+                            ? 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+                            : 'bg-gray-900 text-white hover:bg-gray-700'
+                        }`}
+                      >
+                        {gap.action.label}
+                      </button>
+                    ) : (
+                      <span className="shrink-0 self-start text-xs text-gray-400 sm:pt-1">
+                        Outside this page
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -2085,8 +2411,8 @@ function CollarCoverageList({ rows, behindCount, showAll, onToggleShowAll, onOpe
     <div>
       {visible.length === 0 ? (
         <p className="text-sm text-gray-500">
-          No collars are behind. Azure is not ahead of S3, and every session with a serial has a
-          dump.
+          No collars are behind. Azure is not ahead of S3, every session with a serial has a
+          dump, and no collar has logs without app sessions.
         </p>
       ) : (
         <>
@@ -2165,7 +2491,13 @@ function CollarSessionBar({ row, maxSessions }) {
   const total = row.sessions || 0;
   const reason = missingReasonText(row);
   if (!total) {
-    return <span className="text-xs text-gray-400">No app sessions</span>;
+    return row.collar_only ? (
+      <span className="text-xs text-amber-700">
+        No app sessions · {row.collar_only} collar log{row.collar_only === 1 ? '' : 's'} waiting for labels
+      </span>
+    ) : (
+      <span className="text-xs text-gray-400">No app sessions</span>
+    );
   }
   return (
     <div
@@ -2561,13 +2893,13 @@ function MismatchExplorer({
   const appRows = useMemo(
     () =>
       filter(sessions || [], ['email', 'collar_sn', 'family', 'reason']).filter(
-        (row) => !reason || row.reason === reason
+        (row) => !reason || reason === 'collar_only' || row.reason === reason
       ),
     [filter, sessions, reason]
   );
-  // A reason picked from the next-step breakdown is about app sessions.
+  // A reason picked from the next-step breakdown is about app sessions; collar_only is the other tab.
   useEffect(() => {
-    if (reason) setTab('app');
+    if (reason) setTab(reason === 'collar_only' ? 'collar' : 'app');
   }, [reason]);
   const collarRows = useMemo(
     () => filter(logs || [], ['collar_sn', 'filename', 'family', 'labelers']),
@@ -2643,7 +2975,10 @@ function MismatchExplorer({
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-900 text-white text-xs"
               title="Clear reason filter"
             >
-              {MISSING_REASON_ROWS.find((row) => row.key === reason)?.label || reason} ×
+              {reason === 'collar_only'
+                ? 'Collar logs with no app session'
+                : MISSING_REASON_ROWS.find((row) => row.key === reason)?.label || reason}{' '}
+              ×
             </button>
           ) : null}
           {selectedDay ? (
@@ -4557,23 +4892,31 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
       const snap = cloneBySn[sn] || null;
       const azureFiles =
         snap && !(Number(snap.list_errors) > 0) ? Number(snap.azure_files) || 0 : null;
-      const s3Files = Number(base?.s3_files ?? snap?.s3_files) || 0;
+      // All-time, like the Azure count; base.s3_files only counts the date range.
+      const s3Files = Number(base?.s3_files_total ?? snap?.s3_files ?? base?.s3_files) || 0;
       const notCloned = snap
         ? inventoryOnly
           ? (Number(snap.copied) || 0) + (Number(snap.errors) || 0)
           : Number(snap.errors) || 0
         : 0;
       const missing = Number(base?.missing) || 0;
+      const sessions = Number(base?.sessions) || 0;
+      const collarOnly = Number(base?.collar_only) || 0;
+      // Logs on a collar with no labeled session: its app labels haven't arrived.
+      const waitingOnApp = sessions === 0 && collarOnly > 0;
       const behind =
         sn !== '_unknown' &&
         (missing > 0 ||
+          waitingOnApp ||
           notCloned > 0 ||
           (azureFiles != null && azureFiles > s3Files));
       rows.push({
         collar_sn: sn,
-        sessions: Number(base?.sessions) || 0,
+        sessions,
         matched: Number(base?.matched) || 0,
         missing,
+        collar_only: collarOnly,
+        waiting_on_app: waitingOnApp,
         s3_files: s3Files,
         azure_files: azureFiles,
         no_blobs_for_sn: Number(base?.no_blobs_for_sn) || 0,
@@ -4591,6 +4934,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
     rows.sort(
       (a, b) =>
         b.missing - a.missing ||
+        Number(b.waiting_on_app) * b.collar_only - Number(a.waiting_on_app) * a.collar_only ||
         b.sessions - a.sessions ||
         String(a.collar_sn).localeCompare(String(b.collar_sn))
     );
@@ -4612,13 +4956,43 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
     waitingOnSync,
   });
   const azureUnreadable = nextStep.kind === 'unreadable' || nextStep.kind === 'not_configured';
+  const gaps = healthGaps({
+    uploads,
+    uploadsStale,
+    unreadableRecent,
+    gmailIngest: status?.gmail_ingest,
+    pendingForwards: pendingForwards?.auto_promote ? null : pendingForwards,
+    chartsBehind,
+    uniqueFiles,
+    outputFiles,
+    unprocessedEmails,
+    nextStep,
+    clone,
+    waitingOnSyncTotal,
+    coverage: collarCoverage,
+    stackedTrees,
+    duplicateRefs,
+    incompleteSessions,
+  });
+  const gapByKey = Object.fromEntries(gaps.map((gap) => [gap.key, gap]));
+  const runGapAction = (key) => {
+    if (key === 'process') processStaging();
+    else if (key === 'sync') syncCollar();
+    else if (key === 'promote') promoteForwards();
+    else if (key === 'compact') compactStaging();
+    else if (key.startsWith('reason:')) {
+      setMismatchReason(key.slice('reason:'.length));
+      mismatchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
   // Shown as a dot on the Data health tab, so problems aren't hidden behind the Overview.
   const healthNeedsAttention =
     (!nextStep.loading && (nextStep.tone === 'error' || nextStep.tone === 'attention')) ||
     stagingHealthActionable ||
     gmailIngestAttention(status?.gmail_ingest) ||
     uploadsStale ||
-    unreadableRecent > 0;
+    unreadableRecent > 0 ||
+    gaps.some((gap) => gap.tone !== 'info');
 
   if ((loading || summaryPending) && !data) {
     return (
@@ -4748,7 +5122,11 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
             onClick={processStaging}
             disabled={processing}
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50"
-            title="Adds staging files that are not already in extracted-txt. Does not delete existing output."
+            title={
+              gapByKey.charts_behind
+                ? `${gapByKey.charts_behind.title}. Adds them to the charts; existing output stays.`
+                : 'Nothing new in staging: the charts are current. Adds staging files that are not already in extracted-txt.'
+            }
           >
             {processing && !syncingCollar ? (
               <RefreshCw className="h-4 w-4 animate-spin" />
@@ -4762,6 +5140,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                   ? 'Promoting…'
                   : 'Processing…'
               : 'Process staging'}
+            {!processing && gapByKey.charts_behind ? <GapBadge count={gapByKey.charts_behind.count} /> : null}
           </button>
           <button
             type="button"
@@ -4769,9 +5148,11 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
             disabled={processing || !azureConfigured}
             className="inline-flex items-center gap-2 px-4 py-2 bg-sky-700 text-white rounded-lg text-sm hover:bg-sky-800 disabled:opacity-50"
             title={
-              azureConfigured
-                ? COLLAR_SYNC_HINT
-                : 'Set LABELING_AZURE_SAS_URL (or BLOB_URL + SAS_TOKEN) on the server'
+              !azureConfigured
+                ? 'Set LABELING_AZURE_SAS_URL (or BLOB_URL + SAS_TOKEN) on the server'
+                : gapByKey.not_synced
+                  ? `${gapByKey.not_synced.title}. ${COLLAR_SYNC_HINT}`
+                  : `S3 already has every collar log Azure had at the last check. ${COLLAR_SYNC_HINT}`
             }
           >
             {syncingCollar ? (
@@ -4780,6 +5161,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
               <DownloadCloud className="h-4 w-4" />
             )}
             {syncingCollar ? 'Syncing…' : 'Sync collar data'}
+            {!processing && gapByKey.not_synced ? <GapBadge count={gapByKey.not_synced.count} /> : null}
           </button>
           <button
             type="button"
@@ -5040,6 +5422,14 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
 
       {tab === 'health' ? (
         <>
+          {readOnly ? null : (
+            <WhatNeedsDoing
+              gaps={gaps}
+              loading={nextStep.loading || !status}
+              busy={processing}
+              onAction={runGapAction}
+            />
+          )}
           <GmailIngestPanel info={status?.gmail_ingest} readOnly={readOnly} onChanged={fetchStatus} />
           {showStagingHealth ? (
             <details
@@ -5200,7 +5590,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
                 <PipelineStage
                   label="Azure"
                   value={clone ? clone.azure_files ?? 0 : '—'}
-                  detail={clone ? 'Labeled collars only' : 'Lists ai/ logs, does not copy'}
+                  detail={clone ? 'Labeled and owner-listed collars' : 'Lists ai/ logs, does not copy'}
                   state={
                     azureUnreadable && clone
                       ? `Could not read Azure · ${formatUpdatedAt(clone.generated_at)}`
@@ -5335,7 +5725,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
             </p>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
             <SummaryCard
               icon={CheckCircle2}
               label="Sessions with collar data"
@@ -5353,6 +5743,18 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
               hint={
                 collarTotals.unknown_sn
                   ? `${collarTotals.unknown_sn} with no SN`
+                  : null
+              }
+            />
+            <SummaryCard
+              icon={Hourglass}
+              label="Collar logs, no session"
+              value={collarTotals.collar_only ?? 0}
+              hint={
+                collarTotals.collars_without_sessions
+                  ? `${collarTotals.collar_only_no_sessions} on ${collarTotals.collars_without_sessions} collar${
+                      collarTotals.collars_without_sessions === 1 ? '' : 's'
+                    } with no app sessions`
                   : null
               }
             />
@@ -5396,8 +5798,9 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
               </button>}
             </div>
             <p className="text-sm text-gray-500 mb-3">
-              Labeled sessions per collar and whether each found a collar log. Collars that are
-              behind come first.
+              Labeled sessions per collar and whether each found a collar log. Collars on the
+              owner list are synced too, so a collar with logs but no app sessions shows here.
+              Collars that are behind come first.
             </p>
             <CollarCoverageList
               rows={collarPipelineRows}
@@ -6043,4 +6446,5 @@ function SummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
+export { healthGaps, WhatNeedsDoing };
 export default LabelingDataDashboard;

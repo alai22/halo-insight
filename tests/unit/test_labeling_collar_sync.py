@@ -256,6 +256,17 @@ def test_match_coverage_splits_days_and_reasons_by_model():
     }
 
 
+def test_renamed_models_still_parse():
+    from backend.services.labeling_collar_sync_service import parse_ai_log_filename
+
+    parsed = parse_ai_log_filename("ai_log_ei_activity_5c_2026-10-31_00-27-04_v5.log")
+    assert parsed["family"] == "activity"
+    assert parsed["timestamp"] == "2026-10-31T00:27:04"
+    assert parse_ai_log_filename("ai_log_ei_gps_2c_2026-10-31_00-27-04_v5.log")["family"] == "gps"
+    assert parse_ai_log_filename("20260702_211344_console.log") is None
+    assert parse_ai_log_filename("debug_2026-10-31_00-27-04.log") is None
+
+
 def test_fftnet_logs_are_activity_logs():
     from backend.services.labeling_collar_sync_service import parse_ai_log_filename
 
