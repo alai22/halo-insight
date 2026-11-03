@@ -1692,8 +1692,21 @@ function listNames(names, max = 3) {
 }
 
 /** A ranked shout-out list: medal, name, who or what it goes with, and labeled time. */
-function ShoutOutList({ rows, empty, showAll, onToggle }) {
-  if (!rows.length) return <p className="text-sm text-gray-500">{empty}</p>;
+function ShoutOutList({ rows, empty, showAll, onToggle, waiting = [] }) {
+  const waitingNote = waiting.length ? (
+    <p className="mt-3 text-xs text-amber-800" title="Not counted in the ranking until their emailed logs arrive.">
+      Waiting for app data:{' '}
+      {waiting.map((w) => `${w.person} (${w.logs} collar log${w.logs === 1 ? '' : 's'})`).join(', ')}
+    </p>
+  ) : null;
+  if (!rows.length) {
+    return (
+      <div>
+        <p className="text-sm text-gray-500">{empty}</p>
+        {waitingNote}
+      </div>
+    );
+  }
   return (
     <div>
       <ul className="divide-y divide-gray-100">
@@ -1712,6 +1725,14 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
             <span className="text-right tabular-nums whitespace-nowrap">
               <span className="block text-gray-900">{formatSecondsShort(row.seconds)}</span>
               <span className="block text-xs text-gray-500">{row.sessions} sessions</span>
+              {row.unconfirmed ? (
+                <span
+                  className="block text-xs text-amber-700"
+                  title="Collar logs from this period with no app data yet, usually an email that hasn't arrived. Not counted in the ranking."
+                >
+                  +{row.unconfirmed} collar log{row.unconfirmed === 1 ? '' : 's'}, no app data
+                </span>
+              ) : null}
             </span>
           </li>
         ))}
@@ -1721,6 +1742,7 @@ function ShoutOutList({ rows, empty, showAll, onToggle }) {
           {showAll ? `Show top ${SHOUT_OUT_ROWS}` : `Show all ${rows.length}`}
         </button>
       ) : null}
+      {waitingNote}
     </div>
   );
 }
@@ -1853,6 +1875,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
         >
           <ShoutOutList
             empty="No named dogs in this range."
+            waiting={(recap.dogs_waiting_for_app_data || []).map((w) => ({ ...w, person: `🐶 ${w.person}` }))}
             showAll={showAllShoutOuts}
             onToggle={() => setShowAllShoutOuts((v) => !v)}
             rows={(recap.dog_leaderboard || []).map((row) => ({
@@ -1862,6 +1885,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
               secondary: listNames(row.people),
               sessions: row.sessions,
               seconds: row.seconds,
+              unconfirmed: row.unconfirmed,
             }))}
           />
         </ChartCard>
@@ -1873,6 +1897,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
         >
           <ShoutOutList
             empty="Nobody labeled in this range."
+            waiting={recap.waiting_for_app_data || []}
             showAll={showAllShoutOuts}
             onToggle={() => setShowAllShoutOuts((v) => !v)}
             rows={recap.leaderboard.map((row) => ({
@@ -1883,6 +1908,7 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
               secondary: row.dogs.length ? `🐶 ${listNames(row.dogs)}` : null,
               sessions: row.sessions,
               seconds: row.seconds,
+              unconfirmed: row.unconfirmed,
             }))}
           />
         </ChartCard>
