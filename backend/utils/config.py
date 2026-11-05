@@ -211,6 +211,11 @@ class Config:
     # shadow: write to LABELING_GMAIL_SHADOW_PREFIX beside Make for comparison. live: write to staging/.
     LABELING_GMAIL_INGEST_MODE: str = os.getenv('LABELING_GMAIL_INGEST_MODE', 'shadow')
     LABELING_GMAIL_SHADOW_PREFIX: str = os.getenv('LABELING_GMAIL_SHADOW_PREFIX', 'staging-gmail/')
+    # Access, either way read-only. Preferred: OAuth for the one inbox, from
+    # authorize_labeling_gmail.py. Otherwise a service account with domain-wide delegation.
+    LABELING_GMAIL_OAUTH_CLIENT_ID: Optional[str] = os.getenv('LABELING_GMAIL_OAUTH_CLIENT_ID')
+    LABELING_GMAIL_OAUTH_CLIENT_SECRET: Optional[str] = os.getenv('LABELING_GMAIL_OAUTH_CLIENT_SECRET')
+    LABELING_GMAIL_OAUTH_REFRESH_TOKEN: Optional[str] = os.getenv('LABELING_GMAIL_OAUTH_REFRESH_TOKEN')
     # Service account key: base64 of the key JSON, inline JSON, or a path. Never commit it.
     LABELING_GMAIL_SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv('LABELING_GMAIL_SERVICE_ACCOUNT_JSON')
     LABELING_GMAIL_INGEST_POLL_SEC: int = int(os.getenv('LABELING_GMAIL_INGEST_POLL_SEC', '300'))

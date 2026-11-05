@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend.services import labeling_gmail_ingest_service as gsvc
 from backend.services.labeling_gmail_ingest_service import (
+    GmailClient,
     LabelingGmailIngestService,
     extract_session_files,
     forwarded_for_someone_else,
@@ -178,6 +180,12 @@ def service(gmail, s3, mode="shadow", **kw):
 NOW_ISH = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    """The fixtures are dated around Nov 1; keep the lookback window around them."""
+    monkeypatch.setattr(gsvc, "_now", lambda: NOW_ISH)
+
+
 # ------------------------------------------------------- sender resolution
 
 
@@ -338,7 +346,7 @@ def test_first_run_uses_lookback():
     gmail = FakeGmail([])
     service(gmail, s3).run()
     after = int(gmail.queries[0].split("after:")[1].split()[0])
-    expected = (datetime.now(timezone.utc) - timedelta(days=3)).timestamp()
+    expected = (NOW_ISH - timedelta(days=3)).timestamp()
     assert abs(after - expected) < 60
 
 
@@ -370,7 +378,7 @@ def test_failure_is_retried_by_id_even_outside_window():
 
 def test_backfill_does_not_move_cursor_back():
     s3 = FakeS3()
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    now_ms = int(NOW_ISH.timestamp() * 1000)
     s3.put_object(
         Key="labeling-jobs/gmail_ingest_state_live.json", Body=json.dumps({"cursor_internal_ms": now_ms})
     )
@@ -488,3 +496,66 @@ def test_service_account_key_inline_base64_or_path(tmp_path):
     assert service_account_info(str(path)) == key
     with pytest.raises(ValueError):
         service_account_info("")
+
+
+class _Exec:
+    def __init__(self, value):
+        self.value = value
+
+    def execute(self):
+        return self.value
+
+
+class FakeProfileService:
+    def __init__(self, email):
+        self.email = email
+
+    def users(self):
+        return self
+
+    def getProfile(self, userId):
+        return _Exec({"emailAddress": self.email})
+
+
+@pytest.fixture
+def no_gmail_auth(monkeypatch):
+    for name in (
+        "LABELING_GMAIL_OAUTH_CLIENT_ID",
+        "LABELING_GMAIL_OAUTH_CLIENT_SECRET",
+        "LABELING_GMAIL_OAUTH_REFRESH_TOKEN",
+        "LABELING_GMAIL_SERVICE_ACCOUNT_JSON",
+    ):
+        monkeypatch.setattr(gsvc.Config, name, None)
+
+
+def test_auth_method_prefers_oauth_over_service_account(monkeypatch, no_gmail_auth):
+    assert gsvc.gmail_auth_method() is None
+    monkeypatch.setattr(gsvc.Config, "LABELING_GMAIL_SERVICE_ACCOUNT_JSON", "{}")
+    assert gsvc.gmail_auth_method() == "service_account"
+    monkeypatch.setattr(gsvc.Config, "LABELING_GMAIL_OAUTH_REFRESH_TOKEN", "1//tok")
+    assert gsvc.gmail_auth_method() == "oauth"
+
+
+def test_oauth_credentials_from_settings(monkeypatch, no_gmail_auth):
+    pytest.importorskip("google.oauth2.credentials")
+    monkeypatch.setattr(gsvc.Config, "LABELING_GMAIL_OAUTH_REFRESH_TOKEN", " 1//tok ")
+    with pytest.raises(ValueError, match="CLIENT_ID"):
+        gsvc._oauth_credentials()
+    monkeypatch.setattr(gsvc.Config, "LABELING_GMAIL_OAUTH_CLIENT_ID", "id.apps.googleusercontent.com")
+    monkeypatch.setattr(gsvc.Config, "LABELING_GMAIL_OAUTH_CLIENT_SECRET", "secret")
+    creds = gsvc._oauth_credentials()
+    assert creds.refresh_token == "1//tok"
+    assert creds.client_id == "id.apps.googleusercontent.com"
+    assert list(creds.scopes) == [gsvc.GMAIL_READONLY_SCOPE]
+
+
+def test_from_config_without_access_says_what_to_set(no_gmail_auth):
+    pytest.importorskip("googleapiclient")
+    with pytest.raises(ValueError, match="LABELING_GMAIL_OAUTH_REFRESH_TOKEN"):
+        GmailClient.from_config(MAILBOX)
+
+
+def test_refresh_token_for_another_account_is_refused():
+    GmailClient(FakeProfileService("AI_Logs_Ingest@halocollar.com")).check_mailbox(MAILBOX)
+    with pytest.raises(ValueError, match="adrian@halocollar.com, not ai_logs_ingest"):
+        GmailClient(FakeProfileService("adrian@halocollar.com")).check_mailbox(MAILBOX)

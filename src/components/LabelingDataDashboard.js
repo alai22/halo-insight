@@ -906,7 +906,7 @@ function GmailIngestPanel({ info, readOnly, onChanged }) {
 
   let headline;
   if (!info.enabled) headline = 'Off (LABELING_GMAIL_INGEST_ENABLED is not true)';
-  else if (!info.configured) headline = 'On, but no service account key is configured';
+  else if (!info.configured) headline = 'On, but Gmail access is not configured (run authorize_labeling_gmail.py)';
   else if (info.running) headline = info.message || 'Checking the inbox…';
   else if (info.stalled) headline = `No finished run since ${when(run.finished_at || info.poller_started_at)}`;
   else headline = `Last run ${when(run.finished_at)} · ${run.ingested ?? 0} ingested`;

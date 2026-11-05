@@ -22,6 +22,7 @@ When none of those names a person, or someone forwarded another labeler's email,
 batch goes to `_forwards/`. The existing forward promotion then credits it to the labeler.
 
 Code: `backend/services/labeling_gmail_ingest_service.py`. CLI: `ingest_labeling_gmail.py`.
+One-time sign-in: `authorize_labeling_gmail.py`.
 
 ## Running beside Make
 
@@ -44,78 +45,123 @@ Suggested cutover:
 4. Turn the Make scenario off once live has run cleanly for a while. Nothing in this repo
    changes when you do.
 
-## Google Workspace setup (needs a Workspace super admin)
+## Google setup
 
-About 15 minutes. You need admin access to admin.google.com, a Google Cloud project, and
-SSH access to the EC2 server.
+The ingester needs read-only Gmail access to the inbox. There are two ways to grant it.
+Use **A** unless IT allows domain-wide delegation.
 
-1. **Check the inbox.** `ai_logs_ingest@halocollar.com` must be a real Workspace user
-   with Gmail turned on (a licensed user, not an alias or a group). It must be a member of
-   `ai_logs@halocollar.com` with delivery set to *Each email*. It already is if Make reads
-   it today. Leave Make's connection to it alone.
+| | A. OAuth for the inbox (recommended) | B. Service account, domain-wide delegation |
+|---|---|---|
+| Who grants it | The inbox itself, once, in a browser | A Workspace super admin |
+| What it can reach | Only `ai_logs_ingest@halocollar.com` | Any user Google lets it impersonate; the code limits it to the inbox |
+| Secret on the server | Client ID, client secret, refresh token | Service account key |
+| Breaks when | The inbox's password changes, or access is revoked | The key is deleted or delegation is removed |
 
-2. **Create a Cloud project and turn on the Gmail API.** At
-   <https://console.cloud.google.com>, pick or create a project (e.g. `halo-labeling-ingest`).
-   Then go to *APIs & Services → Library → Gmail API → Enable*.
+Either way the scope is `https://www.googleapis.com/auth/gmail.readonly`: it can read
+mail but cannot send, delete or change anything.
 
-3. **Create a service account.** Go to *IAM & Admin → Service Accounts → Create service
+First, **check the inbox.** `ai_logs_ingest@halocollar.com` must be a Workspace user with
+Gmail turned on, and a member of `ai_logs@halocollar.com` with delivery set to *Each
+email*. It already is if Make reads it today. Leave Make's connection to it alone.
+
+### A. OAuth for the inbox
+
+About 10 minutes. Needs a Google Cloud project in the halocollar.com organization (create
+it with your work account, not the inbox; add a second owner), and the inbox's password.
+
+1. **Turn on the Gmail API.** At <https://console.cloud.google.com>, in the project, go to
+   *APIs & Services → Library → Gmail API → Enable*.
+2. **Consent screen.** *Google Auth Platform* (or *APIs & Services → OAuth consent
+   screen*): app name `Halo labeling ingest`, support email yours, audience **Internal**.
+   Internal keeps it to halocollar.com accounts, needs no Google review, and its tokens do
+   not expire after 7 days. Under *Data access*, add the scope
+   `https://www.googleapis.com/auth/gmail.readonly`.
+3. **OAuth client.** *Clients → Create client*, type **Desktop app**, name
+   `labeling-gmail-ingest`. Download the JSON (`client_secret_….json`). Treat it as a
+   secret.
+4. **Sign in as the inbox, once.** On your laptop, from this repo:
+
+   ```bash
+   pip install google-auth-oauthlib google-api-python-client
+   python authorize_labeling_gmail.py ~/Downloads/client_secret_XXXX.json
+   ```
+
+   A browser opens. Sign in as `ai_logs_ingest@halocollar.com` (a private window avoids
+   picking your own account) and approve. The script checks it got that inbox and prints
+   three lines.
+5. **Put them on the server.** SSH to the EC2 server and add to `~/halo-insight/.env`:
+
+   ```
+   LABELING_GMAIL_INGEST_ENABLED=true
+   LABELING_GMAIL_INGEST_MODE=shadow
+   LABELING_GMAIL_INGEST_MAILBOX=ai_logs_ingest@halocollar.com
+   LABELING_GMAIL_OAUTH_CLIENT_ID=<from the script>
+   LABELING_GMAIL_OAUTH_CLIENT_SECRET=<from the script>
+   LABELING_GMAIL_OAUTH_REFRESH_TOKEN=<from the script>
+   ```
+
+   Then delete the downloaded client JSON.
+6. **Restart** (see *Restart* below).
+
+If IT restricts third-party apps, they mark this one OAuth client as *Trusted* under
+admin.google.com *Security → API controls → App access control*. That trusts one app; it
+is not domain-wide delegation.
+
+To revoke: sign in as the inbox at <https://myaccount.google.com/permissions> and remove
+*Halo labeling ingest*, or IT removes it in App access control. If the inbox's password
+changes, Google revokes the token: run step 4 again and replace the refresh token.
+
+### B. Service account with domain-wide delegation
+
+Needs a Workspace super admin.
+
+1. In the Cloud project, turn on the Gmail API (A1).
+2. **Create a service account.** *IAM & Admin → Service Accounts → Create service
    account*. Name it `labeling-gmail-ingest`, grant no roles, and finish. Open it and note
    the **Unique ID** (a long number; this is the OAuth client ID). Under *Keys → Add key →
    Create new key → JSON*, download the key file. Treat this file as a password.
    - If key creation is blocked, the org policy `iam.disableServiceAccountKeyCreation` is
      on. A super admin can allow keys for this one project under *IAM & Admin →
      Organization Policies*.
+3. **Grant domain-wide delegation.** At <https://admin.google.com> go to *Security → Access
+   and data control → API controls → Manage Domain Wide Delegation → Add new*: Client ID
+   the Unique ID, OAuth scopes `https://www.googleapis.com/auth/gmail.readonly`.
+   Authorize. Changes can take a few minutes to apply, rarely up to 24 hours.
+4. **Put the key on the server.** `base64 < labeling-gmail-ingest-key.json | tr -d '\n'`,
+   then in `~/halo-insight/.env` set the same lines as A5 but with
+   `LABELING_GMAIL_SERVICE_ACCOUNT_JSON=<the base64 output>` instead of the three OAuth
+   lines. Delete the key file. The setting also accepts the raw JSON on one line, or a path.
 
-4. **Grant domain-wide delegation, read-only.** At <https://admin.google.com> go to
-   *Security → Access and data control → API controls → Manage Domain Wide Delegation → Add
-   new*:
-   - Client ID: the Unique ID from step 3
-   - OAuth scopes: `https://www.googleapis.com/auth/gmail.readonly`
+If both are set, the OAuth lines win.
 
-   Authorize. This is the only scope the ingester asks for. It can read mail in the
-   mailbox it impersonates, but it cannot send, delete or change anything. Changes can
-   take a few minutes to apply, rarely up to 24 hours.
+### Restart
 
-5. **Put the key on the server.** On your laptop:
+```bash
+cd ~/halo-insight && ./deploy.sh production
+```
 
-   ```bash
-   base64 < labeling-gmail-ingest-key.json | tr -d '\n'
-   ```
+The first check runs 30 seconds after start, then every 5 minutes. The first run reads
+the last 3 days (`LABELING_GMAIL_INITIAL_LOOKBACK_DAYS`). Data health shows the result.
+To test from a laptop with the same `.env`:
 
-   SSH to the EC2 server and add these lines to `~/halo-insight/.env`:
-
-   ```
-   LABELING_GMAIL_INGEST_ENABLED=true
-   LABELING_GMAIL_INGEST_MODE=shadow
-   LABELING_GMAIL_INGEST_MAILBOX=ai_logs_ingest@halocollar.com
-   LABELING_GMAIL_SERVICE_ACCOUNT_JSON=<the base64 output>
-   ```
-
-   Then delete the downloaded key file. The setting also accepts the raw JSON on one line,
-   or a path to the key file inside the container.
-
-6. **Restart:**
-
-   ```bash
-   cd ~/halo-insight && ./deploy.sh production
-   ```
-
-   The first check runs 30 seconds after start, then every 5 minutes. The first run reads
-   the last 3 days (`LABELING_GMAIL_INITIAL_LOOKBACK_DAYS`). Data health shows the result.
-   To test from a laptop with the same `.env`:
-
-   ```bash
-   python ingest_labeling_gmail.py --since 2026-11-01 --dry-run
-   ```
+```bash
+python ingest_labeling_gmail.py --since 2026-11-01 --dry-run
+```
 
 ### If it fails
 
-- `unauthorized_client` / `Client is unauthorized to retrieve access tokens`: step 4 is
-  missing, has the wrong client ID, or the scope does not exactly match. It can also mean
-  delegation has not applied yet.
+- `invalid_grant` / `Token has been expired or revoked` (A): the inbox's password changed
+  or access was revoked. Run `authorize_labeling_gmail.py` again.
+- `The Gmail refresh token is for …, not …` (A): someone approved as the wrong account.
+  Run the script again signed in as the inbox.
+- `access_denied` / `admin_policy_enforced` in the browser (A): IT has to trust the OAuth
+  client in App access control, or the consent screen is not Internal.
+- `unauthorized_client` / `Client is unauthorized to retrieve access tokens` (B): step B3
+  is missing, has the wrong client ID, or the scope does not exactly match. It can also
+  mean delegation has not applied yet.
 - `Precondition check failed` / `failedPrecondition`: the mailbox is not a Gmail-enabled
-  user (step 1).
-- `Gmail API has not been used in project …`: step 2.
+  user.
+- `Gmail API has not been used in project …`: step A1.
 
 ## How it avoids duplicates and gaps
 
@@ -144,7 +190,10 @@ SSH access to the EC2 server.
 | `LABELING_GMAIL_INGEST_MAILBOX` | `ai_logs_ingest@halocollar.com` | Inbox to impersonate |
 | `LABELING_GMAIL_INGEST_MODE` | `shadow` | `shadow` or `live` |
 | `LABELING_GMAIL_SHADOW_PREFIX` | `staging-gmail/` | Shadow output |
-| `LABELING_GMAIL_SERVICE_ACCOUNT_JSON` | — | Key: base64, JSON or path |
+| `LABELING_GMAIL_OAUTH_CLIENT_ID` | — | OAuth access (A) |
+| `LABELING_GMAIL_OAUTH_CLIENT_SECRET` | — | OAuth access (A) |
+| `LABELING_GMAIL_OAUTH_REFRESH_TOKEN` | — | OAuth access (A); takes precedence over B |
+| `LABELING_GMAIL_SERVICE_ACCOUNT_JSON` | — | Service account key (B): base64, JSON or path |
 | `LABELING_GMAIL_INGEST_POLL_SEC` | `300` | Seconds between checks (minimum 60) |
 | `LABELING_GMAIL_INGEST_QUERY` | `has:attachment` | Extra Gmail search terms |
 | `LABELING_GMAIL_INITIAL_LOOKBACK_DAYS` | `3` | First run with no cursor |

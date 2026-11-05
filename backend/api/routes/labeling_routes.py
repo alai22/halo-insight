@@ -2463,6 +2463,8 @@ def start_gmail_ingest_poller() -> bool:
 
 def _gmail_ingest_status() -> Dict[str, Any]:
     """The `gmail_ingest` block of /status: last run, counts, errors, Make comparison."""
+    from backend.services.labeling_gmail_ingest_service import gmail_auth_method
+
     mode = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower()
     poll_sec = int(Config.LABELING_GMAIL_INGEST_POLL_SEC or 300)
     with _PROCESS_LOCK:
@@ -2473,7 +2475,8 @@ def _gmail_ingest_status() -> Dict[str, Any]:
         last_report = _GMAIL_STATE["last_report"]
     out: Dict[str, Any] = {
         "enabled": bool(Config.LABELING_GMAIL_INGEST_ENABLED),
-        "configured": bool(Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON),
+        "configured": gmail_auth_method() is not None,
+        "auth": gmail_auth_method(),
         "mode": mode,
         "mailbox": Config.LABELING_GMAIL_INGEST_MAILBOX,
         "target_prefix": (
@@ -2534,7 +2537,11 @@ def labeling_gmail_ingest_run():
       until: "YYYY-MM-DD" — stop before this date
       dry_run: bool (default false) — list and parse only; write nothing
     """
-    from backend.services.labeling_gmail_ingest_service import parse_since
+    from backend.services.labeling_gmail_ingest_service import (
+        NOT_CONFIGURED_MESSAGE,
+        gmail_auth_method,
+        parse_since,
+    )
 
     body = request.get_json(silent=True) or {}
     try:
@@ -2542,11 +2549,8 @@ def labeling_gmail_ingest_run():
         until = parse_since(body["until"]) if body.get("until") else None
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
-    if not Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON:
-        return jsonify({
-            "success": False,
-            "error": "LABELING_GMAIL_SERVICE_ACCOUNT_JSON is not configured on the server",
-        }), 400
+    if gmail_auth_method() is None:
+        return jsonify({"success": False, "error": NOT_CONFIGURED_MESSAGE}), 400
     dry_run = bool(body.get("dry_run", False))
     live = (Config.LABELING_GMAIL_INGEST_MODE or "shadow").lower() == "live"
     if live and not dry_run and _is_process_busy():

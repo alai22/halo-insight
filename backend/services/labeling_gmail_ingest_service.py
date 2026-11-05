@@ -261,6 +261,46 @@ def service_account_info(value: Optional[str]) -> Dict[str, Any]:
         ) from exc
 
 
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+NOT_CONFIGURED_MESSAGE = (
+    "Gmail access is not configured on the server: set LABELING_GMAIL_OAUTH_CLIENT_ID, "
+    "LABELING_GMAIL_OAUTH_CLIENT_SECRET and LABELING_GMAIL_OAUTH_REFRESH_TOKEN "
+    "(or LABELING_GMAIL_SERVICE_ACCOUNT_JSON)"
+)
+
+
+def gmail_auth_method() -> Optional[str]:
+    """
+    "oauth": the inbox itself granted read-only access (a refresh token for that one
+    account). "service_account": domain-wide delegation. None: neither is set.
+    """
+    if (Config.LABELING_GMAIL_OAUTH_REFRESH_TOKEN or "").strip():
+        return "oauth"
+    if (Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON or "").strip():
+        return "service_account"
+    return None
+
+
+def _oauth_credentials():
+    from google.oauth2.credentials import Credentials
+
+    client_id = (Config.LABELING_GMAIL_OAUTH_CLIENT_ID or "").strip()
+    client_secret = (Config.LABELING_GMAIL_OAUTH_CLIENT_SECRET or "").strip()
+    if not client_id or not client_secret:
+        raise ValueError(
+            "LABELING_GMAIL_OAUTH_REFRESH_TOKEN is set but LABELING_GMAIL_OAUTH_CLIENT_ID "
+            "or LABELING_GMAIL_OAUTH_CLIENT_SECRET is missing"
+        )
+    return Credentials(
+        token=None,
+        refresh_token=Config.LABELING_GMAIL_OAUTH_REFRESH_TOKEN.strip(),
+        client_id=client_id,
+        client_secret=client_secret,
+        token_uri=GOOGLE_TOKEN_URI,
+        scopes=[GMAIL_READONLY_SCOPE],
+    )
+
+
 class GmailClient:
     """Thin read-only wrapper over the Gmail API, so tests can swap in a fake."""
 
@@ -270,17 +310,35 @@ class GmailClient:
 
     @classmethod
     def from_config(cls, mailbox: Optional[str] = None) -> "GmailClient":
-        from google.oauth2 import service_account  # imported lazily: optional dependency
-        from googleapiclient.discovery import build
+        from googleapiclient.discovery import build  # imported lazily: optional dependency
 
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info(Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON),
-            scopes=[GMAIL_READONLY_SCOPE],
-        )
         subject = mailbox or Config.LABELING_GMAIL_INGEST_MAILBOX
-        creds = creds.with_subject(subject)
-        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-        return cls(service)
+        method = gmail_auth_method()
+        if method == "oauth":
+            creds = _oauth_credentials()
+        elif method == "service_account":
+            from google.oauth2 import service_account
+
+            creds = service_account.Credentials.from_service_account_info(
+                service_account_info(Config.LABELING_GMAIL_SERVICE_ACCOUNT_JSON),
+                scopes=[GMAIL_READONLY_SCOPE],
+            ).with_subject(subject)
+        else:
+            raise ValueError(NOT_CONFIGURED_MESSAGE)
+        client = cls(build("gmail", "v1", credentials=creds, cache_discovery=False))
+        if method == "oauth":
+            client.check_mailbox(subject)
+        return client
+
+    def check_mailbox(self, mailbox: str) -> None:
+        """A refresh token reads whoever signed in; refuse any inbox but the configured one."""
+        profile = self._service.users().getProfile(userId=self._user).execute()
+        actual = (profile.get("emailAddress") or "").strip().lower()
+        if actual != (mailbox or "").strip().lower():
+            raise ValueError(
+                f"The Gmail refresh token is for {actual or 'an unknown account'}, not {mailbox}. "
+                f"Run authorize_labeling_gmail.py again and sign in as {mailbox}."
+            )
 
     def list_message_ids(self, query: str) -> List[str]:
         ids: List[str] = []

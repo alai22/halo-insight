@@ -12,7 +12,8 @@ from backend.services.auth_service import AuthService
 def _config(monkeypatch):
     monkeypatch.setattr(routes.Config, "ADMIN_PASSWORD", "admin-pw")
     monkeypatch.setattr(routes.Config, "LABELING_GMAIL_INGEST_ENABLED", True)
-    monkeypatch.setattr(routes.Config, "LABELING_GMAIL_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setattr(routes.Config, "LABELING_GMAIL_SERVICE_ACCOUNT_JSON", None)
+    monkeypatch.setattr(routes.Config, "LABELING_GMAIL_OAUTH_REFRESH_TOKEN", "1//tok")
     monkeypatch.setattr(routes.Config, "LABELING_GMAIL_INGEST_MODE", "live")
     routes._GMAIL_STATUS_CACHE.update(at=0.0, data=None)
     routes._GMAIL_STATE.update(running=False, last_error=None, poller_started_at=None)
@@ -58,6 +59,7 @@ def test_status_reports_gmail_ingest_block(monkeypatch):
     block = body["data"]["gmail_ingest"]
     assert "uploads" in body["data"]
     assert block["enabled"] and block["mode"] == "live"
+    assert block["configured"] and block["auth"] == "oauth"
     assert block["last_run"]["ingested"] == 3
     assert block["totals"]["ingested"] == 12
     assert block["compare"]["agrees"] is True
