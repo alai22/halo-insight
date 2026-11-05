@@ -8,6 +8,8 @@ from backend.services.labeling_collar_sync_service import (
     LabelingCollarSyncService,
     classify_azure_error,
     match_coverage,
+    merge_collar_sns,
+    summarize_unrecognized_logs,
     parse_ai_log_filename,
     redact_secrets,
     resolve_azure_container_url,
@@ -263,6 +265,91 @@ def test_sync_copies_ai_only_and_skips_unchanged():
     assert report["clone"]["collars_unreadable"] == 0
     assert report["clone"]["error_samples"] == []
     assert report["clone"]["error_kind"] is None
+
+
+def test_sync_extra_sns_surface_collars_with_no_app_sessions():
+    s3 = _FakeS3(
+        {
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_collar_collected.txt": (
+                b"21:13:40.000: Collar SN: 24h4290312rt\n"
+            ),
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_durations.txt": (
+                b'{"Standing (10)": "00:02:00.0000000"}\n'
+            ),
+            "extracted-txt/laura@x.com/24h4290312rt/"
+            "activity_session_2026-07-02T21:13:40_0_user_reported.txt": b"",
+        }
+    )
+    azure = _FakeAzure(
+        {
+            "24h4290312rt/ai/ai_log_model_50f_8c_2026-07-02_21-13-44_v3.log": b"A",
+            # Owner-listed collar whose labeler's app export hasn't arrived yet.
+            "26h5232291rt/ai/ai_log_model_50f_8c_2026-07-03_10-00-00_v3.log": b"B",
+            "26h5232291rt/ai/ai_log_model_50f_8c_2026-07-03_11-00-00_v3.log": b"C",
+        }
+    )
+    svc = LabelingCollarSyncService(
+        bucket_name="test-bucket",
+        extracted_prefix="extracted-txt/",
+        collar_prefix="collar-raw/",
+        s3_client=s3,
+        azure_client=azure,
+        pad_sec=300,
+    )
+    # The labeled collar spelled differently is not listed twice.
+    report = svc.sync(dry_run=False, workers=1, extra_sns=["26h5232291rt", "24-H4290312-RT"])
+    assert report["sns"] == ["24h4290312rt", "26h5232291rt"]
+    assert report["copied"] == 3
+    totals = report["coverage"]["totals"]
+    assert totals["matched"] == 1
+    assert totals["collar_only"] == 2
+    assert totals["collar_only_no_sessions"] == 2
+    assert totals["collars_without_sessions"] == 1
+    row = next(r for r in report["coverage"]["by_sn"] if r["collar_sn"] == "26h5232291rt")
+    assert row["sessions"] == 0 and row["collar_only"] == 2
+    assert "1 collar has logs but no app sessions." in sync_done_message(report, False)
+
+
+def test_merge_collar_sns_keeps_labeled_spelling_and_drops_blanks():
+    assert merge_collar_sns(["24h4290312rt"], ["24H4290312RT", "", "26h5232291rt"]) == [
+        "24h4290312rt",
+        "26h5232291rt",
+    ]
+
+
+def test_build_coverage_reports_unrecognized_logs_and_all_time_counts():
+    s3 = _FakeS3(
+        {
+            "collar-raw/sn1/ai/ai_log_model_50f_8c_2026-07-02_21-13-44_v3.log": b"A",
+            "collar-raw/sn1/ai/ai_log_model_50f_8c_2026-06-01_10-00-00_v3.log": b"B",
+            "collar-raw/sn1/ai/mystery_dump_2026-07-02_21-13-44.bin": b"C",
+            "collar-raw/sn1/logs/20260702_211344_console.log": b"D",
+        }
+    )
+    svc = LabelingCollarSyncService(
+        bucket_name="test-bucket", collar_prefix="collar-raw/", s3_client=s3, azure_client=_FakeAzure({})
+    )
+    cov = svc.build_coverage(summary={"files": []}, window=("2026-07-01", "2026-07-31"))
+    row = next(r for r in cov["by_sn"] if r["collar_sn"] == "sn1")
+    assert row["s3_files"] == 1
+    assert row["s3_files_total"] == 2
+    assert cov["unrecognized_logs"]["count"] == 1
+    assert cov["unrecognized_logs"]["patterns"][0]["pattern"] == "mystery_dump"
+
+
+def test_summarize_unrecognized_logs_groups_by_name_pattern():
+    out = summarize_unrecognized_logs(
+        [("a", "x_new_2026-01-01_00-00-00.log"), ("b", "x_new_2026-01-02_00-00-00.log"), ("a", "odd.log")]
+    )
+    assert out["count"] == 3
+    assert out["patterns"][0] == {
+        "pattern": "x_new",
+        "count": 2,
+        "collars": ["a", "b"],
+        "sample": "x_new_2026-01-01_00-00-00.log",
+    }
 
 
 class _UnreadableAzure(_FakeAzure):

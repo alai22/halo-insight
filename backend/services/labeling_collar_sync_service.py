@@ -29,7 +29,12 @@ import boto3
 
 from ..utils.config import Config
 from ..utils.logging import get_logger
-from .labeling_data_analyzer import UNKNOWN_COLLAR_SN, in_date_window, sanitize_collar_sn
+from .labeling_data_analyzer import (
+    UNKNOWN_COLLAR_SN,
+    in_date_window,
+    sanitize_collar_sn,
+    serial_key,
+)
 
 logger = get_logger("labeling_collar_sync")
 
@@ -38,6 +43,7 @@ INDEX_KEY_SUFFIX = "labeling-jobs/session_collar_index_v1.json"
 DEFAULT_WINDOW_DURATION_SEC = 15 * 60
 UNMATCHED_SAMPLE_LIMIT = 25
 ERROR_SAMPLE_LIMIT = 3
+UNRECOGNIZED_PATTERN_LIMIT = 5
 ERROR_SAMPLE_CHARS = 300
 QUERY_REDACT_RE = re.compile(r"\?[^ \n]+")
 
@@ -131,20 +137,21 @@ def parse_ai_log_filename(filename: str) -> Optional[Dict[str, Any]]:
     ai_gps_log_model_gps_04_2025-12-11_14-45-40.log → gps
     ai_log_model_8c_80f_v2_2025-12-11_14-36-23_v2.log → activity
     ai_log_fftnet_v3_4c_2026-10-29_12-11-00_v5.log → activity (the posture model since Aug 2026)
+    ai_log_ei_activity_5c_2026-10-31_00-27-04_v5.log → activity (firmware since Oct 31 2026)
+
+    Any other ai_log_<model>_ name counts too, so a renamed model isn't silently dropped:
+    gps when the model name says gps, activity otherwise.
     """
     if not filename or not isinstance(filename, str):
         return None
     base = filename.rsplit("/", 1)[-1]
-    lowered = base.lower()
-    if "ai_gps_log" in lowered:
-        family = "gps"
-    elif "ai_log_model" in lowered or "ai_log_fftnet" in lowered:
-        family = "activity"
-    else:
-        return None
     match = AI_LOG_TS_RE.search(base)
     if not match:
         return None
+    model = base[: match.start()].lower()
+    if not (model.startswith("ai_log_") or model.startswith("ai_gps_log")):
+        return None
+    family = "gps" if "gps" in model else "activity"
     ts = (
         f"{match.group('date')}T{match.group('h')}:{match.group('m')}:{match.group('s')}"
     )
@@ -317,6 +324,7 @@ def match_coverage(
                 "matched": 0,
                 "missing": 0,
                 "s3_files": 0,
+                "collar_only": 0,
                 "no_blobs_for_sn": 0,
                 "no_family_logs": 0,
                 "time_gap": 0,
@@ -505,6 +513,7 @@ def match_coverage(
         _touch_sn(blob.collar_sn)["s3_files"] += 1
         if id(blob) not in used_files:
             _day_add(blob.when, "collar_only", blob.family)
+            by_sn[blob.collar_sn]["collar_only"] += 1
             on_sn = sessions_by_sn.get(blob.collar_sn) or []
             nearest = _nearest(
                 blob.when, [(at, item) for at, item in on_sn if item["family"] == blob.family]
@@ -522,6 +531,10 @@ def match_coverage(
                     "nearest_session_email": nearest[1]["email"] if nearest else None,
                 }
             )
+    # Collars with logs but no labeled session in the window: their app labels have not arrived.
+    unlabeled_sns = [
+        row for row in by_sn.values() if row["sessions"] == 0 and row["collar_only"] > 0
+    ]
     by_sn_out = sorted(
         by_sn.values(),
         key=lambda row: (-row["missing"], -row["sessions"], row["collar_sn"]),
@@ -537,6 +550,9 @@ def match_coverage(
             "ai_files": len(counted_files),
             "ai_bytes": int(sum(b.size for b in counted_files)),
             "sns": len({b.collar_sn for b in counted_files}),
+            "collar_only": sum(row["collar_only"] for row in by_sn.values()),
+            "collar_only_no_sessions": sum(row["collar_only"] for row in unlabeled_sns),
+            "collars_without_sessions": len(unlabeled_sns),
         },
         "missing_reasons": missing_reasons,
         "missing_reasons_by_family": {fam: dict(r) for fam, r in reasons_by_family.items()},
@@ -568,6 +584,33 @@ def match_coverage(
         ],
         "unmatched_samples": unmatched,
     }
+
+
+def summarize_unrecognized_logs(items: Iterable[Tuple[str, str]]) -> Dict[str, Any]:
+    """Count ai/ files whose name doesn't parse, with a few samples per name pattern."""
+    items = list(items)
+    by_pattern: Dict[str, Dict[str, Any]] = {}
+    for sn, filename in items:
+        match = AI_LOG_TS_RE.search(filename)
+        pattern = filename[: match.start()].rstrip("_") if match else filename
+        row = by_pattern.setdefault(pattern, {"pattern": pattern, "count": 0, "collars": set(), "sample": filename})
+        row["count"] += 1
+        row["collars"].add(sn)
+    patterns = sorted(by_pattern.values(), key=lambda r: -r["count"])[:UNRECOGNIZED_PATTERN_LIMIT]
+    return {
+        "count": len(items),
+        "patterns": [{**r, "collars": sorted(r["collars"])} for r in patterns],
+    }
+
+
+def merge_collar_sns(labeled: Iterable[str], extra: Iterable[str]) -> List[str]:
+    """Labeled SNs plus extra SNs whose serial key is new; labeled spelling wins."""
+    out = {serial_key(sn): sn for sn in labeled}
+    for raw in extra:
+        sn = sanitize_collar_sn(raw)
+        if sn != UNKNOWN_COLLAR_SN:
+            out.setdefault(serial_key(sn), sn)
+    return sorted(out.values())
 
 
 def empty_clone_row(sn: str) -> Dict[str, Any]:
@@ -672,6 +715,12 @@ def sync_done_message(report: Dict[str, Any], inventory_only: bool) -> str:
     unreadable_note = (
         f" Azure could not be read for {unreadable} of {collars} collars." if unreadable else ""
     )
+    unlabeled = int(totals.get("collars_without_sessions") or 0)
+    waiting_note = (
+        f" {unlabeled} {'collar has' if unlabeled == 1 else 'collars have'} logs but no app sessions."
+        if unlabeled
+        else ""
+    )
     if inventory_only:
         return (
             f"Azure check done — {clone.get('azure_files', report.get('listed', 0))} "
@@ -680,7 +729,7 @@ def sync_done_message(report: Dict[str, Any], inventory_only: bool) -> str:
     return (
         f"Collar sync done — copied {report.get('copied', 0)} files, "
         f"{totals.get('matched', 0)} sessions matched, {totals.get('missing', 0)} missing."
-        f"{unreadable_note}"
+        f"{waiting_note}{unreadable_note}"
     )
 
 
@@ -749,8 +798,14 @@ class LabelingCollarSyncService:
         return sorted(sns)
 
     def list_collar_ai_files(self) -> List[CollarAiFile]:
-        """List mirrored AI dumps already in S3 under collar-raw/."""
+        """
+        List mirrored AI dumps already in S3 under collar-raw/.
+
+        Files under ai/ whose name doesn't parse are kept in self.unrecognized_logs
+        (collar SN, filename), so a renamed log shows up on the dashboard.
+        """
         out: List[CollarAiFile] = []
+        self.unrecognized_logs = []
         paginator = self.s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.collar_prefix):
             for obj in page.get("Contents", []) or []:
@@ -764,6 +819,7 @@ class LabelingCollarSyncService:
                 sn = sanitize_collar_sn(parts[0])
                 parsed = parse_ai_log_filename(parts[-1])
                 if not parsed:
+                    self.unrecognized_logs.append((sn, parts[-1]))
                     continue
                 out.append(
                     CollarAiFile(
@@ -792,12 +848,20 @@ class LabelingCollarSyncService:
                 region=self.region,
                 s3_client=self.s3_client,
             ).analyze(include_content=True, window=window)
+        files = self.list_collar_ai_files()
         coverage = match_coverage(
             sessions_from_analyze(summary),
-            self.list_collar_ai_files(),
+            files,
             pad_sec=self.pad_sec,
             window=window,
         )
+        # by_sn s3_files counts the window; Azure counts are all-time, so compare with this.
+        all_time: Dict[str, int] = defaultdict(int)
+        for blob in files:
+            all_time[blob.collar_sn] += 1
+        for row in coverage.get("by_sn") or []:
+            row["s3_files_total"] = all_time.get(row["collar_sn"], 0)
+        coverage["unrecognized_logs"] = summarize_unrecognized_logs(self.unrecognized_logs)
         coverage["azure_configured"] = azure_configured() or self._azure_client is not None
         coverage["collar_prefix"] = self.collar_prefix
         coverage["pad_sec"] = self.pad_sec
@@ -870,11 +934,14 @@ class LabelingCollarSyncService:
         sns: Optional[List[str]] = None,
         workers: Optional[int] = None,
         summary: Optional[Dict[str, Any]] = None,
+        extra_sns: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         """
         Copy Azure <sn>/ai/* for labeled collar SNs into collar-raw/, then join.
 
         inventory_only: list Azure blobs, do not write S3.
+        extra_sns: collars to sync even with no labeled session yet (the owner list), so
+        their logs show up as waiting for app labels instead of not at all.
         """
         from .labeling_data_analyzer import LabelingDataAnalyzer
 
@@ -896,7 +963,9 @@ class LabelingCollarSyncService:
         if sns:
             report.sns = [sanitize_collar_sn(s) for s in sns if sanitize_collar_sn(s) != UNKNOWN_COLLAR_SN]
         else:
-            report.sns = self.labeled_collar_sns(files=analyzer.list_session_files())
+            report.sns = merge_collar_sns(
+                self.labeled_collar_sns(files=analyzer.list_session_files()), extra_sns or []
+            )
 
         stats: Dict[str, Dict[str, Any]] = {
             sn: empty_clone_row(sn) for sn in report.sns

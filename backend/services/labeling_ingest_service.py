@@ -71,6 +71,70 @@ FORWARDED_FROM_RE = re.compile(
 EMAIL_IN_TEXT_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
 
+# No upload into staging for this long usually means Make.com stopped (e.g. out of operations).
+UPLOAD_STALE_HOURS = 24
+# Unreadable batches newer than this count as needing attention.
+UNREADABLE_RECENT_DAYS = 7
+UNREADABLE_LIST_LIMIT = 25
+
+
+def gmail_message_time(message_id: str) -> Optional[str]:
+    """
+    When a Gmail message was received, from its 16-hex-digit id (the high bits are
+    milliseconds since the epoch). None for ids that don't look like Gmail's.
+    """
+    if not re.fullmatch(r"[0-9a-f]{16}", message_id or ""):
+        return None
+    try:
+        ms = int(message_id, 16) >> 20
+        return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def classify_staging_batches(
+    batches: Dict[Tuple[str, str], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Staging batches process_staging can't read, newest first: a folder that isn't an
+    email address, a zip nobody unzipped, or only _meta.json (the upload stopped).
+    A message id that also has readable files under another folder is fine.
+    """
+    readable_ids = {
+        mid
+        for (folder, mid), info in batches.items()
+        if looks_like_labeler_email(folder) and info["extracted"] > 0
+    }
+    out: List[Dict[str, Any]] = []
+    for (folder, mid), info in batches.items():
+        if folder in RESERVED_STAGING_FOLDERS or mid in readable_ids:
+            continue
+        if info["extracted"] == 0 and info["raw"] == 0 and info["meta"]:
+            reason = "Only _meta.json: the upload stopped before the attachments"
+        elif info["extracted"] == 0 and info["raw"] > 0:
+            reason = "Zip uploaded but never unzipped"
+        elif not looks_like_labeler_email(folder):
+            reason = "Folder name isn't an email address, so Process staging skips it"
+        elif info["extracted"] == 0:
+            reason = "No session files"
+        else:
+            continue
+        out.append(
+            {
+                "folder": folder,
+                "message_id": mid,
+                "received_at": gmail_message_time(mid),
+                "uploaded_at": info["uploaded_at"],
+                "extracted": info["extracted"],
+                "raw": info["raw"],
+                "meta": info["meta"],
+                "reason": reason,
+            }
+        )
+    out.sort(key=lambda b: b["uploaded_at"] or "", reverse=True)
+    return out
+
+
 def looks_like_labeler_email(folder: str) -> bool:
     """True if staging path segment should be treated as a labeler folder."""
     if not folder or folder in RESERVED_STAGING_FOLDERS:
@@ -417,7 +481,13 @@ class LabelingIngestService:
             raise ValueError("LABELING_S3_BUCKET_NAME is not configured")
 
     def list_staging_extracted(self) -> List[StagingFile]:
+        """
+        Staging session files process_staging reads. Also records, on
+        self.last_staging_scan, every batch's contents and the newest upload time.
+        """
         files: List[StagingFile] = []
+        batches: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        newest: Optional[datetime] = None
         paginator = self.s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket_name, Prefix=self.staging_prefix):
             for obj in page.get("Contents", []) or []:
@@ -426,6 +496,25 @@ class LabelingIngestService:
                     continue
                 rel = key[len(self.staging_prefix) :] if key.startswith(self.staging_prefix) else key
                 parts = [p for p in rel.split("/") if p]
+                modified = obj.get("LastModified")
+                if isinstance(modified, datetime) and (newest is None or modified > newest):
+                    newest = modified
+                if len(parts) >= 3:
+                    info = batches.setdefault(
+                        (parts[0], parts[1]),
+                        {"extracted": 0, "raw": 0, "meta": False, "uploaded_at": None},
+                    )
+                    name = parts[-1]
+                    if parts[2] == "extracted" and FILENAME_RE.match(name):
+                        info["extracted"] += 1
+                    elif name.lower().endswith(".zip"):
+                        info["raw"] += 1
+                    elif name == "_meta.json":
+                        info["meta"] = True
+                    if isinstance(modified, datetime):
+                        stamp = modified.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        if not info["uploaded_at"] or stamp > info["uploaded_at"]:
+                            info["uploaded_at"] = stamp
                 # <email>/<message_id>/extracted/<filename>
                 if len(parts) != 4 or parts[2] != "extracted":
                     continue
@@ -448,6 +537,7 @@ class LabelingIngestService:
                         size=int(obj.get("Size") or 0),
                     )
                 )
+        self.last_staging_scan = {"batches": batches, "newest": newest}
         return files
 
     @property
@@ -914,10 +1004,42 @@ class LabelingIngestService:
                 elif fname.startswith("activity_session_"):
                     output_by_family["activity"] += 1
 
+        scan = getattr(self, "last_staging_scan", None) or {}
+        newest = scan.get("newest")
+        hours_since = (
+            (datetime.now(timezone.utc) - newest).total_seconds() / 3600 if newest else None
+        )
+        unreadable = classify_staging_batches(scan.get("batches") or {})
+        recent_cutoff = (
+            datetime.now(timezone.utc).timestamp() - UNREADABLE_RECENT_DAYS * 86400
+        )
+        recent_unreadable = [
+            b
+            for b in unreadable
+            if b["uploaded_at"]
+            and datetime.strptime(b["uploaded_at"], "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+            >= recent_cutoff
+        ]
+        uploads = {
+            "last_upload_at": (
+                newest.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if newest else None
+            ),
+            "hours_since_upload": round(hours_since, 1) if hours_since is not None else None,
+            "stale": hours_since is None or hours_since > UPLOAD_STALE_HOURS,
+            "stale_after_hours": UPLOAD_STALE_HOURS,
+            "unreadable_count": len(unreadable),
+            "unreadable_recent_count": len(recent_unreadable),
+            "unreadable_recent_days": UNREADABLE_RECENT_DAYS,
+            "unreadable": unreadable[:UNREADABLE_LIST_LIMIT],
+        }
+
         return {
             "bucket": self.bucket_name,
             "staging_prefix": self.staging_prefix,
             "output_prefix": self.output_prefix,
+            "uploads": uploads,
             "staging_batches": len(batches),
             "staging_extracted_files": len(staging_files),
             "staging_by_email": dict(sorted(by_email.items())),

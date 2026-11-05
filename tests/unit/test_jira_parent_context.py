@@ -18,7 +18,7 @@ def test_parent_context_predicate_keeps_parent_or_epic():
     assert _has_parent_context({'parentKey': '', 'epicKey': ''}) is False
 
 
-def test_issues_route_returns_parent_filter_metadata(client):
+def test_issues_route_returns_parent_filter_metadata(auth_client):
     with patch('backend.api.routes.jira_routes._jira_configured', return_value=True), patch(
         'backend.api.routes.jira_routes.JiraClient'
     ) as mock_client_cls:
@@ -30,7 +30,7 @@ def test_issues_route_returns_parent_filter_metadata(client):
             'parent_filter_applied': True,
         }
 
-        res = client.get('/api/jira/issues?project=HALO&require_parent_context=1')
+        res = auth_client.get('/api/jira/issues?project=HALO&require_parent_context=1')
         assert res.status_code == 200
         body = res.get_json()
         assert body['status'] == 'success'
@@ -44,7 +44,7 @@ def test_issues_route_returns_parent_filter_metadata(client):
         assert kwargs['require_parent_context'] is True
 
 
-def test_issues_route_echoes_max_results_requested(client):
+def test_issues_route_echoes_max_results_requested(auth_client):
     with patch('backend.api.routes.jira_routes._jira_configured', return_value=True), patch(
         'backend.api.routes.jira_routes.JiraClient'
     ) as mock_client_cls:
@@ -55,14 +55,14 @@ def test_issues_route_echoes_max_results_requested(client):
             'count_after_parent_filter': 0,
             'parent_filter_applied': False,
         }
-        res = client.get('/api/jira/issues?project=HALO&max_results=250')
+        res = auth_client.get('/api/jira/issues?project=HALO&max_results=250')
         assert res.status_code == 200
         body = res.get_json()
         assert body['max_results_requested'] == 250
         assert mock_client.fetch_issues_for_triage.call_args.kwargs['max_results'] == 250
 
 
-def test_issues_route_accepts_include_unparented_flag(client):
+def test_issues_route_accepts_include_unparented_flag(auth_client):
     with patch('backend.api.routes.jira_routes._jira_configured', return_value=True), patch(
         'backend.api.routes.jira_routes.JiraClient'
     ) as mock_client_cls:
@@ -74,7 +74,7 @@ def test_issues_route_accepts_include_unparented_flag(client):
             'parent_filter_applied': False,
         }
 
-        res = client.get('/api/jira/issues?project=HALO&require_parent_context=0')
+        res = auth_client.get('/api/jira/issues?project=HALO&require_parent_context=0')
         assert res.status_code == 200
         body = res.get_json()
         assert body['status'] == 'success'

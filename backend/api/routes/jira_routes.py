@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from flask import Blueprint, Response, g, jsonify, redirect, request, session, stream_with_context
 import requests
 
+from backend.api.middleware.auth import require_admin_auth, require_auth
 from backend.core.exceptions import AppException, ClaudeAPIError, RateLimitError
 from backend.core.exceptions import TimeoutError as AppTimeoutError
 from backend.services.jira_client import JiraClient
@@ -1308,6 +1309,7 @@ def _jira_configured() -> bool:
 
 
 @jira_bp.route('/status', methods=['GET'])
+@require_auth
 def get_jira_status():
     """Return whether Jira is configured and how (Basic preferred over OAuth when both set)."""
     basic = _basic_auth_configured()
@@ -1322,6 +1324,7 @@ def get_jira_status():
 
 
 @jira_bp.route('/oauth/authorize', methods=['GET'])
+@require_admin_auth
 def oauth_authorize():
     """Redirect user to Atlassian to authorize the app. Requires JIRA_CLIENT_ID, JIRA_CLIENT_SECRET, APP_BASE_URL."""
     if not _oauth_configured():
@@ -1344,6 +1347,7 @@ def oauth_authorize():
 
 
 @jira_bp.route('/oauth/callback', methods=['GET'])
+@require_admin_auth
 def oauth_callback():
     """Handle redirect from Atlassian: exchange code for tokens, then redirect to frontend."""
     code = request.args.get('code')
@@ -1370,6 +1374,7 @@ def oauth_callback():
 
 
 @jira_bp.route('/oauth/disconnect', methods=['POST'])
+@require_admin_auth
 def oauth_disconnect():
     """Clear stored OAuth tokens so user can reconnect or use Basic auth."""
     jira_oauth.clear_tokens()
@@ -1391,6 +1396,7 @@ def _frontend_redirect(connected: str = None, error: str = None) -> str:
 
 
 @jira_bp.route('/projects', methods=['GET'])
+@require_auth
 def get_projects():
     """
     List projects visible to the configured Jira user (API token or OAuth).
@@ -1435,6 +1441,7 @@ def get_projects():
 
 
 @jira_bp.route('/myself', methods=['GET'])
+@require_auth
 def get_myself():
     """Return current Jira user (validates auth)."""
     if not _jira_configured():
@@ -1471,6 +1478,7 @@ def get_myself():
 
 
 @jira_bp.route('/issues', methods=['GET'])
+@require_auth
 def get_issues():
     """
     Fetch issues from Jira for Bug Triage. Optional query: project (default HALO), max_results (1–1000, default 1000),
@@ -1541,6 +1549,7 @@ def _issue_live_summary_and_priority_key(raw: Dict[str, Any]) -> Tuple[str, Opti
 
 
 @jira_bp.route('/issues/<issue_key>/apply-recommendation', methods=['POST'])
+@require_auth
 def apply_jira_recommendation(issue_key: str):
     """
     Apply a backlog overview recommendation: update issue summary and/or priority, then add a Jira comment.
@@ -2298,6 +2307,7 @@ def _iter_backlog_overview_events(
 
 
 @jira_bp.route('/backlog-overview', methods=['POST'])
+@require_auth
 def backlog_overview():
     """
     Generate an AI markdown overview from a client-supplied list of issues (same filtered set as the UI).

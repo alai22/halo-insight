@@ -3,6 +3,7 @@ Analytics API routes
 """
 
 from flask import Blueprint, request, jsonify, g, session
+from ..middleware.auth import require_admin_auth
 from ...utils.logging import get_logger
 from datetime import datetime, timedelta
 import hashlib
@@ -96,6 +97,7 @@ def track_event():
 
 
 @analytics_bp.route('/status', methods=['GET'])
+@require_admin_auth
 def get_analytics_status():
     """Get analytics service status and buffer information"""
     try:
@@ -129,6 +131,7 @@ def get_analytics_status():
 
 
 @analytics_bp.route('/flush', methods=['POST'])
+@require_admin_auth
 def flush_analytics():
     """Manually flush analytics buffer to S3"""
     try:
@@ -167,6 +170,7 @@ def flush_analytics():
 
 
 @analytics_bp.route('/query', methods=['GET'])
+@require_admin_auth
 def query_analytics():
     """Query analytics data from S3 (includes buffered events)"""
     try:
