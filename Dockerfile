@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Gladly Web Interface
-FROM node:18-alpine as frontend-build
+FROM node:24-alpine AS frontend-build
 
 WORKDIR /app
 COPY package*.json ./
