@@ -91,6 +91,50 @@ the webhook. Check that your Make scenarios still run once afterwards.
 
 From then on it posts every morning by itself.
 
+## Other scheduled labeling jobs
+
+Two more workflows use the same two secrets, so they need no extra setup:
+
+| Workflow | When (UTC) | Calls | What it does |
+|----------|------------|-------|--------------|
+| `labeling-compact.yml` | Mondays 14:00 | `POST /api/labeling/compact` | Removes duplicate copies from staging |
+| `labeling-process.yml` | Every hour | `POST /api/labeling/process` | Promotes forwarded batches, processes new staging uploads, then syncs collar logs if files were copied |
+
+**Process staging** runs every hour, so Data health shows today's emails without anyone
+pressing Process. The 15:00 run, an hour before the recap, makes sure the recap includes
+yesterday's emails. With the secret, it always adds only new files in the background. A
+full rebuild (`clear_output`) still needs an admin on the dashboard.
+
+Before processing, each scheduled run promotes every forwarded batch (`staging/_forwards/`)
+whose labeler it can tell, whatever its size, so nobody needs to press **Promote**. A
+batch with no known labeler stays put until someone picks one on the dashboard; the
+result message counts them. If promoting fails, Process still runs on what is in staging.
+
+**Remove duplicate copies** matters because Make re-uploads each labeler's whole tree.
+The charts already ignore the copies, but every Process run lists and compares each
+one, so the copies slow Process down as well as using space. The weekly run keeps the
+latest copy and leaves copies with a different size alone, the same as the button under
+**Staging health**. To see what it would remove, run it from **Actions** with "Only
+report what would be removed" ticked.
+
+If another labeling job is running (for example a Gmail ingest check), the compact run,
+the 15:00 Process run and manual runs wait 2 minutes and try again, up to 6 times. The
+other hourly Process runs skip that hour instead. If Process is already running, the
+scheduled Process run counts as done.
+
+### Slack notices
+
+When a scheduled run ends, the server posts whether it succeeded or failed, with the same
+summary the dashboard shows, to the channel the daily recap goes to (the webhook's
+channel, or the first one in `LABELING_REPORT_SLACK_CHANNEL`). The hourly Process runs
+other than 15:00 send `quiet: true` and post only when something fails, including a
+forwarded batch that could not be promoted. Runs started from the dashboard post nothing.
+
+If the server never starts the run (it is down, the secret is wrong, or other jobs kept it
+busy), the workflow posts the failure itself with a link to the GitHub run. That needs one
+more repository secret, `LABELING_REPORT_SLACK_WEBHOOK_URL`, an incoming webhook for the
+same channel. Without it the workflow still fails in GitHub, but Slack hears nothing.
+
 ## Switching apps
 
 When IT sets up a dedicated Slack app, repeat step 1 with that app, replace
@@ -122,6 +166,8 @@ doesn't need "Post again".
 | `GET` | `/api/labeling/daily-report/preview?date=&days=` | admin | Recap text from data already computed; posts nothing |
 | `POST` | `/api/labeling/daily-report` | `X-Report-Secret` or admin session | Post the recap (body: `date`, `days`, `channels`, `force`, `refresh`) |
 | `GET` | `/api/labeling/daily-report/status` | admin | The send in progress (stage) and the last result |
+| `POST` | `/api/labeling/process` | `X-Report-Secret` or admin | Process staging; with the secret, only incremental and in the background |
+| `POST` | `/api/labeling/compact` | `X-Report-Secret` or admin | Remove duplicate copies; with the secret, always in the background |
 
 `days` is 1 by default; 7 or 30 cover the days ending on `date`. The dashboard's **Slack
 recap** panel has a **Day / Last 7 days / Last 30 days** switch for manual sends. A weekly post does not count as

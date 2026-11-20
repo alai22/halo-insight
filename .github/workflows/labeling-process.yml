@@ -1,0 +1,78 @@
+# Process new staging uploads into extracted-txt every hour, so Data health shows today's
+# emails without anyone pressing Process. Each run first promotes forwarded batches whose
+# labeler is known. When new files are copied, the server also syncs collar logs from Azure.
+# The server does the work; this only triggers it.
+# The 15:00 UTC run (an hour before the daily recap) posts its result to Slack; the other
+# hourly runs are quiet and post only when something fails.
+# Uses the same repo secrets as labeling-daily-report.yml (see docs/LABELING_DAILY_REPORT.md).
+name: Labeling process staging
+
+on:
+  schedule:
+    # 15:00 UTC, an hour before the daily recap at 16:00: posts its result.
+    - cron: "0 15 * * *"
+    # Every other hour: quiet.
+    - cron: "0 0-14,16-23 * * *"
+  workflow_dispatch:
+
+# A late hourly run never stacks on top of the previous one.
+concurrency:
+  group: labeling-process
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Ask the server to process staging
+        env:
+          URL: ${{ secrets.LABELING_REPORT_URL }}
+          SECRET: ${{ secrets.LABELING_REPORT_SECRET }}
+          QUIET: ${{ github.event_name == 'schedule' && github.event.schedule != '0 15 * * *' }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n --argjson quiet "$QUIET" '{quiet: $quiet}')
+          # 409 means another labeling job is running. If it is a process run (or the collar
+          # sync after one), that covers us. A quiet hourly run leaves anything else to the
+          # next hour; the 15:00 and manual runs wait and try again.
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o response.json -w '%{http_code}' -X POST "${URL%/}/api/labeling/process" \
+              -H "Content-Type: application/json" \
+              -H "X-Report-Secret: $SECRET" \
+              -d "$body")
+            cat response.json; echo
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              exit 0
+            fi
+            if [ "$code" = "409" ] && jq -e '.data.job == "process" or .data.job == "sync-collar"' response.json >/dev/null; then
+              echo "A process job is already running; nothing to do."
+              exit 0
+            fi
+            if [ "$code" != "409" ]; then
+              echo "Server answered $code"
+              exit 1
+            fi
+            if [ "$QUIET" = "true" ]; then
+              echo "Another labeling job is running; the next hourly run will pick this up."
+              exit 0
+            fi
+            echo "Another labeling job is running (attempt $attempt); waiting 2 minutes."
+            sleep 120
+          done
+          echo "Gave up: another labeling job kept running."
+          exit 1
+      - name: Tell Slack the run could not start
+        # The server posts how a run ends; this covers runs it never received.
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.LABELING_REPORT_SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "LABELING_REPORT_SLACK_WEBHOOK_URL is not set; skipping the Slack notice."
+            exit 0
+          fi
+          jq -n --arg run "$RUN_URL" \
+            '{text: (":x: Scheduled *Process staging* failed: the server did not start it. <" + $run + "|See the GitHub run>")}' \
+            | curl -fsS -X POST -H "Content-Type: application/json" -d @- "$WEBHOOK"

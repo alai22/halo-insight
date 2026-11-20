@@ -1274,11 +1274,54 @@ def _send_daily_report(
             _REPORT_RUNNING.update({"day": None, "days": None, "stage": None, "started_at": None})
 
 
-def _report_request_authorized() -> bool:
-    """The scheduled job sends X-Report-Secret; a person needs an admin session."""
+def _scheduled_request() -> bool:
+    """True when the request carries the scheduled jobs' X-Report-Secret."""
     secret = Config.LABELING_REPORT_SECRET
     sent = request.headers.get("X-Report-Secret") or ""
-    if secret and sent and hmac.compare_digest(sent.encode(), secret.encode()):
+    return bool(secret and sent and hmac.compare_digest(sent.encode(), secret.encode()))
+
+
+def _scheduled_or_admin(f):
+    """Let the scheduled jobs in with X-Report-Secret; everyone else needs admin auth."""
+    admin_only = require_admin_auth(f)
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if _scheduled_request():
+            return f(*args, **kwargs)
+        return admin_only(*args, **kwargs)
+
+    return decorated
+
+
+def _scheduled_only() -> bool:
+    """The scheduled job's secret and no admin session: a run nobody is watching."""
+    try:
+        return _scheduled_request() and not session.get("admin_authenticated")
+    except RuntimeError:
+        return _scheduled_request()
+
+
+def _notify_scheduled_job(job: str, ok: bool, detail: str) -> None:
+    """Tell the recap channel how a scheduled run ended. Never fails the job."""
+    if not _report_configured():
+        logger.info("Scheduled %s finished (ok=%s); Slack is not set up", job, ok)
+        return
+    icon, outcome = (":white_check_mark:", "succeeded") if ok else (":x:", "failed")
+    link = f"\n<{Config.APP_BASE_URL.rstrip('/')}|Open the dashboard>" if Config.APP_BASE_URL else ""
+    text = f"{icon} Scheduled *{job}* {outcome}. {detail}{link}"
+    channels = _report_channels()
+    try:
+        _, errors = _post_report(text, [channels[0]["id"]] if channels else [])
+        for error in errors:
+            logger.warning("Scheduled %s Slack notice failed: %s", job, error)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Scheduled %s Slack notice failed: %s", job, redact_secrets(str(exc)))
+
+
+def _report_request_authorized() -> bool:
+    """The scheduled job sends X-Report-Secret; a person needs an admin session."""
+    if _scheduled_request():
         return True
     try:
         return bool(session.get("admin_authenticated"))
@@ -1676,7 +1719,7 @@ def labeling_sync_collar():
 
 
 @labeling_bp.route("/compact", methods=["POST"])
-@require_admin_auth
+@_scheduled_or_admin
 def labeling_compact():
     """
     Delete duplicate extracted copies under staging/<email>/<message-id>/.
@@ -1687,11 +1730,16 @@ def labeling_compact():
     JSON body (optional):
       dry_run: bool (default false)
       async: bool (default true)
+    Called weekly by .github/workflows/labeling-compact.yml with X-Report-Secret,
+    which always runs in the background.
     """
     try:
         body = request.get_json(silent=True) or {}
         dry_run = bool(body.get("dry_run", False))
         run_async = bool(body.get("async", True))
+        scheduled = _scheduled_only()
+        if scheduled:
+            run_async = True
 
         if _is_process_busy():
             state = _merge_process_state()
@@ -1733,6 +1781,10 @@ def labeling_compact():
                         progress=None,
                         message=_compact_done_message(report),
                     )
+                    if scheduled:
+                        _notify_scheduled_job(
+                            "Remove duplicate copies", True, _compact_done_message(report)
+                        )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling compact failed")
                     _set_process_state(
@@ -1743,6 +1795,10 @@ def labeling_compact():
                         progress=None,
                         message="Removing duplicate copies failed",
                     )
+                    if scheduled:
+                        _notify_scheduled_job(
+                            "Remove duplicate copies", False, redact_secrets(str(exc))
+                        )
 
             threading.Thread(target=_worker, daemon=True).start()
             return jsonify({
@@ -1805,8 +1861,13 @@ def _should_sync_collar_after_process(
     return clear_output or int(report.get("copied") or 0) > 0
 
 
-def _sync_collar_after_process(process_message: str) -> None:
-    """Run a collar sync as the tail of a process job; keeps the job running until it ends."""
+def _sync_collar_after_process(
+    process_message: str, notify: bool = False, quiet: bool = False
+) -> None:
+    """
+    Run a collar sync as the tail of a process job; keeps the job running until it ends.
+    With notify (a scheduled run), the outcome is posted to Slack; quiet posts failures only.
+    """
     _set_process_state(
         running=True,
         job="sync-collar",
@@ -1829,6 +1890,10 @@ def _sync_collar_after_process(process_message: str) -> None:
             last_error=None,
             message=f"{process_message} {sync_done_message(report, False)}",
         )
+        if notify and not quiet:
+            _notify_scheduled_job(
+                "Process staging", True, f"{process_message} {sync_done_message(report, False)}"
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Collar sync after process failed")
         _set_process_state(
@@ -1841,12 +1906,49 @@ def _sync_collar_after_process(process_message: str) -> None:
             ),
             message="Collar sync after processing failed",
         )
+        if notify:
+            _notify_scheduled_job(
+                "Process staging",
+                False,
+                f"{process_message} The collar sync after it failed: {redact_secrets(str(exc))}",
+            )
     finally:
         log_rss(logger, "labeling collar sync after process end")
 
 
+def _promote_forwards_before_process() -> Tuple[str, bool]:
+    """
+    Promote every forwarded batch whose labeler is known, so a scheduled Process can read it.
+    Returns (note for the done message, whether anything failed). Never raises: a failed
+    promote still lets Process run on what is already in staging.
+    """
+    try:
+        svc = LabelingIngestService()
+        pending = svc.pending_forwards()
+        ids = [p["message_id"] for p in pending.get("pending") or []]
+        unresolved = len(pending.get("unresolved") or [])
+        unresolved_bit = (
+            f" {unresolved} forwarded batch(es) need a labeler picked on the dashboard."
+            if unresolved
+            else ""
+        )
+        if not ids:
+            return unresolved_bit.strip(), False
+        _set_process_state(message=f"Promoting {len(ids)} forwarded batch(es) into staging…")
+        report = svc.promote_forwards(message_ids=ids)
+        promoted = len(report.get("promoted") or [])
+        errors = report.get("errors") or []
+        note = f"Promoted {promoted} forwarded batch(es) first.{unresolved_bit}"
+        if errors:
+            return f"{note} {len(errors)} could not be promoted.", True
+        return note, False
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Promote forwards before scheduled process failed")
+        return f"Promoting forwards failed: {redact_secrets(str(exc))}.", True
+
+
 @labeling_bp.route("/process", methods=["POST"])
-@require_admin_auth
+@_scheduled_or_admin
 def labeling_process():
     """
     Process staging/ → extracted-txt/<email>/<collar-sn>/.
@@ -1857,6 +1959,10 @@ def labeling_process():
       async: bool (default true) — run in background; poll GET /status
       sync_collar: bool (default true) — async only: when new files were copied,
         sync Azure collar logs afterwards so new sessions and collars can match
+      quiet: bool (default false) — scheduled only: post to Slack only on failure
+    Called hourly by .github/workflows/labeling-process.yml with X-Report-Secret,
+    which always gets an incremental run in the background that first promotes
+    forwarded batches whose labeler is known.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -1865,6 +1971,11 @@ def labeling_process():
         sync_collar = bool(body.get("sync_collar", True))
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
+        scheduled = _scheduled_only()
+        quiet = scheduled and bool(body.get("quiet", False))
+        if scheduled:
+            # The shared secret never wipes extracted-txt or holds a request open.
+            clear_output, run_async = False, True
 
         if _is_process_busy():
             state = _merge_process_state()
@@ -1894,18 +2005,24 @@ def labeling_process():
 
             def _worker():
                 log_rss(logger, "labeling process start")
+                promote_note, promote_failed = "", False
                 try:
+                    if scheduled and not dry_run:
+                        promote_note, promote_failed = _promote_forwards_before_process()
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
                         clear_output=clear_output,
                         on_progress=_progress_callback("process"),
                     )
                     _refresh_summary_after_process(report, clear_output, dry_run)
+                    done = " ".join(filter(None, [promote_note, _process_done_message(report)]))
+                    # A quiet run still speaks up when promoting forwards went wrong.
+                    quiet_run = quiet and not promote_failed
                     if _should_sync_collar_after_process(
                         report, clear_output, dry_run, sync_collar
                     ):
                         _set_process_state(last_report=report)
-                        _sync_collar_after_process(_process_done_message(report))
+                        _sync_collar_after_process(done, notify=scheduled, quiet=quiet_run)
                         return
                     _set_process_state(
                         running=False,
@@ -1914,8 +2031,10 @@ def labeling_process():
                         last_report=report,
                         last_error=None,
                         progress=None,
-                        message=_process_done_message(report),
+                        message=done,
                     )
+                    if scheduled and not quiet_run:
+                        _notify_scheduled_job("Process staging", not promote_failed, done)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling process failed")
                     _set_process_state(
@@ -1926,6 +2045,12 @@ def labeling_process():
                         progress=None,
                         message="Process failed",
                     )
+                    if scheduled:
+                        _notify_scheduled_job(
+                            "Process staging",
+                            False,
+                            " ".join(filter(None, [promote_note, redact_secrets(str(exc))])),
+                        )
                 finally:
                     log_rss(logger, "labeling process end")
 
