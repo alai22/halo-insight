@@ -20,7 +20,6 @@ import axios from 'axios';
 const PROCESS_POLL_MS = 4000;
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
 const STATUS_STORAGE_KEY = 'halo_labeling_status_v1';
-const RANGE_STORAGE_KEY = 'halo_labeling_range_v1';
 const DOG_CHART_LIMIT = 15;
 const COLLAR_SYNC_HINT = 'Copy Azure <sn>/ai/* dumps into S3 collar-raw/ for labeled and owner-listed collars';
 const PROMOTE_PROGRESS = 'Copying quarantine batches into staging/<labeler>/…';
@@ -3809,30 +3808,17 @@ function writeStoredStatus(status) {
   }
 }
 
-/** The viewer's date range, so a narrowed view survives reloads. Empty strings mean open. */
-function readStoredRange() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || 'null');
-    return { start: parsed?.start || '', end: parsed?.end || '' };
-  } catch {
-    return { start: '', end: '' };
-  }
-}
-
-function writeStoredRange(range) {
-  try {
-    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(range));
-  } catch {
-    // ignore quota / private mode
-  }
-}
-
 /** YYYY-MM-DD for a local date, n days before today. */
 function localDayOffset(daysBack) {
   const d = new Date();
   d.setDate(d.getDate() - daysBack);
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The range the page opens on: the last 7 days through today, so today's uploads show. */
+function defaultRange() {
+  return { start: localDayOffset(6), end: localDayOffset(0) };
 }
 
 function formatDay(day) {
@@ -3884,7 +3870,9 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
   const yesterday = localDayOffset(1);
   const presets = [
     { label: 'All time', start: '', end: '' },
+    { label: 'Today', start: today, end: today },
     { label: 'Yesterday', start: yesterday, end: yesterday },
+    { label: 'Last 7 days, with today', ...defaultRange() },
     { label: 'Last 7 days', start: localDayOffset(7), end: yesterday },
     { label: 'Last 30 days', start: localDayOffset(30), end: yesterday },
     { label: 'Last 90 days', start: localDayOffset(90), end: yesterday },
@@ -4006,7 +3994,7 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
  */
 const LabelingDataDashboard = ({ readOnly = false }) => {
   const stored = useMemo(() => readStoredSummary(), []);
-  const [range, setRange] = useState(() => readStoredRange());
+  const [range, setRange] = useState(defaultRange);
   const rangeActive = Boolean(range.start || range.end);
   const [rangeError, setRangeError] = useState(null);
   const rangeParams = useMemo(() => {
@@ -4021,7 +4009,6 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
     const clean = { start: next.start || '', end: next.end || '' };
     rangeKeyRef.current = `${clean.start}..${clean.end}`;
     setRangeError(null);
-    writeStoredRange(clean);
     setRange(clean);
   }, []);
   const storedStatus = useMemo(() => readStoredStatus(), []);

@@ -28,9 +28,18 @@ def _client():
 @pytest.fixture
 def calls(monkeypatch):
     """Record what each job was asked to do; background workers run inline, with no S3."""
-    seen = []
+    seen = _Calls()
 
     class _Service:
+        pending = {"pending": [], "unresolved": []}
+
+        def pending_forwards(self):
+            return self.pending
+
+        def promote_forwards(self, message_ids):
+            seen.append(("promote", tuple(message_ids)))
+            return {"promoted": list(message_ids), "errors": []}
+
         def process_staging(self, dry_run, clear_output, on_progress):
             seen.append(("process", clear_output))
             return {"copied": 0}
@@ -49,7 +58,12 @@ def calls(monkeypatch):
 
     monkeypatch.setattr(routes, "LabelingIngestService", _Service)
     monkeypatch.setattr(routes.threading, "Thread", _Thread)
+    seen.service = _Service
     return seen
+
+
+class _Calls(list):
+    service = None
 
 
 @pytest.mark.parametrize("path", ["/api/labeling/process", "/api/labeling/compact"])
@@ -112,6 +126,9 @@ def test_scheduled_process_posts_success(calls, notices):
 
 def test_scheduled_process_posts_failure(calls, notices, monkeypatch):
     class _Broken:
+        def pending_forwards(self):
+            return {"pending": [], "unresolved": []}
+
         def process_staging(self, **kw):
             raise RuntimeError("S3 is down")
 
@@ -151,3 +168,74 @@ def test_notice_goes_to_the_first_channel_and_never_raises(monkeypatch):
 
     monkeypatch.setattr(routes, "post_to_slack", _boom)
     routes._notify_scheduled_job("Process staging", True, "Done")  # logged, not raised
+
+
+def test_scheduled_process_promotes_known_forwards_first(calls, notices):
+    calls.service.pending = {
+        "pending": [{"message_id": "m1"}, {"message_id": "m2"}],
+        "unresolved": [{"message_id": "m3"}],
+    }
+    _client().post("/api/labeling/process", json={}, headers={"X-Report-Secret": "s3cret"})
+    assert calls == [("background", None), ("promote", ("m1", "m2")), ("process", False)]
+    detail = notices[0][2]
+    assert "Promoted 2 forwarded batch(es) first." in detail
+    assert "1 forwarded batch(es) need a labeler" in detail
+
+
+def test_an_admin_process_does_not_promote(calls, notices):
+    calls.service.pending = {"pending": [{"message_id": "m1"}], "unresolved": []}
+    headers = {"X-Admin-Token": AuthService.issue_admin_token()}
+    _client().post("/api/labeling/process", json={}, headers=headers)
+    assert ("promote", ("m1",)) not in calls
+
+
+def test_a_failed_promote_still_processes_and_is_reported(calls, notices):
+    def _boom(self, message_ids):
+        raise RuntimeError("S3 copy failed")
+
+    calls.service.pending = {"pending": [{"message_id": "m1"}], "unresolved": []}
+    calls.service.promote_forwards = _boom
+    _client().post(
+        "/api/labeling/process", json={"quiet": True}, headers={"X-Report-Secret": "s3cret"}
+    )
+    assert ("process", False) in calls
+    assert [(job, ok) for job, ok, _ in notices] == [("Process staging", False)]
+    assert "Promoting forwards failed: S3 copy failed." in notices[0][2]
+
+
+def test_a_quiet_run_posts_only_failures(calls, notices, monkeypatch):
+    _client().post(
+        "/api/labeling/process", json={"quiet": True}, headers={"X-Report-Secret": "s3cret"}
+    )
+    assert notices == []
+
+    class _Broken:
+        def pending_forwards(self):
+            return {"pending": [], "unresolved": []}
+
+        def process_staging(self, **kw):
+            raise RuntimeError("S3 is down")
+
+    monkeypatch.setattr(routes, "LabelingIngestService", _Broken)
+    _client().post(
+        "/api/labeling/process", json={"quiet": True}, headers={"X-Report-Secret": "s3cret"}
+    )
+    assert notices == [("Process staging", False, "S3 is down")]
+
+
+def test_a_quiet_run_with_collar_sync_posts_nothing_on_success(calls, notices, monkeypatch):
+    monkeypatch.setattr(routes, "_should_sync_collar_after_process", lambda *a: True)
+    monkeypatch.setattr(routes, "_owner_collar_sns", lambda: [])
+    monkeypatch.setattr(routes, "sync_done_message", lambda report, dry: "Synced.")
+
+    class _Sync:
+        def sync(self, **kw):
+            return {}
+
+    monkeypatch.setattr(routes, "LabelingCollarSyncService", _Sync)
+    _client().post(
+        "/api/labeling/process", json={"quiet": True}, headers={"X-Report-Secret": "s3cret"}
+    )
+    assert notices == []
+    _client().post("/api/labeling/process", json={}, headers={"X-Report-Secret": "s3cret"})
+    assert [(job, ok) for job, ok, _ in notices] == [("Process staging", True)]

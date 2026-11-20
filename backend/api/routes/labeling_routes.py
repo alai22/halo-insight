@@ -1861,10 +1861,12 @@ def _should_sync_collar_after_process(
     return clear_output or int(report.get("copied") or 0) > 0
 
 
-def _sync_collar_after_process(process_message: str, notify: bool = False) -> None:
+def _sync_collar_after_process(
+    process_message: str, notify: bool = False, quiet: bool = False
+) -> None:
     """
     Run a collar sync as the tail of a process job; keeps the job running until it ends.
-    With notify (a scheduled run), the outcome is posted to Slack.
+    With notify (a scheduled run), the outcome is posted to Slack; quiet posts failures only.
     """
     _set_process_state(
         running=True,
@@ -1888,7 +1890,7 @@ def _sync_collar_after_process(process_message: str, notify: bool = False) -> No
             last_error=None,
             message=f"{process_message} {sync_done_message(report, False)}",
         )
-        if notify:
+        if notify and not quiet:
             _notify_scheduled_job(
                 "Process staging", True, f"{process_message} {sync_done_message(report, False)}"
             )
@@ -1914,6 +1916,37 @@ def _sync_collar_after_process(process_message: str, notify: bool = False) -> No
         log_rss(logger, "labeling collar sync after process end")
 
 
+def _promote_forwards_before_process() -> Tuple[str, bool]:
+    """
+    Promote every forwarded batch whose labeler is known, so a scheduled Process can read it.
+    Returns (note for the done message, whether anything failed). Never raises: a failed
+    promote still lets Process run on what is already in staging.
+    """
+    try:
+        svc = LabelingIngestService()
+        pending = svc.pending_forwards()
+        ids = [p["message_id"] for p in pending.get("pending") or []]
+        unresolved = len(pending.get("unresolved") or [])
+        unresolved_bit = (
+            f" {unresolved} forwarded batch(es) need a labeler picked on the dashboard."
+            if unresolved
+            else ""
+        )
+        if not ids:
+            return unresolved_bit.strip(), False
+        _set_process_state(message=f"Promoting {len(ids)} forwarded batch(es) into staging…")
+        report = svc.promote_forwards(message_ids=ids)
+        promoted = len(report.get("promoted") or [])
+        errors = report.get("errors") or []
+        note = f"Promoted {promoted} forwarded batch(es) first.{unresolved_bit}"
+        if errors:
+            return f"{note} {len(errors)} could not be promoted.", True
+        return note, False
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Promote forwards before scheduled process failed")
+        return f"Promoting forwards failed: {redact_secrets(str(exc))}.", True
+
+
 @labeling_bp.route("/process", methods=["POST"])
 @_scheduled_or_admin
 def labeling_process():
@@ -1926,8 +1959,10 @@ def labeling_process():
       async: bool (default true) — run in background; poll GET /status
       sync_collar: bool (default true) — async only: when new files were copied,
         sync Azure collar logs afterwards so new sessions and collars can match
-    Called daily by .github/workflows/labeling-process.yml with X-Report-Secret,
-    which always gets an incremental run in the background.
+      quiet: bool (default false) — scheduled only: post to Slack only on failure
+    Called hourly by .github/workflows/labeling-process.yml with X-Report-Secret,
+    which always gets an incremental run in the background that first promotes
+    forwarded batches whose labeler is known.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -1937,6 +1972,7 @@ def labeling_process():
         # Default async so browser tabs are not held open for long S3 copies
         run_async = bool(body.get("async", True))
         scheduled = _scheduled_only()
+        quiet = scheduled and bool(body.get("quiet", False))
         if scheduled:
             # The shared secret never wipes extracted-txt or holds a request open.
             clear_output, run_async = False, True
@@ -1969,18 +2005,24 @@ def labeling_process():
 
             def _worker():
                 log_rss(logger, "labeling process start")
+                promote_note, promote_failed = "", False
                 try:
+                    if scheduled and not dry_run:
+                        promote_note, promote_failed = _promote_forwards_before_process()
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
                         clear_output=clear_output,
                         on_progress=_progress_callback("process"),
                     )
                     _refresh_summary_after_process(report, clear_output, dry_run)
+                    done = " ".join(filter(None, [promote_note, _process_done_message(report)]))
+                    # A quiet run still speaks up when promoting forwards went wrong.
+                    quiet_run = quiet and not promote_failed
                     if _should_sync_collar_after_process(
                         report, clear_output, dry_run, sync_collar
                     ):
                         _set_process_state(last_report=report)
-                        _sync_collar_after_process(_process_done_message(report), notify=scheduled)
+                        _sync_collar_after_process(done, notify=scheduled, quiet=quiet_run)
                         return
                     _set_process_state(
                         running=False,
@@ -1989,10 +2031,10 @@ def labeling_process():
                         last_report=report,
                         last_error=None,
                         progress=None,
-                        message=_process_done_message(report),
+                        message=done,
                     )
-                    if scheduled:
-                        _notify_scheduled_job("Process staging", True, _process_done_message(report))
+                    if scheduled and not quiet_run:
+                        _notify_scheduled_job("Process staging", not promote_failed, done)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling process failed")
                     _set_process_state(
@@ -2004,7 +2046,11 @@ def labeling_process():
                         message="Process failed",
                     )
                     if scheduled:
-                        _notify_scheduled_job("Process staging", False, redact_secrets(str(exc)))
+                        _notify_scheduled_job(
+                            "Process staging",
+                            False,
+                            " ".join(filter(None, [promote_note, redact_secrets(str(exc))])),
+                        )
                 finally:
                     log_rss(logger, "labeling process end")
 
