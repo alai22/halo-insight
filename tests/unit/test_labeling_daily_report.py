@@ -524,6 +524,31 @@ def test_remote_needs_two_minutes_in_nine_labels_across_both_models():
     assert ben["close"] == [{"label": "Potty", "seconds": 119}]
 
 
+def test_progress_adds_label_spellings_and_lists_every_target_label():
+    from backend.services.labeling_daily_report import (
+        PROGRESS_LABELS,
+        PROGRESS_TARGET_SECONDS,
+        labeler_progress,
+    )
+
+    data = {
+        **_family(0, 0, users=[
+            _labeled("a@x.com", "sn1", {"Lying": 200, "Potty1": 30, "Potty2": 45, "JumpingUp": 10, "Sedentary": 99}),
+        ]),
+        "gps": _family(0, 0, users=[_labeled("a@x.com", "sn1", {"IndoorBlocked": 181})]),
+    }
+    result = labeler_progress(data, owner_names={"sn1": "Ana"})
+    assert result["target_seconds"] == PROGRESS_TARGET_SECONDS == 180
+    assert [label["key"] for label in result["labels"]] == [spec["key"] for spec in PROGRESS_LABELS]
+    (ana,) = result["people"]
+    assert ana["person"] == "Ana" and ana["emails"] == ["a@x.com"]
+    labels = ana["labels"]
+    assert set(labels) == {spec["key"] for spec in PROGRESS_LABELS}
+    assert (labels["Lying"], labels["Potty"], labels["Jumping"], labels["IndoorBlocked"]) == (200, 75, 10, 181)
+    # Labels outside the list are left out; labels not started are 0.
+    assert "Sedentary" not in labels and labels["Barking"] == 0
+
+
 def test_dog_leaderboard_ranks_dogs_with_their_people():
     from backend.services.labeling_daily_report import recap_data
 

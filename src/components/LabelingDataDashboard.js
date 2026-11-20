@@ -2254,11 +2254,179 @@ function OverviewTab({ data, nextStep, onOpenHealth, typeOverrides, onEditLabele
   );
 }
 
+function escapeHtml(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/** "a, b and c" */
+function joinWords(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/**
+ * Subject, HTML and plain text for one labeler's progress toward target_seconds in each
+ * label. "Have" rounds down and "still needed" rounds up, so a label just short of the
+ * target never reads as done.
+ */
+function buildProgressEmail(person, progress) {
+  const target = progress.target_seconds;
+  const targetMin = target / 60;
+  const fmt = (min) => `${Number.isInteger(min) ? min : min.toFixed(1)} min`;
+  const rows = progress.labels.map((label) => {
+    const seconds = person.labels[label.key] || 0;
+    const done = seconds >= target;
+    const have = Math.floor((seconds / 60) * 10) / 10;
+    const need = done ? 0 : Math.ceil(((target - seconds) / 60) * 10) / 10;
+    return { ...label, done, have, need };
+  });
+  const doneCount = rows.filter((r) => r.done).length;
+  const todo = rows.filter((r) => !r.done).sort((a, b) => b.need - a.need);
+  const totalNeed = Math.round(todo.reduce((sum, r) => sum + r.need, 0) * 10) / 10;
+  const named = !person.person.includes('@');
+  const greeting = named ? `Hi ${person.person.split(/\s+/)[0]},` : 'Hi there,';
+  const dogs = person.dogs.length ? joinWords(person.dogs) : '';
+  const targetText = `${fmt(targetMin).replace(' min', '')} minute${targetMin === 1 ? '' : 's'}`;
+  const intro = `Thank you for labeling${dogs ? ` with ${dogs}` : ''}! We're aiming for ${targetText} of each label below. Here's where you are so far:`;
+  const outro = todo.length
+    ? `You've reached ${targetText} in ${doneCount} of ${rows.length} labels. To finish, that's about ${fmt(totalNeed)} more in total, mostly ${joinWords(
+        todo.slice(0, 3).map((r) => `${r.name} (${fmt(r.need)})`)
+      )}.`
+    : `You've reached ${targetText} in every label. That's everything we need, thank you!`;
+  const closing = 'Thanks again for your help!';
+  const subject = `Your Halo labeling progress${person.dogs.length ? ` with ${person.dogs[0]}` : ''}`;
+
+  const groups = [
+    { key: 'posture', title: 'Postures' },
+    { key: 'environment', title: 'Environments' },
+  ];
+  const cell = 'padding:4px 12px;border-bottom:1px solid #e5e7eb;';
+  const html = [
+    `<p>${escapeHtml(greeting)}</p>`,
+    `<p>${escapeHtml(intro)}</p>`,
+    '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;">',
+    `<tr><th style="${cell}text-align:left;">Label</th><th style="${cell}text-align:right;">You have</th><th style="${cell}text-align:right;">Still needed</th></tr>`,
+    ...groups.flatMap((group) => [
+      `<tr><td colspan="3" style="padding:10px 12px 4px;font-weight:bold;color:#6b7280;">${group.title}</td></tr>`,
+      ...rows
+        .filter((r) => r.group === group.key)
+        .map(
+          (r) =>
+            `<tr><td style="${cell}">${escapeHtml(r.name)}</td><td style="${cell}text-align:right;">${fmt(r.have)}</td>` +
+            `<td style="${cell}text-align:right;${r.done ? 'color:#15803d;' : ''}">${r.done ? '✓ Done' : fmt(r.need)}</td></tr>`
+        ),
+    ]),
+    '</table>',
+    `<p>${escapeHtml(outro)}</p>`,
+    `<p>${escapeHtml(closing)}</p>`,
+  ].join('');
+
+  const width = Math.max(...rows.map((r) => r.name.length));
+  const text = [
+    greeting,
+    '',
+    intro,
+    '',
+    ...groups.flatMap((group) => [
+      group.title,
+      ...rows
+        .filter((r) => r.group === group.key)
+        .map((r) => `  ${r.name.padEnd(width)}  ${fmt(r.have).padStart(8)}   ${r.done ? '✓ Done' : `${fmt(r.need)} more`}`),
+      '',
+    ]),
+    outro,
+    '',
+    closing,
+  ].join('\n');
+  return { subject, html, text, doneCount, total: rows.length };
+}
+
+/** Side panel with one labeler's progress email, ready to paste into Gmail. */
+function ProgressEmailPanel({ person, progress, onClose }) {
+  const email = useMemo(() => buildProgressEmail(person, progress), [person, progress]);
+  const [copied, setCopied] = useState(null);
+  const flash = (what) => {
+    setCopied(what);
+    setTimeout(() => setCopied(null), 1500);
+  };
+  const copyText = (what, text) => navigator.clipboard?.writeText(text).then(() => flash(what));
+  const copyEmail = async () => {
+    // Rich copy keeps the table when pasted into Gmail; plain text is the fallback.
+    try {
+      await navigator.clipboard.write([
+        new window.ClipboardItem({
+          'text/html': new Blob([email.html], { type: 'text/html' }),
+          'text/plain': new Blob([email.text], { type: 'text/plain' }),
+        }),
+      ]);
+      flash('email');
+    } catch {
+      copyText('email', email.text);
+    }
+  };
+  const to = person.emails.join(', ');
+  const copyButton = (what, onClick, label) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-xs px-2.5 py-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 shrink-0"
+    >
+      {copied === what ? 'Copied' : label}
+    </button>
+  );
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-label="Progress email">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative h-full w-full max-w-xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Progress email · {person.person}</h3>
+            <p className="text-xs text-gray-500">
+              All-time minutes per label, against {Math.round(progress.target_seconds / 60)} minutes each.{' '}
+              {email.doneCount} of {email.total} labels done. Copy it, paste into a new Gmail message, and edit as you like.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-500" aria-label="Close">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="px-5 py-3 border-b border-gray-100 space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="w-16 text-xs text-gray-500">To</span>
+            <span className="flex-1 min-w-0 truncate">{to || <span className="text-gray-400">No email on file</span>}</span>
+            {to ? copyButton('to', () => copyText('to', to), 'Copy') : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-16 text-xs text-gray-500">Subject</span>
+            <span className="flex-1 min-w-0 truncate">{email.subject}</span>
+            {copyButton('subject', () => copyText('subject', email.subject), 'Copy')}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="text-sm text-gray-900 space-y-3 [&_p]:my-3" dangerouslySetInnerHTML={{ __html: email.html }} />
+        </div>
+        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={copyEmail}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800"
+          >
+            <Mail className="h-4 w-4" />
+            {copied === 'email' ? 'Copied' : 'Copy email'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Who has earned a 5-button remote: 2+ minutes in each of 9 labels, both models counted. */
 function CompensationTab({ data, typeOverrides, onEditLabelers }) {
   const comp = data?.overview?.compensation;
+  const progress = data?.overview?.progress;
   const [copied, setCopied] = useState(false);
   const [typeFilter, setTypeFilter] = useState('all');
+  const [emailFor, setEmailFor] = useState(null);
   if (!comp) {
     return (
       <p className="text-sm text-gray-500">
@@ -2272,6 +2440,10 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
     .map((p) => ({ ...p, type: resolveLabelerType(p, typeOverrides) }))
     .filter((p) => typeFilter === 'all' || (p.type || 'unset') === typeFilter);
   const eligible = people.filter((p) => p.eligible);
+  // Progress is all time, so someone outside the date range still gets the right email.
+  const progressFor = (p) =>
+    progress?.people.find((q) => q.person === p.person && q.emails.join() === p.emails.join()) ||
+    progress?.people.find((q) => q.person === p.person);
   const copyEligible = () => {
     const text = eligible
       .map((p) => `${p.person}${p.dogs.length ? ` (${p.dogs.join(', ')})` : ''}: ${p.qualified.length} labels`)
@@ -2294,15 +2466,39 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
             it with the date range above.
           </p>
         </div>
-        {eligible.length ? (
-          <button
-            type="button"
-            onClick={copyEligible}
-            className="text-xs px-3 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50"
-          >
-            {copied ? 'Copied' : `Copy ${eligible.length} eligible`}
-          </button>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {progress?.people.length ? (
+            <select
+              value=""
+              onChange={(e) => {
+                const picked = progress.people[Number(e.target.value)];
+                if (picked) setEmailFor(picked);
+              }}
+              className="text-xs px-2 py-1.5 rounded-md border border-gray-200 bg-white text-gray-700"
+              aria-label="Draft a progress email"
+            >
+              <option value="">Draft progress email…</option>
+              {progress.people
+                .map((q, i) => ({ q, i }))
+                .sort((a, b) => a.q.person.localeCompare(b.q.person))
+                .map(({ q, i }) => (
+                  <option key={`${q.person}-${i}`} value={i}>
+                    {q.person}
+                    {q.dogs.length ? ` (${q.dogs[0]})` : ''}
+                  </option>
+                ))}
+            </select>
+          ) : null}
+          {eligible.length ? (
+            <button
+              type="button"
+              onClick={copyEligible}
+              className="text-xs px-3 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50"
+            >
+              {copied ? 'Copied' : `Copy ${eligible.length} eligible`}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -2374,6 +2570,17 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
                     >
                       {p.eligible ? '🎁 Eligible' : `${short} more label${short === 1 ? '' : 's'}`}
                     </span>
+                    {progressFor(p) ? (
+                      <button
+                        type="button"
+                        onClick={() => setEmailFor(progressFor(p))}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                        title={`Draft an email with ${p.person}'s minutes in each label`}
+                      >
+                        <Mail className="h-3.5 w-3.5" />
+                        Draft email
+                      </button>
+                    ) : null}
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {p.qualified.map((l) => (
@@ -2393,6 +2600,9 @@ function CompensationTab({ data, typeOverrides, onEditLabelers }) {
           </ul>
         )}
       </ChartCard>
+      {emailFor && progress ? (
+        <ProgressEmailPanel person={emailFor} progress={progress} onClose={() => setEmailFor(null)} />
+      ) : null}
     </div>
   );
 }
@@ -6435,5 +6645,5 @@ function SummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
-export { healthGaps, WhatNeedsDoing };
+export { buildProgressEmail, healthGaps, WhatNeedsDoing };
 export default LabelingDataDashboard;

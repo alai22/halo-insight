@@ -41,6 +41,7 @@ from backend.services.labeling_daily_report import (
     period_change,
     period_start,
     recap_data,
+    labeler_progress,
     remote_eligibility,
     LABELER_TYPES,
     post_to_slack,
@@ -987,6 +988,8 @@ def _attach_overview(
             "change": period_change(all_data, change_start, end),
             "change_is_last_7_days": start is None,
             "compensation": remote_eligibility(data, **lookups),
+            # All time whatever the range: the progress email counts everything so far.
+            "progress": labeler_progress(all_data, **lookups),
         }
     except Exception as exc:  # noqa: BLE001 - the rest of the summary still works
         logger.warning("Labeling overview failed: %s", exc)
@@ -2141,8 +2144,9 @@ def _without_pay_for_viewers(f):
         response, status = (result if isinstance(result, tuple) else (result, None))
         body = response.get_json(silent=True)
         overview = ((body or {}).get("data") or {}).get("overview")
-        if isinstance(overview, dict) and "compensation" in overview:
-            overview.pop("compensation")
+        if isinstance(overview, dict) and ("compensation" in overview or "progress" in overview):
+            overview.pop("compensation", None)
+            overview.pop("progress", None)
             response.set_data(json.dumps(body))
         return (response, status) if status is not None else response
 

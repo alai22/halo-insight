@@ -523,6 +523,63 @@ def remote_eligibility(
     }
 
 
+# The progress email asks each labeler for PROGRESS_TARGET_SECONDS of every label below.
+# Aliases are the names the exports use; spellings of one label are added together.
+PROGRESS_TARGET_SECONDS = 180
+PROGRESS_LABELS: List[Dict[str, Any]] = [
+    {"key": "Lying", "name": "Lying", "group": "posture", "aliases": ["Lying"]},
+    {"key": "Sitting", "name": "Sitting", "group": "posture", "aliases": ["Sitting"]},
+    {"key": "Standing", "name": "Standing", "group": "posture", "aliases": ["Standing"]},
+    {"key": "Walking", "name": "Walking", "group": "posture", "aliases": ["Walking"]},
+    {"key": "RunningPlaying", "name": "Running / playing", "group": "posture", "aliases": ["RunningPlaying"]},
+    {"key": "EatingDrinking", "name": "Eating / drinking", "group": "posture", "aliases": ["EatingDrinking"]},
+    {"key": "OnShelf", "name": "On shelf", "group": "posture", "aliases": ["OnShelf"]},
+    {"key": "HumanCarry", "name": "Human carry", "group": "posture", "aliases": ["HumanCarry"]},
+    {"key": "Sniffing", "name": "Sniffing", "group": "posture", "aliases": ["Sniffing"]},
+    {"key": "Jumping", "name": "Jumping", "group": "posture", "aliases": ["Jumping", "JumpingUp"]},
+    {"key": "Potty", "name": "Potty", "group": "posture", "aliases": ["Potty", "Potty1", "Potty2", "PottyTwo"]},
+    {"key": "Barking", "name": "Barking", "group": "posture", "aliases": ["Barking"]},
+    {"key": "IndoorBlocked", "name": "Indoor (blocked)", "group": "environment", "aliases": ["IndoorBlocked"]},
+    {"key": "IndoorSeeSky", "name": "Indoor (see sky)", "group": "environment", "aliases": ["IndoorSeeSky"]},
+    {"key": "OutdoorOpenSky", "name": "Outdoor (open sky)", "group": "environment", "aliases": ["OutdoorOpenSky"]},
+    {"key": "OutdoorCovered", "name": "Outdoor (covered)", "group": "environment", "aliases": ["OutdoorCovered"]},
+    {"key": "Door", "name": "Door", "group": "environment", "aliases": ["Door"]},
+]
+
+
+def labeler_progress(
+    data: Dict[str, Any],
+    owner_names: Optional[Dict[str, str]] = None,
+    group_senders: Optional[set] = None,
+    owner_emails: Optional[Dict[str, str]] = None,
+    names_by_email: Optional[Dict[str, str]] = None,
+    labeler_types: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Seconds per PROGRESS_LABELS label for each person, for the progress email."""
+    labelers = _people(data, owner_names, group_senders, owner_emails, names_by_email, labeler_types)
+    dogs_by_collar = _dogs_by_collar(data)
+    people = []
+    for labeler in labelers:
+        have = labeler.get("labels") or {}
+        people.append({
+            "person": labeler["person"],
+            "emails": labeler["emails"],
+            "labeler_type": labeler["labeler_type"],
+            "dogs": labeler_dogs(labeler, dogs_by_collar),
+            "sessions": labeler["sessions"],
+            "seconds": round(labeler["seconds"], 1),
+            "labels": {
+                spec["key"]: round(sum(float(have.get(a) or 0) for a in spec["aliases"]), 1)
+                for spec in PROGRESS_LABELS
+            },
+        })
+    return {
+        "target_seconds": PROGRESS_TARGET_SECONDS,
+        "labels": [{k: spec[k] for k in ("key", "name", "group")} for spec in PROGRESS_LABELS],
+        "people": people,
+    }
+
+
 def _day_rows(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(data.get("by_date") or []) + list((data.get("gps") or {}).get("by_date") or [])
 

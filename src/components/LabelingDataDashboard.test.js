@@ -1,6 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { healthGaps, WhatNeedsDoing } from './LabelingDataDashboard';
+import { buildProgressEmail, healthGaps, WhatNeedsDoing } from './LabelingDataDashboard';
 
 // axios ships ESM that CRA's Jest doesn't transform; these tests make no requests.
 jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn(), put: jest.fn() }));
@@ -94,4 +94,50 @@ test('a sync gap offers Sync collar data and Gmail ingest is named for backfills
   expect(gaps[0].todo).toContain('Gmail ingest');
   expect(gaps[1].action.key).toBe('sync');
   expect(gaps[1].count).toBe(12);
+});
+
+describe('buildProgressEmail', () => {
+  const progress = {
+    target_seconds: 180,
+    labels: [
+      { key: 'Lying', name: 'Lying', group: 'posture' },
+      { key: 'Potty', name: 'Potty', group: 'posture' },
+      { key: 'Barking', name: 'Barking', group: 'posture' },
+      { key: 'Door', name: 'Door', group: 'environment' },
+    ],
+  };
+  const person = {
+    person: 'Ana Lopez',
+    emails: ['a@x.com'],
+    dogs: ['Rex', 'Bo'],
+    labels: { Lying: 400, Potty: 179, Barking: 0, Door: 60 },
+  };
+
+  test('lists each label with time so far and what is still needed', () => {
+    const email = buildProgressEmail(person, progress);
+    expect(email.subject).toBe('Your Halo labeling progress with Rex');
+    expect(email.doneCount).toBe(1);
+    expect(email.text).toContain('Hi Ana,');
+    expect(email.text).toContain('Thank you for labeling with Rex and Bo!');
+    // 179s is just short: it rounds down to 2.9 had and up to 0.1 needed, never "done".
+    expect(email.text).toMatch(/Potty +2\.9 min +0\.1 min more/);
+    expect(email.text).toMatch(/Lying +6\.6 min +✓ Done/);
+    expect(email.text).toContain("You've reached 3 minutes in 1 of 4 labels. To finish, that's about 5.1 min more in total");
+    expect(email.text).toContain('mostly Barking (3 min), Door (2 min) and Potty (0.1 min)');
+    expect(email.html).toContain('<td style="padding:4px 12px;border-bottom:1px solid #e5e7eb;">Potty</td>');
+  });
+
+  test('says everything is done, and greets an email-only labeler generically', () => {
+    const all = { ...person, person: 'x@y.com', dogs: [], labels: { Lying: 180, Potty: 200, Barking: 999, Door: 180 } };
+    const email = buildProgressEmail(all, progress);
+    expect(email.text).toContain('Hi there,');
+    expect(email.text).toContain('in every label');
+    expect(email.subject).toBe('Your Halo labeling progress');
+  });
+
+  test('escapes names in the HTML', () => {
+    const email = buildProgressEmail({ ...person, dogs: ['<b>Rex</b>'] }, progress);
+    expect(email.html).toContain('&lt;b&gt;Rex&lt;/b&gt;');
+    expect(email.html).not.toContain('<b>Rex</b>');
+  });
 });
