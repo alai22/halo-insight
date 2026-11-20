@@ -130,6 +130,22 @@ channel, or the first one in `LABELING_REPORT_SLACK_CHANNEL`). The hourly Proces
 other than 15:00 send `quiet: true` and post only when something fails, including a
 forwarded batch that could not be promoted. Runs started from the dashboard post nothing.
 
+The 15:00 post also ends with a :warning: line when forwarded emails don't say who first
+sent them. Those stay out of the charts until someone promotes each with
+`--map <message id>=<labeler email>`, so the line repeats daily until they are placed.
+
+**Gmail ingest** checks the inbox inside the server every 5 minutes. It posts to the same
+channel when:
+
+- three checks in a row fail (one Gmail API blip stays quiet), and once more when a
+  check succeeds again;
+- it gives up on an email after 5 tries, naming the message ids;
+- it stops checking altogether. The hourly Process run is the watchdog: it posts when no
+  check has finished for three poll intervals, and again when checks resume.
+
+These alerts are kept in memory, so a restart while the ingester is still failing posts
+the failure once more.
+
 If the server never starts the run (it is down, the secret is wrong, or other jobs kept it
 busy), the workflow posts the failure itself with a link to the GitHub run. That needs one
 more repository secret, `LABELING_REPORT_SLACK_WEBHOOK_URL`, an incoming webhook for the

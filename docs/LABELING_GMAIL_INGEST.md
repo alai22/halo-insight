@@ -175,7 +175,9 @@ python ingest_labeling_gmail.py --since 2026-11-01 --dry-run
   file. A batch cut off by a restart is written again. Process staging also de-duplicates
   sessions across emails.
 - **Failures:** an email that fails is retried by id on every run. After 5 failures it is
-  left alone and listed under Data health errors.
+  left alone and listed under Data health errors, and the recap channel in Slack hears
+  about it. Slack also hears when the ingester keeps failing or stops checking; see
+  "Slack notices" in `LABELING_DAILY_REPORT.md`.
 - **No overlap:** runs never overlap each other. In live mode a poll skips while Process
   staging, compact or promote is running. Those jobs refuse to start (409) while a live run
   is writing to staging.

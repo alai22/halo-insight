@@ -16,6 +16,7 @@ def _config(monkeypatch):
     monkeypatch.setattr(routes, "_set_process_state", lambda **kw: kw)
     monkeypatch.setattr(routes, "_merge_process_state", lambda: {"running": True})
     monkeypatch.setattr(routes, "_cache_mark_stale", lambda: None)
+    monkeypatch.setattr(routes, "_gmail_alert_check_stalled", lambda: None)
 
 
 def _client():
@@ -179,7 +180,7 @@ def test_scheduled_process_promotes_known_forwards_first(calls, notices):
     assert calls == [("background", None), ("promote", ("m1", "m2")), ("process", False)]
     detail = notices[0][2]
     assert "Promoted 2 forwarded batch(es) first." in detail
-    assert "1 forwarded batch(es) need a labeler" in detail
+    assert "1 forwarded email(s) don't say who first sent them" in detail
 
 
 def test_an_admin_process_does_not_promote(calls, notices):

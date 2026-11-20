@@ -1302,21 +1302,25 @@ def _scheduled_only() -> bool:
         return _scheduled_request()
 
 
-def _notify_scheduled_job(job: str, ok: bool, detail: str) -> None:
-    """Tell the recap channel how a scheduled run ended. Never fails the job."""
+def _notify_recap_channel(text: str, what: str) -> None:
+    """Post a notice, with a dashboard link, to the recap channel. Never raises."""
     if not _report_configured():
-        logger.info("Scheduled %s finished (ok=%s); Slack is not set up", job, ok)
+        logger.info("%s: Slack is not set up; not posted", what)
         return
-    icon, outcome = (":white_check_mark:", "succeeded") if ok else (":x:", "failed")
     link = f"\n<{Config.APP_BASE_URL.rstrip('/')}|Open the dashboard>" if Config.APP_BASE_URL else ""
-    text = f"{icon} Scheduled *{job}* {outcome}. {detail}{link}"
     channels = _report_channels()
     try:
-        _, errors = _post_report(text, [channels[0]["id"]] if channels else [])
+        _, errors = _post_report(text + link, [channels[0]["id"]] if channels else [])
         for error in errors:
-            logger.warning("Scheduled %s Slack notice failed: %s", job, error)
+            logger.warning("%s Slack notice failed: %s", what, error)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Scheduled %s Slack notice failed: %s", job, redact_secrets(str(exc)))
+        logger.warning("%s Slack notice failed: %s", what, redact_secrets(str(exc)))
+
+
+def _notify_scheduled_job(job: str, ok: bool, detail: str) -> None:
+    """Tell the recap channel how a scheduled run ended. Never fails the job."""
+    icon, outcome = (":white_check_mark:", "succeeded") if ok else (":x:", "failed")
+    _notify_recap_channel(f"{icon} Scheduled *{job}* {outcome}. {detail}", f"Scheduled {job}")
 
 
 def _report_request_authorized() -> bool:
@@ -1862,7 +1866,7 @@ def _should_sync_collar_after_process(
 
 
 def _sync_collar_after_process(
-    process_message: str, notify: bool = False, quiet: bool = False
+    process_message: str, notify: bool = False, quiet: bool = False, slack_extra: str = ""
 ) -> None:
     """
     Run a collar sync as the tail of a process job; keeps the job running until it ends.
@@ -1892,7 +1896,9 @@ def _sync_collar_after_process(
         )
         if notify and not quiet:
             _notify_scheduled_job(
-                "Process staging", True, f"{process_message} {sync_done_message(report, False)}"
+                "Process staging",
+                True,
+                f"{process_message} {sync_done_message(report, False)}{slack_extra}",
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Collar sync after process failed")
@@ -1910,41 +1916,47 @@ def _sync_collar_after_process(
             _notify_scheduled_job(
                 "Process staging",
                 False,
-                f"{process_message} The collar sync after it failed: {redact_secrets(str(exc))}",
+                f"{process_message} The collar sync after it failed: {redact_secrets(str(exc))}"
+                f"{slack_extra}",
             )
     finally:
         log_rss(logger, "labeling collar sync after process end")
 
 
-def _promote_forwards_before_process() -> Tuple[str, bool]:
+def _promote_forwards_before_process() -> Tuple[str, str, bool]:
     """
     Promote every forwarded batch whose labeler is known, so a scheduled Process can read it.
-    Returns (note for the done message, whether anything failed). Never raises: a failed
+    Returns (note for the done message, a warning line for forwards nobody can place, whether
+    anything failed). Never raises: a failed
     promote still lets Process run on what is already in staging.
     """
     try:
         svc = LabelingIngestService()
         pending = svc.pending_forwards()
         ids = [p["message_id"] for p in pending.get("pending") or []]
-        unresolved = len(pending.get("unresolved") or [])
-        unresolved_bit = (
-            f" {unresolved} forwarded batch(es) need a labeler picked on the dashboard."
-            if unresolved
+        unresolved_ids = [u.get("message_id") for u in pending.get("unresolved") or []]
+        warning = (
+            f":warning: {len(unresolved_ids)} forwarded email(s) don't say who first sent "
+            "them, so their logs are not in the charts. Promote each with "
+            "`--map <message id>=<labeler email>` (see What needs doing on Data health): "
+            + ", ".join(f"`{m}`" for m in unresolved_ids[:10])
+            + (" …" if len(unresolved_ids) > 10 else "")
+            if unresolved_ids
             else ""
         )
         if not ids:
-            return unresolved_bit.strip(), False
+            return "", warning, False
         _set_process_state(message=f"Promoting {len(ids)} forwarded batch(es) into staging…")
         report = svc.promote_forwards(message_ids=ids)
         promoted = len(report.get("promoted") or [])
         errors = report.get("errors") or []
-        note = f"Promoted {promoted} forwarded batch(es) first.{unresolved_bit}"
+        note = f"Promoted {promoted} forwarded batch(es) first."
         if errors:
-            return f"{note} {len(errors)} could not be promoted.", True
-        return note, False
+            return f"{note} {len(errors)} could not be promoted.", warning, True
+        return note, warning, False
     except Exception as exc:  # noqa: BLE001
         logger.exception("Promote forwards before scheduled process failed")
-        return f"Promoting forwards failed: {redact_secrets(str(exc))}.", True
+        return f"Promoting forwards failed: {redact_secrets(str(exc))}.", "", True
 
 
 @labeling_bp.route("/process", methods=["POST"])
@@ -1973,6 +1985,9 @@ def labeling_process():
         run_async = bool(body.get("async", True))
         scheduled = _scheduled_only()
         quiet = scheduled and bool(body.get("quiet", False))
+        if scheduled:
+            # The hourly run doubles as the watchdog for the in-server Gmail poller.
+            _gmail_alert_check_stalled()
         if scheduled:
             # The shared secret never wipes extracted-txt or holds a request open.
             clear_output, run_async = False, True
@@ -2005,10 +2020,12 @@ def labeling_process():
 
             def _worker():
                 log_rss(logger, "labeling process start")
-                promote_note, promote_failed = "", False
+                promote_note, forwards_warning, promote_failed = "", "", False
                 try:
                     if scheduled and not dry_run:
-                        promote_note, promote_failed = _promote_forwards_before_process()
+                        promote_note, forwards_warning, promote_failed = (
+                            _promote_forwards_before_process()
+                        )
                     report = LabelingIngestService().process_staging(
                         dry_run=dry_run,
                         clear_output=clear_output,
@@ -2016,13 +2033,17 @@ def labeling_process():
                     )
                     _refresh_summary_after_process(report, clear_output, dry_run)
                     done = " ".join(filter(None, [promote_note, _process_done_message(report)]))
+                    # Slack only: the dashboard already lists these under What needs doing.
+                    extra = f"\n{forwards_warning}" if forwards_warning else ""
                     # A quiet run still speaks up when promoting forwards went wrong.
                     quiet_run = quiet and not promote_failed
                     if _should_sync_collar_after_process(
                         report, clear_output, dry_run, sync_collar
                     ):
                         _set_process_state(last_report=report)
-                        _sync_collar_after_process(done, notify=scheduled, quiet=quiet_run)
+                        _sync_collar_after_process(
+                            done, notify=scheduled, quiet=quiet_run, slack_extra=extra
+                        )
                         return
                     _set_process_state(
                         running=False,
@@ -2034,7 +2055,7 @@ def labeling_process():
                         message=done,
                     )
                     if scheduled and not quiet_run:
-                        _notify_scheduled_job("Process staging", not promote_failed, done)
+                        _notify_scheduled_job("Process staging", not promote_failed, done + extra)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Async labeling process failed")
                     _set_process_state(
@@ -2478,6 +2499,86 @@ _GMAIL_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 # Jobs that read or rewrite staging/ wait while a live run is writing into it.
 _GMAIL_BUSY_ERROR = "The Gmail ingester is writing new uploads into staging; try again in a minute"
 
+# Slack alerts for the ingester: one post when it starts failing or stalls, one when it is
+# back. In memory only, so a restart while it is still failing posts once more.
+_GMAIL_ALERT_AFTER_FAILED_RUNS = 3
+_GMAIL_ALERT: Dict[str, Any] = {"failed_runs": 0, "failing": False, "stalled": False}
+
+
+def _gmail_alert_run_failed(error: str) -> None:
+    """A run raised. Post after a few in a row, so one Gmail API blip stays quiet."""
+    with _PROCESS_LOCK:
+        _GMAIL_ALERT["failed_runs"] += 1
+        post = (
+            _GMAIL_ALERT["failed_runs"] >= _GMAIL_ALERT_AFTER_FAILED_RUNS
+            and not _GMAIL_ALERT["failing"]
+        )
+        if post:
+            _GMAIL_ALERT["failing"] = True
+        runs = _GMAIL_ALERT["failed_runs"]
+    if post:
+        _notify_recap_channel(
+            f":x: *Gmail ingest* is failing: the last {runs} checks of the inbox failed. "
+            f"New labeler emails are not reaching staging. Latest error: {error}",
+            "Gmail ingest",
+        )
+
+
+def _gmail_alert_run_ok(report: Dict[str, Any]) -> None:
+    """A run finished: say so if it had been failing, and name emails it gave up on."""
+    from backend.services.labeling_gmail_ingest_service import MAX_ATTEMPTS
+
+    with _PROCESS_LOCK:
+        recovered = _GMAIL_ALERT["failing"]
+        _GMAIL_ALERT.update(failed_runs=0, failing=False)
+    if recovered:
+        _notify_recap_channel(
+            ":white_check_mark: *Gmail ingest* is working again. "
+            f"This check ingested {report.get('ingested', 0)} email(s).",
+            "Gmail ingest",
+        )
+    gave_up = [e for e in report.get("errors") or [] if int(e.get("attempts") or 0) >= MAX_ATTEMPTS]
+    if gave_up:
+        lines = "\n".join(
+            f"• `{e.get('message_id')}`: {redact_secrets(str(e.get('error') or ''))[:200]}"
+            for e in gave_up[:10]
+        )
+        _notify_recap_channel(
+            f":warning: *Gmail ingest* gave up on {len(gave_up)} email(s) after {MAX_ATTEMPTS} "
+            f"tries. Their logs are not in staging:\n{lines}",
+            "Gmail ingest",
+        )
+
+
+def _gmail_alert_check_stalled() -> None:
+    """Called by the hourly scheduled Process: catches a poller that died or hung."""
+    try:
+        status = _gmail_ingest_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Gmail stall check failed: %s", redact_secrets(str(exc)))
+        return
+    if not status.get("enabled"):
+        return
+    stalled = bool(status.get("stalled"))
+    with _PROCESS_LOCK:
+        changed = stalled != _GMAIL_ALERT["stalled"]
+        _GMAIL_ALERT["stalled"] = stalled
+    if not changed:
+        return
+    if stalled:
+        finished = (status.get("last_run") or {}).get("finished_at") or "never since the restart"
+        _notify_recap_channel(
+            f":x: *Gmail ingest* has stopped checking the inbox (last finished check: "
+            f"{finished}). New labeler emails are not reaching staging. Restarting the "
+            "server restarts it.",
+            "Gmail ingest",
+        )
+    else:
+        _notify_recap_channel(
+            ":white_check_mark: *Gmail ingest* is checking the inbox again.", "Gmail ingest"
+        )
+
+
 
 def _gmail_writing_staging() -> bool:
     with _PROCESS_LOCK:
@@ -2542,12 +2643,16 @@ def run_gmail_ingest(
                 ),
             )
         _GMAIL_STATUS_CACHE["at"] = 0.0
+        if not dry_run:
+            _gmail_alert_run_ok(report)
         return report
     except Exception as exc:  # noqa: BLE001
         logger.exception("Gmail ingest run failed")
         with _PROCESS_LOCK:
             _GMAIL_STATE.update(last_error=redact_secrets(str(exc)), message="Gmail ingest failed")
         _GMAIL_STATUS_CACHE["at"] = 0.0
+        if not dry_run:
+            _gmail_alert_run_failed(redact_secrets(str(exc))[:300])
         raise
     finally:
         with _PROCESS_LOCK:
