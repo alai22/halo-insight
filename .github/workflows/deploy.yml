@@ -30,6 +30,13 @@ jobs:
             cd ~/halo-insight
             git fetch origin main
             git checkout main
+            # The image builds with npm ci from the committed lockfile, so edits on the
+            # server (an npm install run by hand) only block the pull. Keep a copy, then drop them.
+            if ! git diff --quiet -- package-lock.json; then
+              echo "Discarding server edits to package-lock.json (copy in ~/package-lock.server.json)"
+              cp package-lock.json ~/package-lock.server.json
+              git checkout -- package-lock.json
+            fi
             git pull --ff-only origin main
             echo "Deploying $(git rev-parse --short HEAD)"
             ./deploy.sh production

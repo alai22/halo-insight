@@ -4,6 +4,13 @@ echo "🔄 Updating Gladly application..."
 # Navigate to project directory
 cd ~/halo-insight
 
+# The image builds from the committed lockfile; server edits only block the pull.
+if ! git diff --quiet -- package-lock.json; then
+    echo "Discarding server edits to package-lock.json (copy in ~/package-lock.server.json)"
+    cp package-lock.json ~/package-lock.server.json
+    git checkout -- package-lock.json
+fi
+
 # Pull latest changes
 echo "📥 Pulling latest changes from GitHub..."
 git pull origin main
