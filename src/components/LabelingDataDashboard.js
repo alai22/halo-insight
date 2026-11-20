@@ -144,6 +144,7 @@ function StackedDurationChart({
   xKey = 'label',
   height = 320,
   emptyText = 'No data yet.',
+  seriesNames = null,
 }) {
   const names = useContext(LabelerNamesContext);
   if (!data?.length || !seriesKeys?.length) {
@@ -169,7 +170,7 @@ function StackedDurationChart({
           />
           <Tooltip content={<VarietyTooltip />} />
           <Legend
-            formatter={(value) => (value === 'Dogs' ? 'Dogs' : shortLabeler(value, names))}
+            formatter={(value) => (value === 'Dogs' || seriesNames ? value : shortLabeler(value, names))}
             wrapperStyle={{ fontSize: 12 }}
           />
           {seriesKeys.map((key, index) => (
@@ -177,7 +178,7 @@ function StackedDurationChart({
               key={key}
               yAxisId="duration"
               dataKey={key}
-              name={key}
+              name={seriesNames?.[key] || key}
               stackId="stack"
               fill={colorMap[key] || COLORS[index % COLORS.length]}
               radius={index === seriesKeys.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
@@ -3778,14 +3779,17 @@ function downloadSessionsCsv(rows, email, family, range) {
 }
 
 /** Every session one labeler sent, newest first, for the selected model and date range. */
-function LabelerSessionLog({ email, family, range }) {
-  const [state, setState] = useState({ loading: true, rows: [], message: null, error: null });
-  const [limit, setLimit] = useState(SESSION_LOG_PAGE);
+/** One labeler's sessions in the range, each with its label times. Empty when email is blank. */
+function useLabelerSessions(email, family, range) {
+  const [state, setState] = useState({ loading: false, rows: [], message: null, error: null });
 
   useEffect(() => {
+    if (!email) {
+      setState({ loading: false, rows: [], message: null, error: null });
+      return undefined;
+    }
     let cancelled = false;
     setState({ loading: true, rows: [], message: null, error: null });
-    setLimit(SESSION_LOG_PAGE);
     const params = { user: email, family };
     if (range.start) params.start = range.start;
     if (range.end) params.end = range.end;
@@ -3814,6 +3818,47 @@ function LabelerSessionLog({ email, family, range }) {
       cancelled = true;
     };
   }, [email, family, range.start, range.end]);
+
+  return state;
+}
+
+/** Days of the date chart, each split into seconds per label from one labeler's sessions. */
+function buildDateLabelStack(sessions, dayRows) {
+  const byDay = new Map();
+  const totals = {};
+  (sessions || []).forEach((s) => {
+    const day = String(s.timestamp || '').slice(0, 10) || 'unknown';
+    const labels = byDay.get(day) || {};
+    Object.entries(s.activities || {}).forEach(([label, sec]) => {
+      const seconds = Number(sec) || 0;
+      if (seconds <= 0) return;
+      labels[label] = (labels[label] || 0) + seconds;
+      totals[label] = (totals[label] || 0) + seconds;
+    });
+    byDay.set(day, labels);
+  });
+  // Biggest label at the bottom of each column.
+  const keys = Object.keys(totals).sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
+  const rows = (dayRows || []).map((row) => {
+    const labels = byDay.get(row.date) || {};
+    const out = { date: row.date, label: row.label, dogs: row.dogs, owners: row.owners, total: 0 };
+    keys.forEach((key) => {
+      out[key] = labels[key] || 0;
+      out.total += out[key];
+    });
+    return out;
+  });
+  return { rows, keys };
+}
+
+const LABEL_COLORS = [
+  ...COLORS,
+  '#1A237E', '#AD1457', '#827717', '#00695C', '#5D4037', '#546E7A', '#F06292', '#7CB342',
+];
+
+function LabelerSessionLog({ email, family, range, state }) {
+  const [limit, setLimit] = useState(SESSION_LOG_PAGE);
+  useEffect(() => setLimit(SESSION_LOG_PAGE), [email, family, range.start, range.end]);
 
   const { loading, rows, message, error } = state;
   const totalSeconds = rows.reduce((sum, r) => sum + (Number(r.duration_seconds) || 0), 0);
@@ -4960,6 +5005,12 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
       return { ...row, total: row[focusLabeler] || 0, dogs: Number(mine?.dogs) || 0, owners: mine ? 1 : 0 };
     });
   }, [contribModel, gpsDateLabelerStack, dateLabelerStack, focusLabeler, gps?.by_date, data?.by_date]);
+  const focusSessions = useLabelerSessions(focusLabeler, contribModel, range);
+  const focusLabelStack = useMemo(
+    () => buildDateLabelStack(focusSessions.rows, contribDateStack),
+    [focusSessions.rows, contribDateStack]
+  );
+  const byLabel = Boolean(focusLabeler) && focusLabelStack.keys.length > 0;
   const gpsActivityLabelerStack = useMemo(
     () => buildActivityLabelerStack(gpsActivities, gpsUsers, gpsLabelerKeys),
     [gpsActivities, gpsUsers, gpsLabelerKeys]
@@ -6313,15 +6364,38 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
               <ChartCard
                 kicker={MODEL_LABELS[contribModel]}
                 title="By date"
-                description="Is labeling steady, or bunched into a few days? Labeled time each day, stacked by labeler."
+                description={
+                  byLabel
+                    ? `Labeled time each day from ${shortLabeler(focusLabeler, labelerNames)}, stacked by label.`
+                    : 'Is labeling steady, or bunched into a few days? Labeled time each day, stacked by labeler.'
+                }
               >
-                <StackedDurationChart
-                  data={contribDateStack}
-                  seriesKeys={focusLabeler ? [focusLabeler] : contribKeys}
-                  colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
-                  xKey="label"
-                  emptyText="No dated sessions found."
-                />
+                {byLabel ? (
+                  <StackedDurationChart
+                    data={focusLabelStack.rows}
+                    seriesKeys={focusLabelStack.keys}
+                    seriesNames={Object.fromEntries(focusLabelStack.keys.map((k) => [k, displayLabel(k)]))}
+                    colorMap={Object.fromEntries(
+                      focusLabelStack.keys.map((k, i) => [k, LABEL_COLORS[i % LABEL_COLORS.length]])
+                    )}
+                    xKey="label"
+                    height={380}
+                    emptyText="No dated sessions found."
+                  />
+                ) : (
+                  <>
+                    {focusLabeler && focusSessions.loading ? (
+                      <p className="text-xs text-gray-500 mb-2">Loading labels for this labeler…</p>
+                    ) : null}
+                    <StackedDurationChart
+                      data={contribDateStack}
+                      seriesKeys={focusLabeler ? [focusLabeler] : contribKeys}
+                      colorMap={contribModel === 'gps' ? gpsLabelerColors : labelerColors}
+                      xKey="label"
+                      emptyText="No dated sessions found."
+                    />
+                  </>
+                )}
                 <DateVolumeTable rows={contribModel === 'gps' ? gpsByDateChartData : byDateChartData} />
               </ChartCard>
               <ChartCard
@@ -6343,7 +6417,7 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
           </section>
 
           {focusLabeler ? (
-            <LabelerSessionLog email={focusLabeler} family={contribModel} range={range} />
+            <LabelerSessionLog email={focusLabeler} family={contribModel} range={range} state={focusSessions} />
           ) : null}
 
           <section className="mb-10">
@@ -6645,5 +6719,5 @@ function SummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
-export { buildProgressEmail, healthGaps, WhatNeedsDoing };
+export { buildDateLabelStack, buildProgressEmail, healthGaps, WhatNeedsDoing };
 export default LabelingDataDashboard;

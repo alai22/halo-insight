@@ -1,6 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildProgressEmail, healthGaps, WhatNeedsDoing } from './LabelingDataDashboard';
+import { buildDateLabelStack, buildProgressEmail, healthGaps, WhatNeedsDoing } from './LabelingDataDashboard';
 
 // axios ships ESM that CRA's Jest doesn't transform; these tests make no requests.
 jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn(), put: jest.fn() }));
@@ -139,5 +139,28 @@ describe('buildProgressEmail', () => {
     const email = buildProgressEmail({ ...person, dogs: ['<b>Rex</b>'] }, progress);
     expect(email.html).toContain('&lt;b&gt;Rex&lt;/b&gt;');
     expect(email.html).not.toContain('<b>Rex</b>');
+  });
+});
+
+describe('buildDateLabelStack', () => {
+  it('splits each day into labels, biggest label first, keeping empty days', () => {
+    const sessions = [
+      { timestamp: '2026-11-18T09:00:00', activities: { Lying: 60, Walking: 30 } },
+      { timestamp: '2026-11-18T17:00:00', activities: { Lying: 40, Potty: 0 } },
+      { timestamp: '2026-11-20T08:00:00', activities: { Walking: 20 } },
+    ];
+    const days = ['2026-11-18', '2026-11-19', '2026-11-20'].map((date) => ({
+      date,
+      label: date.slice(5),
+      dogs: 1,
+      owners: 1,
+    }));
+    const { rows, keys } = buildDateLabelStack(sessions, days);
+    expect(keys).toEqual(['Lying', 'Walking']);
+    expect(rows.map((r) => [r.label, r.Lying, r.Walking, r.total])).toEqual([
+      ['11-18', 100, 30, 130],
+      ['11-19', 0, 0, 0],
+      ['11-20', 0, 20, 20],
+    ]);
   });
 });
