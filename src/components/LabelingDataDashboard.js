@@ -4071,9 +4071,13 @@ function localDayOffset(daysBack) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** The range the page opens on: the last 7 days through today, so today's uploads show. */
-function defaultRange() {
-  return { start: localDayOffset(6), end: localDayOffset(0) };
+/** Days through today each tab opens on; tabs not listed use 7. */
+const TAB_DEFAULT_DAYS = { contributors: 14 };
+
+/** The range a tab opens on: the last N days through today, so today's uploads show. */
+function defaultRange(tab) {
+  const days = TAB_DEFAULT_DAYS[tab] || 7;
+  return { start: localDayOffset(days - 1), end: localDayOffset(0) };
 }
 
 function formatDay(day) {
@@ -4128,6 +4132,7 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
     { label: 'Today', start: today, end: today },
     { label: 'Yesterday', start: yesterday, end: yesterday },
     { label: 'Last 7 days, with today', ...defaultRange() },
+    { label: 'Last 14 days, with today', ...defaultRange('contributors') },
     { label: 'Last 7 days', start: localDayOffset(7), end: yesterday },
     { label: 'Last 30 days', start: localDayOffset(30), end: yesterday },
     { label: 'Last 90 days', start: localDayOffset(90), end: yesterday },
@@ -4249,7 +4254,9 @@ function DateRangeBar({ range, onChange, building, waitingOn, ready, error, onRe
  */
 const LabelingDataDashboard = ({ readOnly = false }) => {
   const stored = useMemo(() => readStoredSummary(), []);
-  const [range, setRange] = useState(defaultRange);
+  const [range, setRange] = useState(() => defaultRange(readInitialTab()));
+  // Until the viewer picks a range, each tab opens on its own default.
+  const rangePickedRef = useRef(false);
   const rangeActive = Boolean(range.start || range.end);
   const [rangeError, setRangeError] = useState(null);
   const rangeParams = useMemo(() => {
@@ -4260,7 +4267,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   }, [range.start, range.end]);
   // Responses for a range the viewer has since changed are dropped.
   const rangeKeyRef = useRef(`${range.start}..${range.end}`);
-  const changeRange = useCallback((next) => {
+  const changeRange = useCallback((next, { picked = true } = {}) => {
+    if (picked) rangePickedRef.current = true;
     const clean = { start: next.start || '', end: next.end || '' };
     rangeKeyRef.current = `${clean.start}..${clean.end}`;
     setRangeError(null);
@@ -4318,6 +4326,13 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
       // ignore
     }
   }, []);
+  useEffect(() => {
+    if (rangePickedRef.current) return;
+    const next = defaultRange(tab);
+    if (next.start !== range.start || next.end !== range.end) changeRange(next, { picked: false });
+    // Only a tab change re-applies the default; range changes are the viewer's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   // The commit running on the server, from /health (set by deploy.sh).
   const [build, setBuild] = useState(null);
   const [processReport, setProcessReport] = useState(null);
