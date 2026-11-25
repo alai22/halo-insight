@@ -126,7 +126,11 @@ class AuthService(IAuthService):
     @classmethod
     def can_request_login(cls, email: str) -> bool:
         """An allowed domain, or an outside email listed as a labeling viewer."""
-        return cls.validate_email_domain(email) or Config.is_labeling_viewer_email(email)
+        if cls.validate_email_domain(email) or Config.is_labeling_viewer_email(email):
+            return True
+        from .labeling_partner_service import org_for_login
+
+        return org_for_login(email) is not None
 
     # Header tokens (X-Admin-Token, X-Auth-Token) are stateless and signed, so they
     # work across workers and restarts. Changing the matching password revokes them.

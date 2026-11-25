@@ -19,6 +19,7 @@ import { getModeFromPath, getPathFromMode, getRouteFromPath, isPathBasedMode, is
 axios.defaults.withCredentials = true;
 
 const LabelingDataDashboard = lazy(modeLoaders['labeling-data']);
+const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'));
 
 // Add interceptor to include auth token in headers (temporary workaround for session issues)
 axios.interceptors.request.use(
@@ -512,6 +513,27 @@ function App() {
   // If not authenticated, show login screen
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} onAdminLogin={handleAdminLogin} />;
+  }
+
+  // Partner staff (e.g. Treat Therapeutics) get their own participants' progress alone.
+  if (authRole === 'labeling_partner') {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="flex justify-end px-6 pt-4">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
+          >
+            <LogOut className="h-4 w-4" />
+            Log out
+          </button>
+        </div>
+        <Suspense fallback={<div className="p-8 text-gray-500">Loading…</div>}>
+          <PartnerDashboard />
+        </Suspense>
+      </div>
+    );
   }
 
   // Labeling viewers get the labeling stats alone: no sidebar, no other tools.

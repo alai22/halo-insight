@@ -16,6 +16,7 @@ import {
 } from 'recharts';
 import { AlertCircle, Calendar, CheckCircle2, ChevronDown, ChevronRight, Clock, DownloadCloud, Dog, FolderOpen, Hourglass, Mail, MessageSquare, Play, RefreshCw, Users, X } from 'lucide-react';
 import axios from 'axios';
+import PartnersAdmin from './PartnersAdmin';
 
 const PROCESS_POLL_MS = 4000;
 const SUMMARY_STORAGE_KEY = 'halo_labeling_summary_v6';
@@ -1657,6 +1658,7 @@ const LABELING_TABS = [
   { key: 'contributors', label: 'Contributors' },
   { key: 'coverage', label: 'Coverage' },
   { key: 'compensation', label: 'Compensation' },
+  { key: 'partners', label: 'Partners' },
 ];
 const TAB_STORAGE_KEY = 'halo_labeling_tab_v1';
 
@@ -4306,7 +4308,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
   }, [collarOwners]);
   const [recapOpen, setRecapOpen] = useState(false);
   const visibleTabs = useMemo(
-    () => (readOnly ? LABELING_TABS.filter((t) => t.key !== 'compensation') : LABELING_TABS),
+    () =>
+      readOnly ? LABELING_TABS.filter((t) => t.key !== 'compensation' && t.key !== 'partners') : LABELING_TABS,
     [readOnly]
   );
   const [tabState, setTabState] = useState(readInitialTab);
@@ -5670,6 +5673,8 @@ const LabelingDataDashboard = ({ readOnly = false }) => {
           onEditLabelers={readOnly ? null : () => setLabelersOpen(true)}
         />
       ) : null}
+
+      {tab === 'partners' && !readOnly ? <PartnersAdmin /> : null}
 
       {tab === 'compensation' && !readOnly ? (
         <CompensationTab data={data} typeOverrides={typeOverrides} onEditLabelers={() => setLabelersOpen(true)} />

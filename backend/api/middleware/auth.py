@@ -94,6 +94,25 @@ _VIEWER_ALLOWED = {
 }
 
 
+LABELING_PARTNER_ROLE = 'labeling_partner'
+
+# A partner's staff (e.g. Treat Therapeutics) reach their own participants' stats only.
+_PARTNER_ALLOWED = {
+    ('GET', '/api/auth/status'),
+    ('GET', '/api/auth/admin-status'),
+    ('POST', '/api/auth/logout'),
+}
+_PARTNER_PREFIX = '/api/partner/v1/'
+
+
+def is_labeling_partner() -> bool:
+    """True when the session belongs to a partner organization's staff."""
+    try:
+        return session.get('role') == LABELING_PARTNER_ROLE
+    except RuntimeError:
+        return False
+
+
 def is_labeling_viewer() -> bool:
     """True when the session belongs to an outside labeling viewer."""
     try:
@@ -107,11 +126,21 @@ def restrict_labeling_viewers():
     before_request hook: a labeling viewer gets 403 on every API call outside
     _VIEWER_ALLOWED, whatever decorator (or none) the route has.
     """
-    if not request.path.startswith('/api/') or not is_labeling_viewer():
+    if not request.path.startswith('/api/') or request.method == 'OPTIONS':
+        return None
+    if is_labeling_partner():
+        if (request.method, request.path.rstrip('/')) in _PARTNER_ALLOWED:
+            return None
+        if request.method == 'GET' and request.path.startswith(_PARTNER_PREFIX):
+            return None
+        logger.warning(f"Labeling partner blocked from {request.method} {request.path}")
+        return jsonify({
+            'error': 'Not available',
+            'message': 'This account can only view its own participants.'
+        }), 403
+    if not is_labeling_viewer():
         return None
     if (request.method, request.path.rstrip('/')) in _VIEWER_ALLOWED:
-        return None
-    if request.method == 'OPTIONS':
         return None
     logger.warning(f"Labeling viewer blocked from {request.method} {request.path}")
     return jsonify({

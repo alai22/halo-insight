@@ -5,7 +5,7 @@ API routes for authentication (magic link and Google OAuth)
 from flask import Blueprint, request, jsonify, session, redirect, url_for
 from ...utils.logging import get_logger
 from ...services.auth_service import AuthService
-from ..middleware.auth import LABELING_VIEWER_ROLE
+from ..middleware.auth import LABELING_PARTNER_ROLE, LABELING_VIEWER_ROLE
 from ...utils.email_service import EmailService
 from ...utils.config import Config
 from urllib.parse import quote
@@ -163,6 +163,15 @@ def verify_token():
             # Outside viewer: read-only labeling stats, nothing else (see restrict_labeling_viewers).
             session['role'] = LABELING_VIEWER_ROLE
             session['admin_authenticated'] = False
+        elif not AuthService.validate_email_domain(email):
+            from ...services.labeling_partner_service import org_for_login
+
+            partner_org = org_for_login(email)
+            if partner_org:
+                # Partner staff: their own participants' stats only (see restrict_labeling_viewers).
+                session['role'] = LABELING_PARTNER_ROLE
+                session['partner_org'] = partner_org
+                session['admin_authenticated'] = False
         session.permanent = True  # Make session persistent
         
         logger.info(f"User authenticated successfully: {email}")
@@ -224,6 +233,7 @@ def auth_status():
                     'email': email,
                     'auth_method': auth_method,
                     'role': session.get('role'),
+                    'partner_org': session.get('partner_org'),
                     'session_available': True
                 }), 200
         except RuntimeError as session_error:
